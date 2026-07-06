@@ -1,0 +1,18 @@
+# Fleet of ephemeral JIT runners. Each container registers, runs exactly one
+# job, and exits; `restart: always` re-registers it fresh — that restart loop
+# IS the runner lifecycle. Configure via a host-local .env (see .env.example);
+# the App private key is device-bound and mounted read-only, never baked in.
+services:
+  runner:
+    image: ghcr.io/melodic-software/ci-runner:latest
+    pull_policy: always
+    restart: always
+    deploy:
+      replicas: ${RUNNER_REPLICAS:-2}
+    environment:
+      APP_CLIENT_ID: ${APP_CLIENT_ID:?set in .env}
+      ORG: ${ORG:-melodic-software}
+      RUNNER_GROUP: ${RUNNER_GROUP:-self-hosted}
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted-medley}
+    volumes:
+      - ${APP_PRIVATE_KEY_PATH:?set in .env}:/run/secrets/github-app-key.pem:ro

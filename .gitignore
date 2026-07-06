@@ -1,0 +1,2 @@
+# Host-local runner config: holds the App client ID and the private-key path.
+.env
