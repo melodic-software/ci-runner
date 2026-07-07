@@ -18,7 +18,9 @@ fail() {
   sleep 15
   exit 1
 }
-trap 'echo "entrypoint failed; pausing before container restart" >&2; sleep 15' ERR
+# errexit already exits after this trap (verified empirically); the explicit
+# exit is belt-and-braces for any errexit-suppressed context.
+trap 'echo "entrypoint failed; pausing before container restart" >&2; sleep 15; exit 1' ERR
 
 : "${APP_CLIENT_ID:?GitHub App client ID is required}"
 : "${APP_PRIVATE_KEY_B64:?base64-encoded GitHub App private key is required}"
