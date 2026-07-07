@@ -35,7 +35,9 @@ RUN curl -fsSL -o runner.tar.gz \
  && rm -rf /var/lib/apt/lists/* \
  && chown -R runner:runner /home/runner
 
-COPY --chown=runner:runner --chmod=0755 entrypoint.sh /home/runner/entrypoint.sh
+COPY --chmod=0755 entrypoint.sh /home/runner/entrypoint.sh
 
-USER runner
+# No USER directive: the entrypoint must start as root (it scrubs prior-job
+# state and holds the App key material where only root can read it), then
+# drops to the unprivileged 'runner' user via setpriv before the job runs.
 ENTRYPOINT ["/home/runner/entrypoint.sh"]

@@ -24,14 +24,33 @@ GitHub-hosted conventions.
 
 - **Private repos only.** The `self-hosted` org runner group (governed by
   [`github-iac`](https://github.com/melodic-software/github-iac)) blocks
-  public repositories, so fork PRs can never reach these hosts.
+  public repositories, so fork PRs can never reach these hosts. Everything
+  that runs here is this org's own first-party code — that trust assumption
+  underpins the rest of this section.
 - **GitHub App, not PATs.** The only durable credential is the App's private
-  key — device-bound, one per host, mounted read-only, revocable per host.
-  Everything else (JWT, installation token, JIT config) is minted per
-  container start and dies with it.
+  key — device-bound, one per host, revocable per host. Everything else (JWT,
+  installation token, JIT config) is minted per container start and dies with
+  it.
 - **Least privilege.** The App needs only the organization
   **Self-hosted runners: write** permission, and the installation token is
-  downscoped to exactly that at mint time.
+  downscoped to exactly that at mint time. A stolen key can register rogue
+  runners — nothing else — and revoking that host's key ends it.
+- **Key handling.** The key reaches the container base64-encoded in the
+  environment, is consumed via process substitution for one JWT signature
+  (never written to any filesystem), and is dropped from the live environment
+  before the job starts. The entrypoint holds it as root; the runner — and
+  every job step — runs de-privileged as `runner`.
+- **Accepted residual.** Workflows keep passwordless `sudo` (GitHub-hosted
+  parity; medley's dotnet lane trusts its dev cert with it), and root can read
+  PID 1's original environment — so a *malicious* job could recover the key.
+  Accepted deliberately: the group admits only this org's private repos, the
+  key's blast radius is runner registration, and per-host revocation is one
+  click. Revisit before this fleet ever serves less-trusted code.
+- **Job hygiene.** The work dir and temp are scrubbed before each
+  registration. `/opt/hostedtoolcache` deliberately survives container
+  restarts (re-downloading toolchains every job costs more than the poisoning
+  risk under the same trusted-code assumption); image updates recreate
+  containers outright.
 
 ## Host setup
 
@@ -43,7 +62,8 @@ GitHub-hosted conventions.
    `%USERPROFILE%\.ci-runner\github-app-key.pem` — not `ProgramData`, whose
    subdirectories all local users can read), and never sync or commit it.
 3. Copy `.env.example` to `.env` beside `docker-compose.yml`, fill in the
-   client ID, key path, and replica count.
+   client ID, the base64-encoded key (one-liner in `.env.example`), and the
+   replica count.
 4. `docker compose up -d`. Boot-time start and image refresh are wired by the
    host's provisioning (see the `provisioning` repo).
 
@@ -52,7 +72,7 @@ GitHub-hosted conventions.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_CLIENT_ID` | *(required)* | GitHub App client ID (JWT issuer) |
-| `APP_PRIVATE_KEY_PATH` | *(required)* | Host path of this device's App private key |
+| `APP_PRIVATE_KEY_B64` | *(required)* | This device's App private key, base64-encoded |
 | `RUNNER_REPLICAS` | `2` | Concurrent one-job runner containers |
 | `RUNNER_LABELS` | `self-hosted-medley` | Comma-separated `runs-on` routing labels |
 | `ORG` | `melodic-software` | Organization to register with |

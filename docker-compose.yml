@@ -1,18 +1,20 @@
 # Fleet of ephemeral JIT runners. Each container registers, runs exactly one
 # job, and exits; `restart: always` re-registers it fresh — that restart loop
 # IS the runner lifecycle. Configure via a host-local .env (see .env.example);
-# the App private key is device-bound and mounted read-only, never baked in.
+# the App private key travels base64-encoded in the environment (never a file
+# on the container), device-bound to this host and revocable per host.
 services:
   runner:
     image: ghcr.io/melodic-software/ci-runner:latest
     pull_policy: always
     restart: always
-    deploy:
-      replicas: ${RUNNER_REPLICAS:-2}
+    # `scale` (not deploy.replicas): the service-level attribute the Compose
+    # file reference defines for the default container count, honored by
+    # standalone `docker compose up`.
+    scale: ${RUNNER_REPLICAS:-2}
     environment:
       APP_CLIENT_ID: ${APP_CLIENT_ID:?set in .env}
+      APP_PRIVATE_KEY_B64: ${APP_PRIVATE_KEY_B64:?set in .env}
       ORG: ${ORG:-melodic-software}
       RUNNER_GROUP: ${RUNNER_GROUP:-self-hosted}
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted-medley}
-    volumes:
-      - ${APP_PRIVATE_KEY_PATH:?set in .env}:/run/secrets/github-app-key.pem:ro
