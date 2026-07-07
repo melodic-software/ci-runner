@@ -5,8 +5,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Weekly rebuild so the floating catthehacker base (and its OS packages)
-    # stays patched even when nothing here changes.
+    # Weekly rebuild so the apt-installed layers stay patched even when
+    # nothing here changes; the digest-pinned base bumps via Dependabot.
     - cron: '30 5 * * 1'
   workflow_dispatch:
 

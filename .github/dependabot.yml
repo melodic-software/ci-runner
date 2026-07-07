@@ -1,0 +1,34 @@
+# Dependabot keeps this repo's pins current with REVIEWED pull requests; never
+# auto-merge (a base-image or action bump is executable CI/runner code). Every
+# ecosystem applies a 7-day cooldown so a compromised or yanked release is
+# caught before we adopt it; security-advisory updates bypass the cooldown.
+version: 2
+updates:
+  # Bumps the Dockerfile's digest-pinned catthehacker base when upstream moves
+  # the act-latest tag.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns:
+          - "*"
+
+  # Keeps the SHA-pinned actions in .github/workflows/ current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"

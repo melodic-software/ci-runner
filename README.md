@@ -40,6 +40,18 @@ GitHub-hosted conventions.
   (never written to any filesystem), and is dropped from the live environment
   before the job starts. The entrypoint holds it as root; the runner — and
   every job step — runs de-privileged as `runner`.
+- **Third-party base, digest-pinned.** The catthehacker base image is pulled
+  by immutable digest, so a moved or compromised upstream `act-latest` tag
+  cannot silently enter a build. Digest bumps arrive as reviewed Dependabot
+  PRs behind a cooldown — upstream changes are adopted deliberately, never
+  implicitly.
+- **First-party float, deliberate.** Hosts run
+  `ghcr.io/melodic-software/ci-runner:latest` with `pull_policy: always`, so
+  every compose up (provisioning re-runs it at logon) adopts whatever the org
+  last published. Accepted: only this repo's merge-gated `main` publishes that
+  tag and the org controls every link of that path (repo, workflow, GHCR
+  package), so the float tracks our own reviewed publishes, not a third
+  party's. Revisit if publish rights ever widen beyond `publish.yml`.
 - **Accepted residual.** Workflows keep passwordless `sudo` (GitHub-hosted
   parity; medley's dotnet lane trusts its dev cert with it), and root can read
   PID 1's original environment — so a *malicious* job could recover the key.
@@ -82,7 +94,7 @@ GitHub-hosted conventions.
 
 `publish.yml` builds on every PR (validation only) and pushes `latest` +
 commit-SHA tags on merge to `main`, plus a weekly scheduled rebuild so the
-floating base image stays patched.
+apt-installed layers stay patched between base-image digest bumps.
 
 `actions/runner` is pinned by version + checksum in the `Dockerfile`.
 Ephemeral runners cannot self-update and GitHub eventually refuses versions

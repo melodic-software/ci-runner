@@ -1,7 +1,8 @@
 # catthehacker's act "medium" image: Ubuntu with the toolchain most GitHub-hosted
 # actions expect (node, curl, jq, git-lfs, sudo), built for running Actions jobs
-# outside GitHub-hosted runners.
-FROM ghcr.io/catthehacker/ubuntu:act-latest
+# outside GitHub-hosted runners. The pin is the multi-arch INDEX digest (what
+# FROM resolves), not a per-platform manifest digest; Dependabot bumps it.
+FROM ghcr.io/catthehacker/ubuntu:act-latest@sha256:c710431fbad9eb3bcb102d04e5ff74fbd0ce6e383f78afebfb3770a1a817fdf9
 
 # Bump RUNNER_VERSION + RUNNER_SHA256 together (SHA is in the actions/runner
 # release notes). Ephemeral/JIT runners cannot self-update, and GitHub refuses
