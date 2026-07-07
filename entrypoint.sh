@@ -35,11 +35,13 @@ RUNNER_NAME="${RUNNER_NAME_PREFIX:-runner}-$(hostname)-$(date +%s)"
 
 # Docker's restart policy restarts the SAME container, so a finished job's
 # writable layer survives into the next registration. Scrub the job-visible
-# state (work dir, temp) before taking a new job. /opt/hostedtoolcache is
-# deliberately kept: re-downloading toolchains every job costs more than the
-# poisoning risk on a fleet that only ever runs this org's private, first-party
-# code; image updates (compose pull) still recreate containers outright.
-rm -rf /home/runner/actions-runner/_work /tmp/* /var/tmp/* 2>/dev/null || true
+# state (work dir, temp — find -delete, since globs miss dotfiles) before
+# taking a new job. /opt/hostedtoolcache is deliberately kept: re-downloading
+# toolchains every job costs more than the poisoning risk on a fleet that only
+# ever runs this org's private, first-party code; image updates (compose pull)
+# still recreate containers outright.
+rm -rf /home/runner/actions-runner/_work 2>/dev/null || true
+find /tmp /var/tmp -mindepth 1 -delete 2>/dev/null || true
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
