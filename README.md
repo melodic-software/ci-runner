@@ -39,8 +39,9 @@ GitHub-hosted conventions.
    org permission *Self-hosted runners: write*, no repo permissions, no
    webhook. Install it on the org.
 2. On each runner host: generate a **new private key** in the App settings,
-   store it locally (e.g. `C:\ProgramData\ci-runner\github-app-key.pem`),
-   and never sync or commit it.
+   store it under the user profile (e.g.
+   `%USERPROFILE%\.ci-runner\github-app-key.pem` — not `ProgramData`, whose
+   subdirectories all local users can read), and never sync or commit it.
 3. Copy `.env.example` to `.env` beside `docker-compose.yml`, fill in the
    client ID, key path, and replica count.
 4. `docker compose up -d`. Boot-time start and image refresh are wired by the
