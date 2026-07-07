@@ -18,6 +18,12 @@ updates:
       prefix: build
     cooldown:
       default-days: 7
+    ignore:
+      # docker-compose.yml floats ghcr.io/melodic-software/ci-runner:latest by
+      # design (pull_policy: always; first-party image published by this repo) -
+      # Dependabot must not pin or bump it. Only the third-party catthehacker
+      # base in the Dockerfile is managed by this ecosystem entry.
+      - dependency-name: "ghcr.io/melodic-software/ci-runner"
     groups:
       docker:
         patterns:
