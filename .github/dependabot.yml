@@ -1,7 +1,11 @@
 # Dependabot keeps this repo's pins current with REVIEWED pull requests; never
-# auto-merge (a base-image or action bump is executable CI/runner code). Every
-# ecosystem applies a 7-day cooldown so a compromised or yanked release is
-# caught before we adopt it; security-advisory updates bypass the cooldown.
+# auto-merge (a base-image or action bump is executable CI/runner code) - that
+# human review is the gate. Both ecosystems also request a 7-day cooldown so a
+# compromised or yanked release ages out before it is even proposed (security
+# advisories bypass it). Caveat: Dependabot does not currently honor cooldown
+# for the docker ecosystem (dependabot/dependabot-core#15446), so for the base
+# image that delay is best-effort until upstream fixes it - the reviewed-PR gate
+# is what actually holds meanwhile.
 version: 2
 updates:
   # Bumps the Dockerfile's digest-pinned catthehacker base when upstream moves

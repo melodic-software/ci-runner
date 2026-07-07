@@ -43,8 +43,11 @@ GitHub-hosted conventions.
 - **Third-party base, digest-pinned.** The catthehacker base image is pulled
   by immutable digest, so a moved or compromised upstream `act-latest` tag
   cannot silently enter a build. Digest bumps arrive as reviewed Dependabot
-  PRs behind a cooldown — upstream changes are adopted deliberately, never
-  implicitly.
+  PRs that are never auto-merged, so upstream changes are adopted deliberately,
+  never implicitly. A 7-day Dependabot cooldown is also configured, but it is
+  not currently enforced for the Docker ecosystem
+  ([dependabot-core#15446](https://github.com/dependabot/dependabot-core/issues/15446)),
+  so the reviewed-PR gate — not a time delay — is the guarantee.
 - **First-party float, deliberate.** Hosts run
   `ghcr.io/melodic-software/ci-runner:latest` with `pull_policy: always`, so
   every compose up (provisioning re-runs it at logon) adopts whatever the org
