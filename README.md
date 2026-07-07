@@ -47,10 +47,12 @@ GitHub-hosted conventions.
   key's blast radius is runner registration, and per-host revocation is one
   click. Revisit before this fleet ever serves less-trusted code.
 - **Job hygiene.** The work dir and temp are scrubbed before each
-  registration. `/opt/hostedtoolcache` deliberately survives container
-  restarts (re-downloading toolchains every job costs more than the poisoning
-  risk under the same trusted-code assumption); image updates recreate
-  containers outright.
+  registration. `/opt/hostedtoolcache` **and the runner's `$HOME`** (dotfiles,
+  `~/.nuget`, other per-user caches) deliberately survive container restarts —
+  re-downloading toolchains and packages every job costs more than the
+  poisoning risk under the same trusted-code assumption; image updates
+  recreate containers outright. If the fleet ever serves less-trusted code,
+  the escape hatch is a recreate-per-job supervisor, not a longer scrub list.
 
 ## Host setup
 
