@@ -24,6 +24,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends clang zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# setup-dotnet's Ubuntu default is /usr/share/dotnet, which the de-privileged
+# runner cannot write (its own README says to point self-hosted runners at a
+# user-writable path). The toolcache tree is runner-owned and deliberately
+# survives container restarts, so installed SDKs are reused across jobs.
+ENV DOTNET_INSTALL_DIR=/opt/hostedtoolcache/dotnet
+
 WORKDIR /home/runner/actions-runner
 
 RUN curl -fsSL -o runner.tar.gz \

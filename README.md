@@ -74,7 +74,7 @@ GitHub-hosted conventions.
 | `APP_CLIENT_ID` | *(required)* | GitHub App client ID (JWT issuer) |
 | `APP_PRIVATE_KEY_B64` | *(required)* | This device's App private key, base64-encoded |
 | `RUNNER_REPLICAS` | `2` | Concurrent one-job runner containers |
-| `RUNNER_LABELS` | `self-hosted-medley` | Comma-separated `runs-on` routing labels |
+| `RUNNER_LABELS` | `self-hosted-medley` | Comma-separated `runs-on` routing labels. JIT runners get **no implicit labels** (`self-hosted`/`Linux`/`X64`), deliberately: workflows target this fleet only by naming its explicit label |
 | `ORG` | `melodic-software` | Organization to register with |
 | `RUNNER_GROUP` | `self-hosted` | Runner group to join |
 
