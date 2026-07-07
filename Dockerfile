@@ -16,6 +16,14 @@ RUN groupadd -g 1001 runner \
  && echo 'runner ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/runner \
  && chmod 0440 /etc/sudoers.d/runner
 
+# GitHub-hosted ubuntu preinstalls a C toolchain; the act base does not. .NET
+# Native AOT publishing (medley's aot-publish-smoke job) links with clang and
+# needs the zlib headers, so bake them in rather than apt-get on every
+# ephemeral job.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /home/runner/actions-runner
 
 RUN curl -fsSL -o runner.tar.gz \
