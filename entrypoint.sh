@@ -40,7 +40,7 @@ RUNNER_NAME="${RUNNER_NAME_PREFIX:-runner}-$(hostname)-$(date +%s)"
 # toolchains every job costs more than the poisoning risk on a fleet that only
 # ever runs this org's private, first-party code; image updates (compose pull)
 # still recreate containers outright.
-rm -rf /home/runner/actions-runner/_work 2>/dev/null || true
+rm -rf ./_work 2>/dev/null || true
 find /tmp /var/tmp -mindepth 1 -delete 2>/dev/null || true
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
