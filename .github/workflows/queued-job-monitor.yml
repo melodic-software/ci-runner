@@ -1,0 +1,51 @@
+name: Managed Runner Queue Monitor
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-runner-queue-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Alert on ${{ matrix.target.owner }} jobs queued over five minutes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(vars.CI_RUNNER_MONITOR_TARGETS_JSON) }}
+    steps:
+      - name: Checkout monitor implementation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Mint read-only observer token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
+          private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
+          owner: ${{ matrix.target.owner }}
+          repositories: ${{ matrix.target.repositories }}
+          permission-actions: read
+
+      - name: Inspect queued jobs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          MONITOR_OWNER: ${{ matrix.target.owner }}
+          MONITORED_REPOSITORIES: ${{ matrix.target.repositories }}
+          MANAGED_LABELS: ${{ matrix.target.managedLabels }}
+          QUEUE_THRESHOLD_MINUTES: '5'
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
+            await monitor.run({ github, core });

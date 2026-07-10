@@ -1,53 +1,65 @@
-# catthehacker's act "medium" image: Ubuntu with the toolchain most GitHub-hosted
-# actions expect (node, curl, jq, git-lfs, sudo), built for running Actions jobs
-# outside GitHub-hosted runners. The pin is the multi-arch INDEX digest (what
-# FROM resolves), not a per-platform manifest digest; Dependabot bumps it.
-FROM ghcr.io/catthehacker/ubuntu:act-latest@sha256:c710431fbad9eb3bcb102d04e5ff74fbd0ce6e383f78afebfb3770a1a817fdf9
+# The tag and multi-platform index digest are intentionally both pinned. The
+# official image is Ubuntu 24.04 and contains the exact runner binary named by
+# the tag. release/dependencies.json records the independent release evidence.
+FROM ghcr.io/actions/actions-runner:2.335.1@sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29
 
-# Bump RUNNER_VERSION + RUNNER_SHA256 together (SHA is in the actions/runner
-# release notes). Ephemeral/JIT runners cannot self-update, and GitHub refuses
-# registration from versions that fall too far behind — keep this current.
-ARG RUNNER_VERSION=2.335.1
-ARG RUNNER_SHA256=4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf
+ARG POWERSHELL_VERSION=7.6.3
+ARG POWERSHELL_SHA256=856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7
 
-# Non-root user mirroring GitHub-hosted runner conventions (uid 1001,
-# passwordless sudo) so workflows behave the same here as on ubuntu-latest.
-RUN groupadd -g 1001 runner \
- && useradd -u 1001 -g runner -G sudo -m -s /bin/bash runner \
- && echo 'runner ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/runner \
- && chmod 0440 /etc/sudoers.d/runner
+USER root
 
-# GitHub-hosted ubuntu preinstalls a C toolchain; the act base does not. .NET
-# Native AOT publishing (medley's aot-publish-smoke job) links with clang and
-# needs the zlib headers, so bake them in rather than apt-get on every
-# ephemeral job.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Keep the compatibility layer deliberately small. Versioned language runtimes
+# belong in their official setup actions so hosted and self-hosted workflows use
+# the same declarations. PowerShell is installed from Microsoft's checksummed
+# release asset because it is not in Ubuntu's first-party repository.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clang zlib1g-dev \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install --yes --no-install-recommends \
+      ca-certificates \
+      clang \
+      curl \
+      git \
+      git-lfs \
+      jq \
+      openssh-client \
+      sudo \
+      unzip \
+      zip \
+      zlib1g-dev \
+ && curl --fail --location --proto '=https' --tlsv1.2 \
+      --output /tmp/powershell.tar.gz \
+      "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-x64.tar.gz" \
+ && echo "${POWERSHELL_SHA256}  /tmp/powershell.tar.gz" | sha256sum --check --strict \
+ && install --directory --owner=root --group=root --mode=0755 /opt/microsoft/powershell/7 \
+ && tar --extract --gzip --file=/tmp/powershell.tar.gz --directory=/opt/microsoft/powershell/7 \
+ && chmod 0755 /opt/microsoft/powershell/7/pwsh \
+ && ln --symbolic /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh \
+ && git lfs install --system \
+ && rm --force /tmp/powershell.tar.gz \
+ && rm --recursive --force /var/lib/apt/lists/*
 
-# setup-dotnet's Ubuntu default is /usr/share/dotnet, which the de-privileged
-# runner cannot write (its own README says to point self-hosted runners at a
-# user-writable path). The toolcache tree is runner-owned and deliberately
-# survives container restarts, so installed SDKs are reused across jobs.
-ENV DOTNET_INSTALL_DIR=/opt/hostedtoolcache/dotnet
+COPY --chmod=0555 worker/set-state.sh /usr/local/libexec/ci-runner-set-state
+COPY --chmod=0555 worker/job-started.sh /usr/local/libexec/ci-runner-job-started
+COPY --chmod=0555 worker/job-completed.sh /usr/local/libexec/ci-runner-job-completed
+COPY --chmod=0555 worker/entrypoint.sh /usr/local/bin/ci-runner-entrypoint
 
-WORKDIR /home/runner/actions-runner
+ENV ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1 \
+    ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started \
+    ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed \
+    ImageOS=ubuntu24
 
-RUN curl -fsSL -o runner.tar.gz \
-      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
- && echo "${RUNNER_SHA256}  runner.tar.gz" | sha256sum -c - \
- && tar -xzf runner.tar.gz \
- && rm runner.tar.gz \
- && ./bin/installdependencies.sh \
- && rm -rf /var/lib/apt/lists/* \
- && chown -R runner:runner /home/runner
+LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
+      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.335.1" \
+      org.opencontainers.image.base.digest="sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29" \
+      org.opencontainers.image.description="Ephemeral one-job GitHub Actions worker for ci-runner"
 
-# Root-owned path, NOT under /home/runner: the entrypoint runs as root, and a
-# job (running as 'runner') could replace any file in its own writable home to
-# hijack the next restart. /usr/local/bin is writable only by root.
-COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
-
-# No USER directive: the entrypoint must start as root (it scrubs prior-job
-# state and holds the App key material where only root can read it), then
-# drops to the unprivileged 'runner' user via setpriv before the job runs.
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# The upstream user is uid/gid 1001 and has passwordless sudo, matching the
+# official Actions runner container. The controller must not override this,
+# mount host paths, attach devices, expose the Docker socket, or use privileged
+# mode. It supplies the one-job JIT configuration only through the documented
+# ACTIONS_RUNNER_INPUT_JITCONFIG environment variable.
+USER runner
+WORKDIR /home/runner
+ENTRYPOINT ["/usr/local/bin/ci-runner-entrypoint"]
+CMD ["/home/runner/run.sh"]

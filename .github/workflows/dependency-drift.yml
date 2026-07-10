@@ -1,0 +1,120 @@
+name: Dependency Drift
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-drift
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  check:
+    name: Check immutable dependency freshness
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write # Open, refresh, or close the one dependency-drift evidence issue.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified Buildx
+        run: bash ./scripts/install-verified-buildx.sh
+
+      - name: Resolve official release feeds
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/Test-DependencyFreshness.ps1 -OutputPath dependency-drift.json
+
+      - name: Record and reconcile drift issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REPORT_PATH: dependency-drift.json
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+            const title = '[dependency-drift] Runner fleet pins require review';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+
+            if (!report.hasDrift) {
+              await core.summary.addHeading('Dependency freshness').addRaw('All reviewed pins are current.').write();
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body: `Resolved by the ${report.checkedAt} official-source check.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+              }
+              return;
+            }
+
+            const rows = report.drift.map(item =>
+              `| ${item.dependency} | \`${item.pinned}\` | \`${item.latest}\` | ${item.ageDays} | ${item.hardFail ? 'yes' : 'no'} | [source](${item.source}) |`
+            );
+            const body = [
+              'The daily official-source freshness check found reviewed pins that need an update PR.',
+              '',
+              '| Dependency | Pinned | Latest | Age (days) | Hard fail | Evidence |',
+              '|---|---:|---:|---:|---:|---|',
+              ...rows,
+              '',
+              'Do not auto-merge these updates. Publish and promote a new compatibility pair only after CI, canary, and independent review.',
+              '',
+              `Last checked: ${report.checkedAt}`,
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }
+            await core.summary.addHeading('Dependency drift').addRaw(body).write();
+
+      - name: Upload drift evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-drift-${{ github.run_id }}
+          path: dependency-drift.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce 14-day or critical drift gate
+        run: |
+          if jq --exit-status '.hardFail' dependency-drift.json >/dev/null; then
+            echo 'A critical dependency or dependency older than the 14-day freshness window requires an update.' >&2
+            exit 1
+          fi

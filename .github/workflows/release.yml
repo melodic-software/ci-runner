@@ -1,0 +1,619 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  # SemVer and sha-<source> OCI tags are shared write-once destinations for
+  # this workflow; GHCR does not enforce tag immutability against other writers.
+  # Deployments consume only the exact digest. Current
+  # GitHub Actions queue:max retains up to its documented 100 pending runs
+  # instead of the default single pending run. Requests beyond that platform
+  # limit are cancelled and must be deliberately re-dispatched.
+  group: release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  verify:
+    name: Verify exact tagged source
+    if: github.repository == 'melodic-software/ci-runner'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release version and main ancestry
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.5
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.18.0
+          cache: false
+          package-manager-cache: false
+
+      - name: Install checksum-verified Buildx
+        run: bash ./scripts/install-verified-buildx.sh
+
+      - name: Set up pinned BuildKit builder
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+          driver-opts: |
+            image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
+          # Supplying this explicit safe flag resets the action's default
+          # network.host/security.insecure daemon entitlements.
+          buildkitd-flags: --debug=false
+
+      - name: Verify immutable pins
+        shell: pwsh
+        run: ./scripts/Test-ReleasePins.ps1
+
+      - name: Enforce official-source dependency freshness
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FRESHNESS_REPORT: ${{ runner.temp }}/dependency-drift.json
+        run: |
+          ./scripts/Test-DependencyFreshness.ps1 -OutputPath $env:FRESHNESS_REPORT
+          $report = Get-Content -Raw -LiteralPath $env:FRESHNESS_REPORT | ConvertFrom-Json
+          if ($report.hardFail) {
+            throw 'A critical dependency or dependency older than the 14-day freshness window blocks publication.'
+          }
+
+      - name: Verify module graph
+        run: |
+          go mod tidy -diff
+          go mod verify
+
+      - name: Vet and test exact source
+        run: |
+          go vet ./...
+          go test ./...
+          go test -race ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+      - name: Test queue monitor and resumable release transaction
+        run: node --test .github/scripts/*.test.cjs
+
+      - name: Lint workflow syntax and shell
+        # See CI: current actionlint predates GitHub's official queue:max key.
+        run: >-
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+          -ignore 'unexpected key "queue" for "concurrency" section'
+
+      - name: Audit workflow security
+        uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        with:
+          version: 1.26.1
+          persona: pedantic
+          advanced-security: false
+          annotations: true
+
+      - name: Build exact worker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ci-runner-worker:release-verification
+          provenance: false
+          sbom: false
+
+      - name: Verify worker image contract
+        run: ./scripts/verify-worker-image.sh ci-runner-worker:release-verification
+
+      - name: Compile Windows release binaries
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          go build -trimpath -o /tmp/ci-runner.exe ./cmd/ci-runner
+          go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
+
+  publish-evidence:
+    name: Publish immutable release evidence
+    if: github.repository == 'melodic-software/ci-runner'
+    needs: verify
+    runs-on: ubuntu-24.04
+    outputs:
+      worker-digest: ${{ steps.result.outputs.worker_digest }}
+    permissions:
+      contents: write # Create the immutable GitHub release and upload assets.
+      packages: write # Push the untagged worker candidate by digest.
+      attestations: write # Store exact artifact and image provenance.
+      id-token: write # Sign GitHub attestations through OIDC.
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release version and main ancestry
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.5
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.18.0
+          cache: false
+          package-manager-cache: false
+
+      - name: Resolve and verify an existing immutable release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+          set +e
+          response="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" 2>&1)"
+          status=$?
+          set -e
+          if (( status != 0 )); then
+            if grep --fixed-strings --quiet '(HTTP 404)' <<<"$response"; then
+              echo 'exists=false' >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            printf '%s\n' "$response" >&2
+            echo 'Unable to distinguish an absent release from a GitHub API failure.' >&2
+            exit 1
+          fi
+
+          node .github/scripts/release-transaction.cjs verify-tag
+          gh release verify "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"
+          archive="ci-runner-${RELEASE_VERSION}-windows-amd64.zip"
+          sbom="ci-runner-${RELEASE_VERSION}-windows-amd64.spdx.json"
+          expected=(SHA256SUMS "$archive" "$sbom" compatibility.json)
+          mapfile -t expected < <(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)
+          mapfile -t release_assets < <(
+            gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | LC_ALL=C sort
+          )
+          [[ "${release_assets[*]}" == "${expected[*]}" ]]
+          for asset in "$archive" "$sbom" compatibility.json SHA256SUMS; do
+            gh release download "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --dir dist --pattern "$asset"
+            gh release verify-asset "$RELEASE_VERSION" "dist/$asset" --repo "$GITHUB_REPOSITORY"
+          done
+          mapfile -t assets < <(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          [[ "${assets[*]}" == "${expected[*]}" ]]
+          mapfile -t checksum_names < <(sed --regexp-extended --silent 's/^[0-9a-f]{64}  ([^/\\]+)$/\1/p' dist/SHA256SUMS | LC_ALL=C sort)
+          expected_checksum_names=("$archive" "$sbom" compatibility.json)
+          mapfile -t expected_checksum_names < <(printf '%s\n' "${expected_checksum_names[@]}" | LC_ALL=C sort)
+          [[ "${checksum_names[*]}" == "${expected_checksum_names[*]}" ]]
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+
+          manifest=dist/compatibility.json
+          archive_digest="sha256:$(sha256sum "dist/$archive" | cut --delimiter=' ' --fields=1)"
+          jq --exit-status \
+            --arg version "$RELEASE_VERSION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sha "$GITHUB_SHA" \
+            --arg archive "$archive" \
+            --arg archive_digest "$archive_digest" \
+            --arg sbom "$sbom" \
+            --slurpfile pins release/dependencies.json \
+            '
+              (keys | sort) == (["controller","createdAt","dependencies","evidence","releaseVersion","schemaVersion","source","worker"] | sort)
+              and .schemaVersion == 1
+              and .releaseVersion == $version
+              and .source.repository == $repository
+              and .source.sha == $sha
+              and .controller.version == ($version | ltrimstr("v"))
+              and .controller.windowsArchive == $archive
+              and .controller.archiveDigest == $archive_digest
+              and .worker.image == ("ghcr.io/" + $repository)
+              and (.worker.digest | test("^sha256:[0-9a-f]{64}$"))
+              and .dependencies == {
+                runnerVersion: $pins[0].runner.version,
+                scaleSetClientVersion: $pins[0].scaleSetClient.version,
+                scaleSetClientCommit: $pins[0].scaleSetClient.commit,
+                goToolchain: ("go" + $pins[0].go.version),
+                powerShellVersion: $pins[0].powerShell.version,
+                buildxVersion: $pins[0].buildx.version,
+                buildxLinuxAmd64Sha256: $pins[0].buildx.linuxAmd64Sha256,
+                buildKitVersion: $pins[0].buildKit.version,
+                buildKitDigest: $pins[0].buildKit.digest,
+                buildKitLinuxAmd64Digest: $pins[0].buildKit.linuxAmd64Digest,
+                sbomGeneratorVersion: $pins[0].buildKitSbomScanner.version,
+                sbomGeneratorDigest: $pins[0].buildKitSbomScanner.digest,
+                sbomGeneratorLinuxAmd64Digest: $pins[0].buildKitSbomScanner.linuxAmd64Digest
+              }
+              and .evidence == {
+                checksums: "SHA256SUMS",
+                controllerSbom: $sbom,
+                controllerProvenance: ("https://github.com/" + $repository + "/attestations"),
+                workerSbom: ("oci://" + .worker.image + "@" + .worker.digest + "#sbom"),
+                workerProvenance: ("oci://" + .worker.image + "@" + .worker.digest + "#provenance")
+              }
+            ' "$manifest" >/dev/null
+
+          version="${RELEASE_VERSION#v}"
+          version_symbol='github.com/melodic-software/ci-runner/internal/buildinfo.Version'
+          go run -trimpath -ldflags="-X ${version_symbol}=${version}" ./cmd/ci-runner \
+            release validate --manifest "$(realpath "$manifest")" --version "$version" >/dev/null
+
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          for asset in "${expected[@]}"; do
+            gh attestation verify "dist/$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+          worker_digest="$(jq --exit-status --raw-output '.worker.digest' "$manifest")"
+          gh attestation verify "oci://ghcr.io/$GITHUB_REPOSITORY@$worker_digest" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" \
+            --source-ref "$GITHUB_REF" \
+            --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
+          node .github/scripts/release-transaction.cjs verify-tag
+          echo 'exists=true' >>"$GITHUB_OUTPUT"
+          echo "worker_digest=$worker_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Install checksum-verified Buildx
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        run: bash ./scripts/install-verified-buildx.sh
+
+      - name: Set up pinned BuildKit builder
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+          driver-opts: |
+            image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
+          buildkitd-flags: --debug=false
+
+      - name: Build and push untagged worker candidate
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        id: worker
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: generator=docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+
+      - name: Verify exact registry worker candidate and attestations
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          WORKER_CANDIDATE: ghcr.io/${{ github.repository }}@${{ steps.worker.outputs.digest }}
+          SCANNER_AMD64_DIGEST: sha256:13864237fb990943433f89d698590aad1de38d4a7e13d38e7b12f2488c1952e7
+        run: |
+          set -Eeuo pipefail
+          docker pull "$WORKER_CANDIDATE"
+          ./scripts/verify-worker-image.sh "$WORKER_CANDIDATE"
+          docker buildx imagetools inspect "$WORKER_CANDIDATE" --format '{{json .SBOM}}' >"$RUNNER_TEMP/worker-sbom.json"
+          docker buildx imagetools inspect "$WORKER_CANDIDATE" --format '{{json .Provenance}}' >"$RUNNER_TEMP/worker-provenance.json"
+          jq --exit-status '
+            (if has("SPDX") then .SPDX else .["linux/amd64"].SPDX end)
+            | .SPDXID == "SPDXRef-DOCUMENT" and (.packages | type == "array")
+          ' "$RUNNER_TEMP/worker-sbom.json" >/dev/null
+          jq --exit-status --arg digest "${SCANNER_AMD64_DIGEST#sha256:}" '
+            (if has("SLSA") then .SLSA else .["linux/amd64"].SLSA end)
+            | .buildType == "https://mobyproject.org/buildkit@v1"
+              and any(.materials[]?; .digest.sha256 == $digest)
+          ' "$RUNNER_TEMP/worker-provenance.json" >/dev/null
+
+      - name: Build Windows controller, CLI, and archive content manifest
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist/stage
+          version="${RELEASE_VERSION#v}"
+          version_symbol='github.com/melodic-software/ci-runner/internal/buildinfo.Version'
+          go build -trimpath -buildvcs=true \
+            -ldflags="-s -w -X ${version_symbol}=${version}" \
+            -o dist/stage/ci-runner.exe ./cmd/ci-runner
+          go build -trimpath -buildvcs=true \
+            -ldflags="-s -w -H=windowsgui -X ${version_symbol}=${version}" \
+            -o dist/stage/ci-runner-controller.exe ./cmd/ci-runner-controller
+          cp release/compatibility.schema.json dist/stage/
+          (
+            cd dist/stage
+            for file in ci-runner.exe ci-runner-controller.exe compatibility.schema.json; do
+              sha256sum "$file"
+            done >CONTENTS.sha256
+            [[ "$(wc -l <CONTENTS.sha256)" -eq 3 ]]
+            grep --extended-regexp --count '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' CONTENTS.sha256 | grep --fixed-strings --line-regexp 3
+            zip -X -9 "../ci-runner-${RELEASE_VERSION}-windows-amd64.zip" \
+              ci-runner.exe ci-runner-controller.exe compatibility.schema.json CONTENTS.sha256
+          )
+          mapfile -t members < <(zipinfo -1 "dist/ci-runner-${RELEASE_VERSION}-windows-amd64.zip")
+          [[ "${members[*]}" == 'ci-runner.exe ci-runner-controller.exe compatibility.schema.json CONTENTS.sha256' ]]
+
+      - name: Generate controller SBOM
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          CONTROLLER_SBOM: dist/ci-runner-${{ github.ref_name }}-windows-amd64.spdx.json
+          RELEASE_VERSION: ${{ github.ref_name }}
+          SYFT_IMAGE: ghcr.io/anchore/syft:v1.46.0@sha256:473a60e3a58e29aca3aedb3e99e787bb4ef273917e44d10fcbea4330a07320bb
+        run: |
+          set -Eeuo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 65534:65534 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777,uid=65534,gid=65534 \
+            --env SYFT_CHECK_FOR_APP_UPDATE=false \
+            --env SYFT_CACHE_DIR=/tmp/syft \
+            --volume "$PWD/dist/stage:/scan:ro" \
+            "$SYFT_IMAGE" \
+            dir:/scan \
+            --source-name ci-runner-windows-amd64 \
+            --source-version "$RELEASE_VERSION" \
+            --output spdx-json >"$CONTROLLER_SBOM"
+          jq --exit-status '.spdxVersion | startswith("SPDX-")' "$CONTROLLER_SBOM" >/dev/null
+
+      - name: Generate compatibility manifest
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          CONTROLLER_ARCHIVE: dist/ci-runner-${{ github.ref_name }}-windows-amd64.zip
+          CONTROLLER_SBOM: ci-runner-${{ github.ref_name }}-windows-amd64.spdx.json
+          CONTROLLER_PROVENANCE: https://github.com/${{ github.repository }}/attestations
+          WORKER_IMAGE: ghcr.io/${{ github.repository }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          ./scripts/New-CompatibilityManifest.ps1 `
+            -ReleaseVersion $env:RELEASE_VERSION `
+            -SourceRepository $env:SOURCE_REPOSITORY `
+            -SourceSha $env:SOURCE_SHA `
+            -ControllerArchive $env:CONTROLLER_ARCHIVE `
+            -WorkerImage $env:WORKER_IMAGE `
+            -WorkerDigest $env:WORKER_DIGEST `
+            -ControllerSbom $env:CONTROLLER_SBOM `
+            -ControllerProvenance $env:CONTROLLER_PROVENANCE `
+            -WorkerSbom "oci://$env:WORKER_IMAGE@$env:WORKER_DIGEST#sbom" `
+            -WorkerProvenance "oci://$env:WORKER_IMAGE@$env:WORKER_DIGEST#provenance" `
+            -OutputPath 'dist/compatibility.json'
+
+      - name: Validate generated compatibility manifest with release code
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          version="${RELEASE_VERSION#v}"
+          version_symbol='github.com/melodic-software/ci-runner/internal/buildinfo.Version'
+          go run -trimpath -ldflags="-X ${version_symbol}=${version}" ./cmd/ci-runner \
+            release validate --manifest "$(realpath dist/compatibility.json)" --version "$version" >/dev/null
+
+      - name: Write exact release checksums
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        working-directory: dist
+        env:
+          TEMP_CHECKSUM_FILE: ${{ runner.temp }}/ci-runner-SHA256SUMS
+        run: |
+          set -Eeuo pipefail
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+            | LC_ALL=C sort --zero-terminated \
+            | xargs --null --no-run-if-empty sha256sum >"$TEMP_CHECKSUM_FILE"
+          [[ "$(wc -l <"$TEMP_CHECKSUM_FILE")" -eq 3 ]]
+          mv --force "$TEMP_CHECKSUM_FILE" SHA256SUMS
+
+      - name: Attest controller artifacts
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/ci-runner-${{ github.ref_name }}-windows-amd64.zip
+            dist/ci-runner-${{ github.ref_name }}-windows-amd64.spdx.json
+            dist/compatibility.json
+            dist/SHA256SUMS
+
+      - name: Attest worker image
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.worker.outputs.digest }}
+          push-to-registry: true
+
+      - name: Upload immutable release evidence
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-runner-${{ github.ref_name }}
+          path: |
+            dist/ci-runner-${{ github.ref_name }}-windows-amd64.zip
+            dist/ci-runner-${{ github.ref_name }}-windows-amd64.spdx.json
+            dist/compatibility.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub release before OCI tag promotion
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          archive="dist/ci-runner-${RELEASE_VERSION}-windows-amd64.zip"
+          sbom="dist/ci-runner-${RELEASE_VERSION}-windows-amd64.spdx.json"
+          node .github/scripts/release-transaction.cjs reconcile \
+            "$archive" "$sbom" dist/compatibility.json dist/SHA256SUMS
+
+      - name: Prove immutable published release and exact assets
+        if: ${{ steps.release.outputs.exists != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in {1..12}; do
+            if gh release verify "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY"; then
+              break
+            fi
+            if (( attempt == 12 )); then
+              echo 'Release is not provably immutable; OCI tags were not promoted.' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          for asset in \
+            "dist/ci-runner-${RELEASE_VERSION}-windows-amd64.zip" \
+            "dist/ci-runner-${RELEASE_VERSION}-windows-amd64.spdx.json" \
+            dist/compatibility.json dist/SHA256SUMS; do
+            gh release verify-asset "$RELEASE_VERSION" "$asset" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+          gh attestation verify "oci://ghcr.io/$GITHUB_REPOSITORY@$WORKER_DIGEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "$GITHUB_REF" \
+            --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
+          node .github/scripts/release-transaction.cjs verify-tag
+
+      - name: Resolve authoritative worker digest
+        id: result
+        env:
+          EXISTING: ${{ steps.release.outputs.exists }}
+          EXISTING_DIGEST: ${{ steps.release.outputs.worker_digest }}
+          NEW_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$EXISTING" == 'true' ]]; then
+            digest="$EXISTING_DIGEST"
+          else
+            digest="$NEW_DIGEST"
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "worker_digest=$digest" >>"$GITHUB_OUTPUT"
+
+  promote-image:
+    name: Promote verified OCI digest to write-once tags
+    if: github.repository == 'melodic-software/ci-runner'
+    needs: publish-evidence
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read # Read the exact tagged source and verified release metadata.
+      packages: write # Create or verify only the two version/source tags for the proven digest.
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified Buildx
+        run: bash ./scripts/install-verified-buildx.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Idempotently promote exact worker digest
+        env:
+          WORKER_DIGEST: ${{ needs.publish-evidence.outputs.worker-digest }}
+          WORKER_CANDIDATE: ghcr.io/${{ github.repository }}@${{ needs.publish-evidence.outputs.worker-digest }}
+          VERSION_REFERENCE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          SOURCE_REFERENCE: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$WORKER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "$WORKER_CANDIDATE" >/dev/null
+
+          inspect_digest() {
+            local reference="$1"
+            docker buildx imagetools inspect "$reference" --format '{{json .Manifest}}' \
+              | jq --exit-status --raw-output '.digest'
+          }
+
+          for reference in "$VERSION_REFERENCE" "$SOURCE_REFERENCE"; do
+            temporary="$(mktemp)"
+            set +e
+            actual="$(inspect_digest "$reference" 2>"$temporary")"
+            status=$?
+            set -e
+            if (( status == 0 )); then
+              rm -f -- "$temporary"
+              if [[ "$actual" != "$WORKER_DIGEST" ]]; then
+                echo "Existing tag $reference resolves to $actual, expected $WORKER_DIGEST" >&2
+                exit 1
+              fi
+              continue
+            fi
+            if ! grep --extended-regexp --ignore-case --quiet 'not found|manifest unknown' "$temporary"; then
+              cat "$temporary" >&2
+              rm -f -- "$temporary"
+              echo "Unable to prove whether $reference exists." >&2
+              exit 1
+            fi
+            rm -f -- "$temporary"
+            docker buildx imagetools create --tag "$reference" "$WORKER_CANDIDATE"
+            actual="$(inspect_digest "$reference")"
+            if [[ "$actual" != "$WORKER_DIGEST" ]]; then
+              echo "Promoted tag $reference resolves to $actual, expected $WORKER_DIGEST" >&2
+              exit 1
+            fi
+          done

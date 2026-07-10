@@ -35,6 +35,12 @@ indent_size = 2
 [*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}]
 indent_size = 2
 
+# Go — gofmt is the formatting authority. Unset generic indentation hints so
+# EditorConfig tooling does not rewrite semantic whitespace inside raw strings.
+[*.go]
+indent_style = unset
+indent_size = unset
+
 # Shell
 [*.{sh,bash}]
 indent_size = 2

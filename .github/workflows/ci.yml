@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   schedule:
     - cron: '30 5 * * 1'
   workflow_dispatch:
@@ -17,7 +18,8 @@ concurrency:
 
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    name: Markdown
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -30,7 +32,8 @@ jobs:
           config: .markdownlint-cli2.jsonc
 
   shellcheck:
-    runs-on: ubuntu-latest
+    name: ShellCheck
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -43,7 +46,8 @@ jobs:
           rcfile: .shellcheckrc
 
   shfmt:
-    runs-on: ubuntu-latest
+    name: Shell format
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -54,7 +58,8 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/shfmt@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   typos:
-    runs-on: ubuntu-latest
+    name: Spelling
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -67,7 +72,8 @@ jobs:
           config: _typos.toml
 
   editorconfig:
-    runs-on: ubuntu-latest
+    name: EditorConfig
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -80,7 +86,8 @@ jobs:
           config: .editorconfig-checker.json
 
   gitleaks:
-    runs-on: ubuntu-latest
+    name: Secret scan
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -94,7 +101,8 @@ jobs:
           config: .gitleaks.toml
 
   lychee:
-    runs-on: ubuntu-latest
+    name: Offline links
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -107,7 +115,8 @@ jobs:
           config: lychee.toml
 
   comment-hygiene:
-    runs-on: ubuntu-latest
+    name: Comment hygiene
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -118,7 +127,8 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   actionlint:
-    runs-on: ubuntu-latest
+    name: Actionlint
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -129,7 +139,8 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/actionlint@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   jsonschema:
-    runs-on: ubuntu-latest
+    name: JSON schemas
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -145,13 +156,11 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           builtin-schema: vendor.github-workflows
-          files: >-
-            .github/workflows/ci.yml
-            .github/workflows/link-check.yml
-            .github/workflows/pr-title.yml
+          files: .github/workflows/*.yml
 
   exec-bit:
-    runs-on: ubuntu-latest
+    name: Executable bits
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -162,7 +171,8 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/exec-bit@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   machine-specific-paths:
-    runs-on: ubuntu-latest
+    name: Machine-specific paths
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -171,9 +181,18 @@ jobs:
           persist-credentials: false
       - name: Check machine-specific paths
         uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          # These files assert the official image's fixed in-container runner
+          # home. They contain no host/user path; keep the exception exact.
+          exclude: >-
+            :(exclude)docs/worker-image.md
+            :(exclude)scripts/verify-worker-image.sh
+            :(exclude)worker/entrypoint.sh
+            :(exclude)worker/set-state.sh
 
   eol-renormalize:
-    runs-on: ubuntu-latest
+    name: EOL normalization
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -184,48 +203,118 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   zizmor:
+    name: Zizmor
     permissions:
-      contents: read
-      security-events: write
+      contents: read # Reusable advisory audit reads the checked-in workflow graph.
     uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
     with:
       paths: .
 
-  image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
+  policy:
+    name: Product policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+          go-version: 1.26.5
+          cache: true
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=long
-      - name: Build and publish image
+          node-version: 24.18.0
+          cache: false
+          package-manager-cache: false
+      - name: Test queue monitor and resumable release transaction
+        run: node --test .github/scripts/*.test.cjs
+      - name: Verify immutable dependency and publication contracts
+        shell: pwsh
+        run: ./scripts/Test-ReleasePins.ps1
+
+  go:
+    name: Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.5
+          cache: true
+      - name: Verify module graph
+        run: |
+          go mod tidy -diff
+          go mod verify
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test ./...
+          go test -race ./...
+      - name: Scan called code for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Compile Windows executables
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          go build -trimpath -o /tmp/ci-runner.exe ./cmd/ci-runner
+          go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
+
+  worker-image:
+    name: Worker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install checksum-verified Buildx
+        run: bash ./scripts/install-verified-buildx.sh
+      - name: Set up pinned BuildKit builder
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+          driver-opts: |
+            image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
+          buildkitd-flags: --debug=false
+      - name: Build worker image without publishing
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          push: false
+          tags: ci-runner-worker:test
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify worker image contract
+        run: ./scripts/verify-worker-image.sh ci-runner-worker:test
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
 
   ci-status:
+    name: ci-status
     if: always()
     needs:
       - markdown
@@ -242,8 +331,11 @@ jobs:
       - machine-specific-paths
       - eol-renormalize
       - zizmor
-      - image
-    runs-on: ubuntu-latest
+      - policy
+      - go
+      - worker-image
+      - dependency-review
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
@@ -263,7 +355,10 @@ jobs:
             ${{ needs.machine-specific-paths.result }}
             ${{ needs.eol-renormalize.result }}
             ${{ needs.zizmor.result }}
-            ${{ needs.image.result }}
+            ${{ needs.policy.result }}
+            ${{ needs.go.result }}
+            ${{ needs.worker-image.result }}
+            ${{ needs.dependency-review.result }}
         run: |
           for result in $RESULTS; do
             case "$result" in

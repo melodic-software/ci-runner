@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/melodic-software/ci-runner/blob/main/release/compatibility.schema.json",
+  "title": "ci-runner release compatibility manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "createdAt",
+    "releaseVersion",
+    "source",
+    "controller",
+    "worker",
+    "dependencies",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "releaseVersion": { "type": "string", "pattern": "^v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "sha"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "windowsArchive", "archiveDigest"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "windowsArchive": { "type": "string", "minLength": 1 },
+        "archiveDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "digest"],
+      "properties": {
+        "image": { "type": "string", "pattern": "^ghcr\\.io/" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runnerVersion",
+        "scaleSetClientVersion",
+        "scaleSetClientCommit",
+        "goToolchain",
+        "powerShellVersion",
+        "buildxVersion",
+        "buildxLinuxAmd64Sha256",
+        "buildKitVersion",
+        "buildKitDigest",
+        "buildKitLinuxAmd64Digest",
+        "sbomGeneratorVersion",
+        "sbomGeneratorDigest",
+        "sbomGeneratorLinuxAmd64Digest"
+      ],
+      "properties": {
+        "runnerVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "scaleSetClientVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "scaleSetClientCommit": { "$ref": "#/$defs/sha" },
+        "goToolchain": { "type": "string", "pattern": "^go[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "powerShellVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "buildxVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "buildxLinuxAmd64Sha256": { "$ref": "#/$defs/checksum" },
+        "buildKitVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "buildKitDigest": { "$ref": "#/$defs/digest" },
+        "buildKitLinuxAmd64Digest": { "$ref": "#/$defs/digest" },
+        "sbomGeneratorVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "sbomGeneratorDigest": { "$ref": "#/$defs/digest" },
+        "sbomGeneratorLinuxAmd64Digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checksums", "controllerSbom", "controllerProvenance", "workerSbom", "workerProvenance"],
+      "properties": {
+        "checksums": { "type": "string", "minLength": 1 },
+        "controllerSbom": { "type": "string", "minLength": 1 },
+        "controllerProvenance": { "type": "string", "minLength": 1 },
+        "workerSbom": { "type": "string", "minLength": 1 },
+        "workerProvenance": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
