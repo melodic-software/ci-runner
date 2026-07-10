@@ -12,7 +12,7 @@ require (
 	github.com/moby/moby/client v0.5.0
 	github.com/opencontainers/image-spec v1.1.1
 	go.yaml.in/yaml/v3 v3.0.4
-	golang.org/x/sys v0.42.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -29,8 +29,11 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
-	go.opentelemetry.io/otel/metric v1.39.0 // indirect
-	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	// Keep the Scale Set Client's OpenTelemetry family on one reviewed, patched release (GHSA-mh2q-q3fh-2475).
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.65.0 // indirect
+	go.opentelemetry.io/otel v1.43.0 // indirect
+	go.opentelemetry.io/otel/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 )
