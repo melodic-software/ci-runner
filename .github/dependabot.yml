@@ -12,6 +12,7 @@ updates:
   # the act-latest tag.
   - package-ecosystem: docker
     directory: /
+    labels: ["dependencies"]
     schedule:
       interval: weekly
     commit-message:
@@ -32,6 +33,7 @@ updates:
   # Keeps the SHA-pinned actions in .github/workflows/ current.
   - package-ecosystem: github-actions
     directory: /
+    labels: ["dependencies"]
     schedule:
       interval: weekly
     commit-message:
