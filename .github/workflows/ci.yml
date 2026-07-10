@@ -1,0 +1,274 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '30 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint Markdown
+        uses: melodic-software/ci-workflows/.github/actions/markdown@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          config: .markdownlint-cli2.jsonc
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint shell
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          rcfile: .shellcheckrc
+
+  shfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check shell formatting
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  typos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check spelling
+        uses: melodic-software/ci-workflows/.github/actions/typos@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          config: _typos.toml
+
+  editorconfig:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check EditorConfig conformance
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          config: .editorconfig-checker.json
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan for secrets
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          config: .gitleaks.toml
+
+  lychee:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check local links and anchors
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          config: lychee.toml
+
+  comment-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Scan comment hygiene
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  jsonschema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate Dependabot configuration
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          builtin-schema: vendor.dependabot
+          files: .github/dependabot.yml
+      - name: Validate workflows
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+        with:
+          builtin-schema: vendor.github-workflows
+          files: >-
+            .github/workflows/ci.yml
+            .github/workflows/link-check.yml
+            .github/workflows/pr-title.yml
+
+  exec-bit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check executable bits
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  machine-specific-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check machine-specific paths
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  eol-renormalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check index-level EOL drift
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+
+  zizmor:
+    permissions:
+      contents: read
+      security-events: write
+    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+    with:
+      paths: .
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+      - name: Build and publish image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  ci-status:
+    if: always()
+    needs:
+      - markdown
+      - shellcheck
+      - shfmt
+      - typos
+      - editorconfig
+      - gitleaks
+      - lychee
+      - comment-hygiene
+      - actionlint
+      - jsonschema
+      - exec-bit
+      - machine-specific-paths
+      - eol-renormalize
+      - zizmor
+      - image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Aggregate lane results
+        env:
+          RESULTS: >-
+            ${{ needs.markdown.result }}
+            ${{ needs.shellcheck.result }}
+            ${{ needs.shfmt.result }}
+            ${{ needs.typos.result }}
+            ${{ needs.editorconfig.result }}
+            ${{ needs.gitleaks.result }}
+            ${{ needs.lychee.result }}
+            ${{ needs.comment-hygiene.result }}
+            ${{ needs.actionlint.result }}
+            ${{ needs.jsonschema.result }}
+            ${{ needs.exec-bit.result }}
+            ${{ needs.machine-specific-paths.result }}
+            ${{ needs.eol-renormalize.result }}
+            ${{ needs.zizmor.result }}
+            ${{ needs.image.result }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "A lane did not pass (result: $result)."; exit 1 ;;
+            esac
+          done
+          echo "All lanes passed or were skipped."

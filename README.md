@@ -54,7 +54,8 @@ GitHub-hosted conventions.
   last published. Accepted: only this repo's merge-gated `main` publishes that
   tag and the org controls every link of that path (repo, workflow, GHCR
   package), so the float tracks our own reviewed publishes, not a third
-  party's. Revisit if publish rights ever widen beyond `publish.yml`.
+  party's. Revisit if publish rights ever widen beyond the image job in
+  `.github/workflows/ci.yml`.
 - **Accepted residual.** Workflows keep passwordless `sudo` (GitHub-hosted
   parity; medley's dotnet lane trusts its dev cert with it), and root can read
   PID 1's original environment — so a *malicious* job could recover the key.
@@ -97,9 +98,11 @@ GitHub-hosted conventions.
 
 ## Publishing
 
-`publish.yml` builds on every PR (validation only) and pushes `latest` +
-commit-SHA tags on merge to `main`, plus a weekly scheduled rebuild so the
-apt-installed layers stay patched between base-image digest bumps.
+The `image` job in `.github/workflows/ci.yml` builds on every PR (validation
+only) and pushes `latest` + commit-SHA tags on merge to `main`, plus a weekly
+scheduled rebuild so the apt-installed layers stay patched between base-image
+digest bumps. The same workflow supplies the repository's required
+`ci-status` aggregate check.
 
 `actions/runner` is pinned by version + checksum in the `Dockerfile`.
 Ephemeral runners cannot self-update and GitHub eventually refuses versions
