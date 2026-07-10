@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdown@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/markdown@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -38,7 +38,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           rcfile: .shellcheckrc
 
@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   typos:
     runs-on: ubuntu-latest
@@ -62,7 +62,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/typos@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           config: _typos.toml
 
@@ -75,7 +75,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           config: .editorconfig-checker.json
 
@@ -89,7 +89,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           config: .gitleaks.toml
 
@@ -102,7 +102,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           config: lychee.toml
 
@@ -115,7 +115,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   actionlint:
     runs-on: ubuntu-latest
@@ -126,7 +126,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   jsonschema:
     runs-on: ubuntu-latest
@@ -137,12 +137,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
         with:
           builtin-schema: vendor.github-workflows
           files: >-
@@ -159,7 +159,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   machine-specific-paths:
     runs-on: ubuntu-latest
@@ -170,7 +170,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   eol-renormalize:
     runs-on: ubuntu-latest
@@ -181,13 +181,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
 
   zizmor:
     permissions:
       contents: read
       security-events: write
-    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@e103a330577206213a4ebc0919029d2533c39cdb # e103a33 2026-07-10
+    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
     with:
       paths: .
 
