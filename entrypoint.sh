@@ -51,9 +51,8 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 now=$(date +%s)
 header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 300))" "$APP_CLIENT_ID" | b64url)
-signature=$(printf '%s.%s' "$header" "$payload" \
-  | openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY_B64" | base64 -d) -binary | b64url) \
-  || fail "JWT signing failed - is APP_PRIVATE_KEY_B64 a valid base64-encoded PEM?"
+signature=$(printf '%s.%s' "$header" "$payload" |
+  openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY_B64" | base64 -d) -binary | b64url)
 jwt="$header.$payload.$signature"
 # Drop the key from the live environment. PID 1's ORIGINAL environ remains
 # visible at /proc/1/environ to root only - acceptable because the job runs as
@@ -71,20 +70,23 @@ api() {
     "$@"
 }
 
-installation_id=$(api "$jwt" "https://api.github.com/orgs/$ORG/installation" | jq -er '.id') \
-  || fail "could not resolve the App installation for org $ORG"
+installation_response=$(api "$jwt" "https://api.github.com/orgs/$ORG/installation")
+installation_id=$(jq -er '.id' <<<"$installation_response") ||
+  fail "could not resolve the App installation for org $ORG"
 
 # Downscope the installation token to the one permission this flow needs, even
 # if the App itself ever grows more.
-token=$(api "$jwt" -X POST "https://api.github.com/app/installations/$installation_id/access_tokens" \
-  -d '{"permissions":{"organization_self_hosted_runners":"write"}}' | jq -er '.token') \
-  || fail "could not mint a downscoped installation token"
+token_response=$(api "$jwt" -X POST "https://api.github.com/app/installations/$installation_id/access_tokens" \
+  -d '{"permissions":{"organization_self_hosted_runners":"write"}}')
+token=$(jq -er '.token' <<<"$token_response") ||
+  fail "could not mint a downscoped installation token"
 
 # Single page: the org has a handful of runner groups (2 at the time of
 # writing); revisit with pagination only if that ever approaches 100.
-group_id=$(api "$token" "https://api.github.com/orgs/$ORG/actions/runner-groups?per_page=100" \
-  | jq -er --arg name "$RUNNER_GROUP" '.runner_groups[] | select(.name == $name) | .id') \
-  || fail "runner group '$RUNNER_GROUP' not found in org $ORG"
+groups_response=$(api "$token" "https://api.github.com/orgs/$ORG/actions/runner-groups?per_page=100")
+group_id=$(jq -er --arg name "$RUNNER_GROUP" \
+  '.runner_groups[] | select(.name == $name) | .id' <<<"$groups_response") ||
+  fail "runner group '$RUNNER_GROUP' not found in org $ORG"
 
 # Labels: comma-separated, whitespace-trimmed, empties dropped - so
 # "a, b," registers labels 'a' and 'b', not ' b' (which runs-on would miss).
@@ -95,11 +97,13 @@ jit_request=$(jq -cn \
   '{name: $name, runner_group_id: $group_id,
     labels: ($labels | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))}')
 
-encoded_jit_config=$(api "$token" -X POST "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
-  -d "$jit_request" | jq -er '.encoded_jit_config') \
-  || fail "generate-jitconfig failed for runner $RUNNER_NAME"
+jit_response=$(api "$token" -X POST "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
+  -d "$jit_request")
+encoded_jit_config=$(jq -er '.encoded_jit_config' <<<"$jit_response") ||
+  fail "generate-jitconfig failed for runner $RUNNER_NAME"
 
-unset token jwt signature payload
+unset token token_response jwt signature payload \
+  installation_response groups_response jit_response
 
 echo "registered JIT runner '$RUNNER_NAME' (group '$RUNNER_GROUP', labels '$RUNNER_LABELS'); waiting for one job"
 # Drop root for good: the runner - and every job step it spawns - runs as the
