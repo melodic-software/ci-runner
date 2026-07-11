@@ -9,7 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -62,10 +62,11 @@ type envelope struct {
 }
 
 type Importer struct {
-	Protector Protector
-	BitLocker BitLockerVerifier
-	ACL       AccessController
-	Now       func() time.Time
+	Protector  Protector
+	BitLocker  BitLockerVerifier
+	ACL        AccessController
+	Now        func() time.Time
+	RemoveFile func(string) error
 }
 
 func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string) (ImportResult, error) {
@@ -79,6 +80,16 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 	destinationDirectory := filepath.Dir(destinationPath)
 	if err := i.BitLocker.VerifyProtected(ctx, destinationDirectory); err != nil {
 		return ImportResult{}, fmt.Errorf("BitLocker precondition: %w", err)
+	}
+	sourceInfo, err := os.Lstat(sourcePath)
+	if err != nil {
+		return ImportResult{}, fmt.Errorf("inspect private-key source: %w", err)
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 {
+		return ImportResult{}, errors.New("private-key source must not be a symbolic link")
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return ImportResult{}, errors.New("private-key source must be a regular file")
 	}
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -135,11 +146,44 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 		return ImportResult{}, err
 	}
 	if err := i.ACL.Harden(destinationPath); err != nil {
-		_ = os.Remove(destinationPath)
-		return ImportResult{}, fmt.Errorf("secure protected secret: %w", err)
+		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("secure protected secret: %w", err))
+	}
+
+	// Prove the persisted envelope can be decrypted and parsed under the
+	// current identity before deleting the only plaintext source supplied by
+	// the operator. ACL hardening deliberately precedes this readback so a bad
+	// ACL transaction cannot strand an unusable protected credential.
+	loaded, metadata, err := (Store{Protector: i.Protector}).LoadPrivateKey(destinationPath)
+	if err != nil {
+		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("verify protected secret before removing plaintext source: %w", err))
+	}
+	clearRSAPrivateKey(loaded)
+	if metadata.Fingerprint != fingerprint || !metadata.ImportedAt.Equal(now) {
+		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, errors.New("verify protected secret before removing plaintext source: metadata mismatch"))
+	}
+	if err := ctx.Err(); err != nil {
+		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("import canceled before removing plaintext source: %w", err))
+	}
+
+	if err := i.removeFile(sourcePath); err != nil {
+		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("remove plaintext source %q: %w", sourcePath, err))
 	}
 
 	return ImportResult{Path: destinationPath, Fingerprint: fingerprint, ImportedAt: now}, nil
+}
+
+func (i Importer) removeFile(path string) error {
+	if i.RemoveFile != nil {
+		return i.RemoveFile(path)
+	}
+	return os.Remove(path)
+}
+
+func (i Importer) rollbackProtectedDestination(path string, cause error) error {
+	if err := i.removeFile(path); err != nil {
+		return fmt.Errorf("%w; also failed to roll back protected destination %q: %v; manual cleanup required", cause, path, err)
+	}
+	return fmt.Errorf("%w; protected destination rolled back", cause)
 }
 
 type Store struct {
@@ -300,13 +344,15 @@ func parseRSAPrivateKey(value []byte) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// publicKeyFingerprint matches GitHub's documented App-key fingerprint:
+// SHA-256 over the X.509 SubjectPublicKeyInfo DER, encoded with standard Base64.
 func publicKeyFingerprint(key *rsa.PublicKey) (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		return "", fmt.Errorf("marshal RSA public key: %w", err)
 	}
 	sum := sha256.Sum256(der)
-	return hex.EncodeToString(sum[:]), nil
+	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {

@@ -9,6 +9,9 @@ hard dependency.
 The production architecture is under implementation and must remain routed
 `hosted-only` until the canary gates pass. The former Compose/restart-in-place
 implementation is migration evidence only; it is not the supported lifecycle.
+Do not copy the retained `.env.example` or use `docker-compose.yml` to bootstrap
+a host or credential; the only production credential entry point is
+`ci-runner secret import --file PATH`.
 
 ## Runtime architecture
 
@@ -158,9 +161,29 @@ read-only. Personal-repository host credentials are introduced only after the
 organization soak gate.
 
 `ci-runner secret import` validates RSA PKCS#1/PKCS#8 PEM, BitLocker protection,
-current-user DPAPI protection, and exact current-user/SYSTEM ACLs. The key is
-decrypted only in controller memory. Rotation overlaps old and new keys until
-the new key can create a JIT runner, then revokes the old key.
+current-user DPAPI protection, and exact current-user/SYSTEM ACLs. Before it
+reports success, it reads the protected destination back under the current
+identity, verifies its fingerprint and import metadata, and removes the named
+plaintext source PEM. If source removal fails, the import fails and rolls back
+the new protected destination where possible; failures before source removal
+leave the PEM untouched for recovery. A rollback failure is reported as
+requiring manual cleanup and is never presented as success.
+
+The reported fingerprint is standard Base64 of the SHA-256 digest of the DER
+public key. This is the exact format produced by GitHub's documented
+[`openssl` verification command](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps#verifying-private-keys),
+so the CLI value can be compared directly with the fingerprint in the GitHub
+App's settings.
+
+Source cleanup is ordinary filesystem deletion. On Windows, deletion can fail
+for reasons such as an open handle, a read-only file, or insufficient access,
+and this product does not weaken those protections or silently continue; see
+Microsoft's [`DeleteFile` contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-deletefile).
+File deletion is not a forensic secure erase or a claim of media sanitization.
+Use an appropriate sanitization process when the storage medium is reused or
+disposed of, following [NIST SP 800-88 Rev. 2](https://csrc.nist.gov/pubs/sp/800/88/r2/final).
+The key is decrypted only in controller memory. Rotation overlaps old and new
+keys until the new key can create a JIT runner, then revokes the old key.
 
 The disposable worker necessarily contains its own decoded one-job runner
 credentials because that is how the stock GitHub runner connects and executes a

@@ -36,7 +36,9 @@ type fakeForceStopper struct {
 }
 
 type fakeSecretImporter struct {
+	source      string
 	destination string
+	err         error
 }
 
 type fakeControllerControl struct {
@@ -77,8 +79,12 @@ func (f *fakeTaskStarter) Start(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeSecretImporter) Import(_ context.Context, _, destination string) (secret.ImportResult, error) {
+func (f *fakeSecretImporter) Import(_ context.Context, source, destination string) (secret.ImportResult, error) {
+	f.source = source
 	f.destination = destination
+	if f.err != nil {
+		return secret.ImportResult{}, f.err
+	}
 	return secret.ImportResult{Path: destination, Fingerprint: "abc123", ImportedAt: time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC)}, nil
 }
 
@@ -266,17 +272,43 @@ func TestDegradedTimeoutHasDistinctExitCode(t *testing.T) {
 
 func TestSecretImportMapsConfiguredSecretIDToExactDPAPIPath(t *testing.T) {
 	store := state.NewMemoryStore()
-	application, _, _ := newTestApplication(t, "", store, nil)
+	application, out, _ := newTestApplication(t, "", store, nil)
 	importer := &fakeSecretImporter{}
 	application.dependencies.Secrets = importer
 	application.dependencies.Config.Paths.Secrets = `C:\Users\test\AppData\Local\ci-runner\secrets`
 	application.dependencies.Config.GitHub.Targets = []config.Target{{SecretID: "organization-host"}}
-	if code := application.Run(context.Background(), []string{"secret", "import", "--file", `C:\input.pem`}); code != ExitOK {
+	source := `C:\input.pem`
+	if code := application.Run(context.Background(), []string{"secret", "import", "--file", source}); code != ExitOK {
 		t.Fatalf("exit code %d", code)
 	}
 	want := `C:\Users\test\AppData\Local\ci-runner\secrets/organization-host.dpapi`
 	if strings.ReplaceAll(importer.destination, `\`, "/") != strings.ReplaceAll(want, `\`, "/") {
 		t.Fatalf("destination = %q, want %q", importer.destination, want)
+	}
+	if importer.source != source {
+		t.Fatalf("source = %q, want %q", importer.source, source)
+	}
+	if !strings.Contains(out.String(), "Plaintext source PEM removed") || !strings.Contains(out.String(), "not media sanitization") || !strings.Contains(out.String(), source) || !strings.Contains(out.String(), "GitHub App fingerprint (Base64 SHA-256)") {
+		t.Fatalf("success output does not disclose source-removal contract: %s", out.String())
+	}
+}
+
+func TestSecretImportDoesNotReportSuccessWhenSourceRemovalFails(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, out, errOut := newTestApplication(t, "", store, nil)
+	removeErr := errors.New("remove plaintext source: access denied")
+	application.dependencies.Secrets = &fakeSecretImporter{err: removeErr}
+	application.dependencies.Config.Paths.Secrets = `C:\Users\test\AppData\Local\ci-runner\secrets`
+	application.dependencies.Config.GitHub.Targets = []config.Target{{SecretID: "organization-host"}}
+
+	if code := application.Run(context.Background(), []string{"secret", "import", "--file", `C:\input.pem`}); code != ExitCredential {
+		t.Fatalf("exit code %d, want %d", code, ExitCredential)
+	}
+	if strings.Contains(out.String(), "Imported GitHub App key") || strings.Contains(out.String(), "Plaintext source PEM removed") {
+		t.Fatalf("failed import reported success: %s", out.String())
+	}
+	if !strings.Contains(errOut.String(), removeErr.Error()) {
+		t.Fatalf("failure output = %q, want %q", errOut.String(), removeErr.Error())
 	}
 }
 

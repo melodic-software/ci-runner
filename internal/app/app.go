@@ -410,7 +410,7 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 	}
 	flags := flag.NewFlagSet("secret import", flag.ContinueOnError)
 	flags.SetOutput(a.errOut)
-	file := flags.String("file", "", "RSA GitHub App private-key PEM")
+	file := flags.String("file", "", "RSA GitHub App private-key PEM (removed after a verified protected import)")
 	secretID := flags.String("id", "", "configured credential ID (prompted when more than one exists)")
 	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*file) == "" {
 		return ExitUsage
@@ -451,7 +451,7 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 		fmt.Fprintf(a.errOut, "import secret: %v\n", err)
 		return ExitCredential
 	}
-	fmt.Fprintf(a.out, "Imported GitHub App key\nFingerprint: %s\nProtected path: %s\nImported: %s\n", result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
+	fmt.Fprintf(a.out, "Imported GitHub App key\nPlaintext source PEM removed with ordinary filesystem deletion (not media sanitization): %s\nGitHub App fingerprint (Base64 SHA-256): %s\nProtected path: %s\nImported: %s\n", *file, result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
 	return ExitOK
 }
 
