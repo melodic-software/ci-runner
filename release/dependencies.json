@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-07-10T00:00:00Z",
+  "resolvedAt": "2026-07-11T00:00:00Z",
   "go": {
     "version": "1.26.5",
     "source": "https://go.dev/dl/?mode=json"
@@ -130,8 +130,8 @@
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "1d3762c2ace413db0f347048307946c46850161c",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/1d3762c2ace413db0f347048307946c46850161c"
+      "commit": "d87a5909b2d824320a019481a23324b83e73714c",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/d87a5909b2d824320a019481a23324b83e73714c"
     }
   ],
   "reusableWorkflows": []
