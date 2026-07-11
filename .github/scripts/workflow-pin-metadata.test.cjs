@@ -6,7 +6,7 @@ const test = require("node:test");
 const workflowDirectory = path.resolve(__dirname, "..", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
 const canonicalReference =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<shortSha>[0-9a-f]{7})\s+(?<date>\d{4}-\d{2}-\d{2})\s*$/;
+  /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 
 function workflowFiles(directory) {
   return fs
@@ -21,8 +21,9 @@ function workflowFiles(directory) {
     .sort();
 }
 
-test("ci-workflows references use a full SHA with truthful audit metadata", () => {
+test("ci-workflows references use a full SHA with one release version", () => {
   const references = [];
+  const versions = [];
 
   for (const file of workflowFiles(workflowDirectory)) {
     const lines = fs.readFileSync(file, "utf8").split(/\r?\n/u);
@@ -36,17 +37,8 @@ test("ci-workflows references use a full SHA with truthful audit metadata", () =
         match,
         `${path.relative(workflowDirectory, file)}:${index + 1} is not a canonical ci-workflows reference`,
       );
-      assert.equal(match.groups.shortSha, match.groups.sha.slice(0, 7));
-
-      const parsedDate = new Date(`${match.groups.date}T00:00:00.000Z`);
-      assert.equal(
-        Number.isNaN(parsedDate.valueOf())
-          ? null
-          : parsedDate.toISOString().slice(0, 10),
-        match.groups.date,
-        `${path.relative(workflowDirectory, file)}:${index + 1} has an invalid audit date`,
-      );
       references.push(match.groups.sha);
+      versions.push(match.groups.version);
     }
   }
 
@@ -55,5 +47,10 @@ test("ci-workflows references use a full SHA with truthful audit metadata", () =
     new Set(references).size,
     1,
     "ci-workflows references must move as one reviewed compatibility pin",
+  );
+  assert.equal(
+    new Set(versions).size,
+    1,
+    "ci-workflows references must name one release version for online pin verification",
   );
 });
