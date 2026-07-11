@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: read # Reusable checker reads repository Markdown.
       issues: write # Reusable checker maintains the scheduled failure issue.
-    uses: melodic-software/ci-workflows/.github/workflows/link-check.yml@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10
+    uses: melodic-software/ci-workflows/.github/workflows/link-check.yml@f96ba7b7daae06a31dc3b4cd0757980e6ef3b0fd # 1d3762c 2026-07-10
     with:
       args: >-
         --cache
