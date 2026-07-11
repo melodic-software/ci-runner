@@ -451,7 +451,7 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 		fmt.Fprintf(a.errOut, "import secret: %v\n", err)
 		return ExitCredential
 	}
-	fmt.Fprintf(a.out, "Imported GitHub App key\nPlaintext source PEM removed with ordinary filesystem deletion (not media sanitization): %s\nGitHub App fingerprint (Base64 SHA-256): %s\nProtected path: %s\nImported: %s\n", *file, result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
+	fmt.Fprintf(a.out, "Imported GitHub App key\nPlaintext source PEM removed with identity-bound ordinary filesystem deletion (not media sanitization): %s\nGitHub App fingerprint (Base64 SHA-256): %s\nProtected path: %s\nImported: %s\n", *file, result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
 	return ExitOK
 }
 

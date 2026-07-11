@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -47,6 +48,47 @@ func (f fakeBitLocker) VerifyProtected(context.Context, string) error { return f
 type fakeACL struct {
 	paths  []string
 	harden func(string) error
+}
+
+type testPrivateKeySource struct {
+	*bytes.Reader
+	commit func() error
+	close  func() error
+}
+
+func (s *testPrivateKeySource) CommitRemoval() error {
+	if s.commit == nil {
+		return nil
+	}
+	return s.commit()
+}
+
+func (s *testPrivateKeySource) Close() error {
+	if s.close == nil {
+		return nil
+	}
+	return s.close()
+}
+
+func testSourceOpener(t *testing.T, expectedPath string, commit func(string) error) func(string) (privateKeySource, error) {
+	t.Helper()
+	return func(path string) (privateKeySource, error) {
+		if path != expectedPath {
+			return nil, fmt.Errorf("source path = %q, want %q", path, expectedPath)
+		}
+		value, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		commitFile := commit
+		if commitFile == nil {
+			commitFile = os.Remove
+		}
+		return &testPrivateKeySource{
+			Reader: bytes.NewReader(value),
+			commit: func() error { return commitFile(path) },
+		}, nil
+	}
 }
 
 func (f *fakeACL) Harden(path string) error {
@@ -91,10 +133,10 @@ func TestImporterAcceptsPKCS1AndPKCS8WithoutPersistingPlaintext(t *testing.T) {
 				BitLocker: fakeBitLocker{},
 				ACL:       acl,
 				Now:       func() time.Time { return time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC) },
-				RemoveFile: func(path string) error {
+				openSource: testSourceOpener(t, source, func(path string) error {
 					events = append(events, "remove:"+path)
 					return os.Remove(path)
-				},
+				}),
 			}
 			result, err := importer.Import(context.Background(), source, destination)
 			if err != nil {
@@ -109,6 +151,13 @@ func TestImporterAcceptsPKCS1AndPKCS8WithoutPersistingPlaintext(t *testing.T) {
 			}
 			if bytes.Contains(stored, []byte("PRIVATE KEY")) || bytes.Contains(stored, keyPEM) {
 				t.Fatal("protected file contains plaintext key material")
+			}
+			var persisted envelope
+			if err := json.Unmarshal(stored, &persisted); err != nil {
+				t.Fatalf("decode persisted envelope: %v", err)
+			}
+			if persisted.SchemaVersion != secretSchemaVersion || persisted.Fingerprint != result.Fingerprint {
+				t.Fatalf("new import envelope = schema %d fingerprint %q, want v%d canonical fingerprint %q", persisted.SchemaVersion, persisted.Fingerprint, secretSchemaVersion, result.Fingerprint)
 			}
 			store := Store{Protector: reversibleProtector{}, Directory: destinationDirectory}
 			loaded, metadata, err := store.LoadPrivateKey(result.Path)
@@ -149,7 +198,7 @@ func TestImporterAcceptsPKCS1AndPKCS8WithoutPersistingPlaintext(t *testing.T) {
 	}
 }
 
-func TestImporterSourceRemovalFailureRollsBackProtectedDestination(t *testing.T) {
+func TestImporterSourceRemovalFailurePreservesProtectedDestinationForManualCleanup(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "input.pem")
 	wantSource := writeTestPrivateKey(t, source)
@@ -157,25 +206,75 @@ func TestImporterSourceRemovalFailureRollsBackProtectedDestination(t *testing.T)
 	removeErr := errors.New("source is still open")
 
 	_, err := (Importer{
-		Protector: reversibleProtector{},
-		BitLocker: fakeBitLocker{},
-		ACL:       &fakeACL{},
-		RemoveFile: func(path string) error {
-			if path == source {
-				return removeErr
-			}
-			return os.Remove(path)
-		},
+		Protector:  reversibleProtector{},
+		BitLocker:  fakeBitLocker{},
+		ACL:        &fakeACL{},
+		openSource: testSourceOpener(t, source, func(string) error { return removeErr }),
 	}).Import(context.Background(), source, destination)
-	if !errors.Is(err, removeErr) || !strings.Contains(err.Error(), "protected destination rolled back") {
-		t.Fatalf("expected source-removal failure with rollback, got %v", err)
+	if !errors.Is(err, removeErr) || !strings.Contains(err.Error(), "protected destination") || !strings.Contains(err.Error(), "retained") || !strings.Contains(err.Error(), "manual cleanup required") {
+		t.Fatalf("expected source-removal failure with retained destination, got %v", err)
 	}
 	gotSource, readErr := os.ReadFile(source)
 	if readErr != nil || !bytes.Equal(gotSource, wantSource) {
 		t.Fatalf("failed import did not preserve source: read=%v equal=%t", readErr, bytes.Equal(gotSource, wantSource))
 	}
-	if _, statErr := os.Lstat(destination); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("protected destination survived rollback: %v", statErr)
+	if _, _, loadErr := (Store{Protector: reversibleProtector{}}).LoadPrivateKey(destination); loadErr != nil {
+		t.Fatalf("verified protected destination was not retained: %v", loadErr)
+	}
+}
+
+func TestImporterNeverDeletesReplacementWhenSourceIdentityBecomesAmbiguous(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		replacement bool
+	}{
+		{name: "pathname replaced", replacement: true},
+		{name: "pathname missing", replacement: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			source := filepath.Join(directory, "input.pem")
+			original := writeTestPrivateKey(t, source)
+			moved := filepath.Join(directory, "original-moved.pem")
+			destination := filepath.Join(directory, "secrets", "organization-host.dpapi")
+			replacement := []byte("replacement must never be deleted")
+			identityErr := errors.New("source pathname identity changed")
+
+			_, err := (Importer{
+				Protector: reversibleProtector{},
+				BitLocker: fakeBitLocker{},
+				ACL:       &fakeACL{},
+				openSource: testSourceOpener(t, source, func(string) error {
+					if err := os.Rename(source, moved); err != nil {
+						return err
+					}
+					if test.replacement {
+						if err := os.WriteFile(source, replacement, 0o600); err != nil {
+							return err
+						}
+					}
+					return identityErr
+				}),
+			}).Import(context.Background(), source, destination)
+			if !errors.Is(err, identityErr) || !strings.Contains(err.Error(), "manual cleanup required") || !strings.Contains(err.Error(), "retained") {
+				t.Fatalf("expected conservative identity failure, got %v", err)
+			}
+			gotOriginal, readErr := os.ReadFile(moved)
+			if readErr != nil || !bytes.Equal(gotOriginal, original) {
+				t.Fatalf("original source was not preserved: read=%v equal=%t", readErr, bytes.Equal(gotOriginal, original))
+			}
+			if test.replacement {
+				gotReplacement, readErr := os.ReadFile(source)
+				if readErr != nil || !bytes.Equal(gotReplacement, replacement) {
+					t.Fatalf("replacement was changed or deleted: read=%v equal=%t", readErr, bytes.Equal(gotReplacement, replacement))
+				}
+			} else if _, statErr := os.Lstat(source); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("source pathname unexpectedly recreated: %v", statErr)
+			}
+			if _, _, loadErr := (Store{Protector: reversibleProtector{}}).LoadPrivateKey(destination); loadErr != nil {
+				t.Fatalf("protected destination was not retained: %v", loadErr)
+			}
+		})
 	}
 }
 
@@ -184,25 +283,28 @@ func TestImporterReportsProtectedDestinationRollbackFailure(t *testing.T) {
 	source := filepath.Join(directory, "input.pem")
 	writeTestPrivateKey(t, source)
 	destination := filepath.Join(directory, "secrets", "organization-host.dpapi")
-	removeErr := errors.New("source is still open")
+	secureErr := errors.New("destination ACL denied")
 	rollbackErr := errors.New("destination ACL denies deletion")
+	acl := &fakeACL{harden: func(path string) error {
+		if path == destination {
+			return secureErr
+		}
+		return nil
+	}}
 
 	_, err := (Importer{
-		Protector: reversibleProtector{},
-		BitLocker: fakeBitLocker{},
-		ACL:       &fakeACL{},
+		Protector:  reversibleProtector{},
+		BitLocker:  fakeBitLocker{},
+		ACL:        acl,
+		openSource: testSourceOpener(t, source, nil),
 		RemoveFile: func(path string) error {
-			switch path {
-			case source:
-				return removeErr
-			case destination:
+			if path == destination {
 				return rollbackErr
-			default:
-				return fmt.Errorf("unexpected removal path %q", path)
 			}
+			return fmt.Errorf("unexpected removal path %q", path)
 		},
 	}).Import(context.Background(), source, destination)
-	if !errors.Is(err, removeErr) || !strings.Contains(err.Error(), rollbackErr.Error()) || !strings.Contains(err.Error(), "manual cleanup required") {
+	if !errors.Is(err, secureErr) || !strings.Contains(err.Error(), rollbackErr.Error()) || !strings.Contains(err.Error(), "manual cleanup required") {
 		t.Fatalf("expected source and rollback failures, got %v", err)
 	}
 	if _, statErr := os.Lstat(source); statErr != nil {
@@ -222,9 +324,10 @@ func TestImporterVerifiesProtectedDestinationBeforeRemovingSource(t *testing.T) 
 	removed := make([]string, 0, 1)
 
 	_, err := (Importer{
-		Protector: failingUnprotectProtector{err: verifyErr},
-		BitLocker: fakeBitLocker{},
-		ACL:       &fakeACL{},
+		Protector:  failingUnprotectProtector{err: verifyErr},
+		BitLocker:  fakeBitLocker{},
+		ACL:        &fakeACL{},
+		openSource: testSourceOpener(t, source, nil),
 		RemoveFile: func(path string) error {
 			removed = append(removed, path)
 			return os.Remove(path)
@@ -253,9 +356,10 @@ func TestImporterCancellationBeforeSourceRemovalPreservesSource(t *testing.T) {
 	cancel()
 
 	_, err := (Importer{
-		Protector: reversibleProtector{},
-		BitLocker: fakeBitLocker{},
-		ACL:       &fakeACL{},
+		Protector:  reversibleProtector{},
+		BitLocker:  fakeBitLocker{},
+		ACL:        &fakeACL{},
+		openSource: testSourceOpener(t, source, nil),
 	}).Import(ctx, source, destination)
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "before removing plaintext source") {
 		t.Fatalf("expected pre-removal cancellation, got %v", err)
@@ -365,6 +469,154 @@ OTJ2QmLimlpnrMDwTbdY7FoYGHUS6y2yshMrow6oQZ3zJmbg4Lrt6XqV2HjKmaeh
 	const want = "2YdLSoCbzyTyBhMUy0/F8IdGR2MEd9tDpSUIV0mrAhI="
 	if got != want {
 		t.Fatalf("fingerprint = %q, want GitHub-compatible Base64 %q", got, want)
+	}
+}
+
+func TestStoreLoadsLegacyV1HexFingerprintAndReturnsCanonicalBase64(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "legacy.dpapi")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFingerprint, err := legacyPublicKeyFingerprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalFingerprint, err := publicKeyFingerprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := (reversibleProtector{}).Protect(der, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := json.Marshal(envelope{
+		SchemaVersion: legacySecretSchemaVersion,
+		Algorithm:     secretAlgorithm,
+		Encoding:      secretEncoding,
+		Fingerprint:   legacyFingerprint,
+		ImportedAt:    time.Date(2026, 7, 1, 1, 2, 3, 0, time.UTC),
+		Ciphertext:    ciphertext,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, value, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, metadata, err := (Store{Protector: reversibleProtector{}}).LoadPrivateKey(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKey legacy v1: %v", err)
+	}
+	defer clearRSAPrivateKey(loaded)
+	if loaded.N.Cmp(key.N) != 0 {
+		t.Fatal("legacy v1 key changed during load")
+	}
+	if metadata.Fingerprint != canonicalFingerprint {
+		t.Fatalf("reported fingerprint = %q, want canonical Base64 %q", metadata.Fingerprint, canonicalFingerprint)
+	}
+}
+
+func TestStoreFingerprintEncodingIsBoundToEnvelopeSchema(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFingerprint, _ := legacyPublicKeyFingerprint(&key.PublicKey)
+	canonicalFingerprint, _ := publicKeyFingerprint(&key.PublicKey)
+	ciphertext, _ := (reversibleProtector{}).Protect(der, "test")
+	for _, test := range []struct {
+		name        string
+		schema      int
+		fingerprint string
+	}{
+		{name: "v1 rejects Base64", schema: legacySecretSchemaVersion, fingerprint: canonicalFingerprint},
+		{name: "v2 rejects hex", schema: secretSchemaVersion, fingerprint: legacyFingerprint},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secret.dpapi")
+			value, err := json.Marshal(envelope{
+				SchemaVersion: test.schema,
+				Algorithm:     secretAlgorithm,
+				Encoding:      secretEncoding,
+				Fingerprint:   test.fingerprint,
+				ImportedAt:    time.Now().UTC(),
+				Ciphertext:    ciphertext,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, value, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := (Store{Protector: reversibleProtector{}}).LoadPrivateKey(path); err == nil || !strings.Contains(err.Error(), "fingerprint mismatch") {
+				t.Fatalf("expected schema-bound fingerprint rejection, got %v", err)
+			}
+		})
+	}
+}
+
+type failingExclusiveFile struct {
+	writeErr error
+	syncErr  error
+	closeErr error
+}
+
+func (f *failingExclusiveFile) Write(value []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return len(value), nil
+}
+
+func (f *failingExclusiveFile) Sync() error  { return f.syncErr }
+func (f *failingExclusiveFile) Close() error { return f.closeErr }
+
+func TestWriteExclusiveSurfacesCleanupFailuresForManualCleanup(t *testing.T) {
+	writeErr := errors.New("write failed")
+	syncErr := errors.New("sync failed")
+	closeErr := errors.New("close failed")
+	cleanupErr := errors.New("remove failed")
+	for _, test := range []struct {
+		name string
+		file *failingExclusiveFile
+		want error
+	}{
+		{name: "write", file: &failingExclusiveFile{writeErr: writeErr}, want: writeErr},
+		{name: "sync", file: &failingExclusiveFile{syncErr: syncErr}, want: syncErr},
+		{name: "close", file: &failingExclusiveFile{closeErr: closeErr}, want: closeErr},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			removed := 0
+			err := writeExclusiveWith("protected.dpapi", []byte("ciphertext"),
+				func(path string, flags int, mode os.FileMode) (exclusiveFile, error) {
+					if path != "protected.dpapi" || flags&os.O_EXCL == 0 || mode != 0o600 {
+						t.Fatalf("unexpected exclusive-open contract: path=%q flags=%d mode=%#o", path, flags, mode)
+					}
+					return test.file, nil
+				},
+				func(string) error {
+					removed++
+					return cleanupErr
+				},
+			)
+			if !errors.Is(err, test.want) || !strings.Contains(err.Error(), cleanupErr.Error()) || !strings.Contains(err.Error(), "manual cleanup required") {
+				t.Fatalf("expected primary and cleanup diagnostics, got %v", err)
+			}
+			if removed != 1 {
+				t.Fatalf("cleanup removal attempts = %d, want 1", removed)
+			}
+		})
 	}
 }
 

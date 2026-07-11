@@ -163,11 +163,17 @@ organization soak gate.
 `ci-runner secret import` validates RSA PKCS#1/PKCS#8 PEM, BitLocker protection,
 current-user DPAPI protection, and exact current-user/SYSTEM ACLs. Before it
 reports success, it reads the protected destination back under the current
-identity, verifies its fingerprint and import metadata, and removes the named
-plaintext source PEM. If source removal fails, the import fails and rolls back
-the new protected destination where possible; failures before source removal
-leave the PEM untouched for recovery. A rollback failure is reported as
-requiring manual cleanup and is never presented as success.
+identity and verifies its fingerprint and import metadata. On Windows, the
+import keeps the exact source file open with read and delete access while
+withholding write/delete sharing. It rechecks that file identity at commit and
+uses handle-bound deletion, so a moved, missing, or replacement pathname is
+never deleted as though it were the imported PEM. If that identity check or
+deletion is ambiguous, the verified DPAPI destination is retained and the
+command fails with explicit manual-cleanup instructions. Failures before the
+source-deletion commit leave the PEM untouched and roll back the destination
+where possible. Any failed rollback or incomplete exclusive write that cannot
+be removed is also reported as requiring manual cleanup and is never presented
+as success.
 
 The reported fingerprint is standard Base64 of the SHA-256 digest of the DER
 public key. This is the exact format produced by GitHub's documented
@@ -175,10 +181,21 @@ public key. This is the exact format produced by GitHub's documented
 so the CLI value can be compared directly with the fingerprint in the GitHub
 App's settings.
 
+Protected-secret schema v2 records that Base64 fingerprint. The loader remains
+backward compatible with schema v1 files, which stored the same SPKI SHA-256
+digest as lowercase hexadecimal, and reports their fingerprint in canonical
+Base64 after validation. New imports never write the legacy representation.
+
 Source cleanup is ordinary filesystem deletion. On Windows, deletion can fail
-for reasons such as an open handle, a read-only file, or insufficient access,
-and this product does not weaken those protections or silently continue; see
-Microsoft's [`DeleteFile` contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-deletefile).
+for reasons such as an incompatible open handle, a read-only file, or
+insufficient access, and this product does not weaken those protections or
+silently continue. The identity lock follows Microsoft's documented
+[`CreateFile` sharing contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+where withholding delete sharing also prevents rename, and commit uses
+[`SetFileInformationByHandle`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+with `FileDispositionInfo`, which requires delete access and deletes the opened
+file object when its handle closes. Import is deliberately Windows-only; it
+does not emulate this guarantee with a pathname-only unlink on other systems.
 File deletion is not a forensic secure erase or a claim of media sanitization.
 Use an appropriate sanitization process when the storage medium is reused or
 disposed of, following [NIST SP 800-88 Rev. 2](https://csrc.nist.gov/pubs/sp/800/88/r2/final).

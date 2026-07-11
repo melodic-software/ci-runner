@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -26,9 +27,10 @@ import (
 )
 
 const (
-	secretSchemaVersion = 1
-	secretAlgorithm     = "DPAPI-CurrentUser"
-	secretEncoding      = "PKCS8-DER"
+	legacySecretSchemaVersion = 1
+	secretSchemaVersion       = 2
+	secretAlgorithm           = "DPAPI-CurrentUser"
+	secretEncoding            = "PKCS8-DER"
 )
 
 var secretIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -67,9 +69,10 @@ type Importer struct {
 	ACL        AccessController
 	Now        func() time.Time
 	RemoveFile func(string) error
+	openSource func(string) (privateKeySource, error)
 }
 
-func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string) (ImportResult, error) {
+func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string) (result ImportResult, resultErr error) {
 	if i.Protector == nil || i.BitLocker == nil || i.ACL == nil {
 		return ImportResult{}, errors.New("secret importer dependencies are incomplete")
 	}
@@ -81,17 +84,26 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 	if err := i.BitLocker.VerifyProtected(ctx, destinationDirectory); err != nil {
 		return ImportResult{}, fmt.Errorf("BitLocker precondition: %w", err)
 	}
-	sourceInfo, err := os.Lstat(sourcePath)
+	opener := i.openSource
+	if opener == nil {
+		opener = openPrivateKeySource
+	}
+	source, err := opener(sourcePath)
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("inspect private-key source: %w", err)
+		return ImportResult{}, fmt.Errorf("open identity-locked private-key source: %w", err)
 	}
-	if sourceInfo.Mode()&os.ModeSymlink != 0 {
-		return ImportResult{}, errors.New("private-key source must not be a symbolic link")
-	}
-	if !sourceInfo.Mode().IsRegular() {
-		return ImportResult{}, errors.New("private-key source must be a regular file")
-	}
-	raw, err := os.ReadFile(sourcePath)
+	defer func() {
+		if err := source.Close(); err != nil {
+			closeErr := fmt.Errorf("close identity-locked private-key source: %w", err)
+			if resultErr == nil {
+				result = ImportResult{}
+				resultErr = closeErr
+			} else {
+				resultErr = errors.Join(resultErr, closeErr)
+			}
+		}
+	}()
+	raw, err := io.ReadAll(source)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("read private key: %w", err)
 	}
@@ -165,8 +177,13 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("import canceled before removing plaintext source: %w", err))
 	}
 
-	if err := i.removeFile(sourcePath); err != nil {
-		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("remove plaintext source %q: %w", sourcePath, err))
+	// Commit deletion through the same identity-bound source handle used for
+	// parsing. A pathname mismatch, disappearance, or deletion failure is
+	// deliberately ambiguous: retain the already verified DPAPI destination
+	// and require the operator to inspect both paths. Never fall back to
+	// deleting sourcePath by name because it may now name a replacement file.
+	if err := source.CommitRemoval(); err != nil {
+		return ImportResult{}, fmt.Errorf("remove original plaintext source %q without deleting a replacement: %w; protected destination %q retained; manual cleanup required", sourcePath, err, destinationPath)
 	}
 
 	return ImportResult{Path: destinationPath, Fingerprint: fingerprint, ImportedAt: now}, nil
@@ -270,7 +287,7 @@ func (s Store) LoadPrivateKey(path string) (*rsa.PrivateKey, ImportResult, error
 	if err := requireJSONEOF(decoder); err != nil {
 		return nil, ImportResult{}, err
 	}
-	if value.SchemaVersion != secretSchemaVersion || value.Algorithm != secretAlgorithm || value.Encoding != secretEncoding {
+	if (value.SchemaVersion != legacySecretSchemaVersion && value.SchemaVersion != secretSchemaVersion) || value.Algorithm != secretAlgorithm || value.Encoding != secretEncoding {
 		return nil, ImportResult{}, errors.New("unsupported protected-secret format")
 	}
 	if value.ImportedAt.IsZero() {
@@ -296,7 +313,14 @@ func (s Store) LoadPrivateKey(path string) (*rsa.PrivateKey, ImportResult, error
 	if err != nil {
 		return nil, ImportResult{}, err
 	}
-	if fingerprint != value.Fingerprint {
+	recordedFingerprint := fingerprint
+	if value.SchemaVersion == legacySecretSchemaVersion {
+		recordedFingerprint, err = legacyPublicKeyFingerprint(&key.PublicKey)
+		if err != nil {
+			return nil, ImportResult{}, err
+		}
+	}
+	if recordedFingerprint != value.Fingerprint {
 		return nil, ImportResult{}, errors.New("protected-secret fingerprint mismatch")
 	}
 	return key, ImportResult{Path: path, Fingerprint: fingerprint, ImportedAt: value.ImportedAt}, nil
@@ -355,6 +379,18 @@ func publicKeyFingerprint(key *rsa.PublicKey) (string, error) {
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
+// legacyPublicKeyFingerprint preserves read compatibility with schema v1
+// envelopes, which recorded the same SPKI SHA-256 digest as lowercase hex.
+// New imports always use schema v2 and GitHub's standard-Base64 presentation.
+func legacyPublicKeyFingerprint(key *rsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return "", fmt.Errorf("marshal RSA public key: %w", err)
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func requireJSONEOF(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); err == nil {
@@ -365,31 +401,63 @@ func requireJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
+type exclusiveFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type openExclusiveFile func(string, int, os.FileMode) (exclusiveFile, error)
+
 func writeExclusive(path string, value []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return writeExclusiveWith(path, value,
+		func(path string, flags int, mode os.FileMode) (exclusiveFile, error) {
+			return os.OpenFile(path, flags, mode)
+		},
+		os.Remove,
+	)
+}
+
+func writeExclusiveWith(path string, value []byte, openFile openExclusiveFile, removeFile func(string) error) error {
+	file, err := openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("protected secret %q already exists; imports never overwrite an existing key", path)
 		}
 		return fmt.Errorf("create protected secret: %w", err)
 	}
-	ok := false
-	defer func() {
-		_ = file.Close()
-		if !ok {
-			_ = os.Remove(path)
+	cleanupFailure := func(cause error) error {
+		closeErr := file.Close()
+		removeErr := removeFile(path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
 		}
-	}()
-	if _, err := file.Write(value); err != nil {
-		return fmt.Errorf("write protected secret: %w", err)
+		if removeErr != nil {
+			return fmt.Errorf("%w; cleanup of incomplete protected destination %q failed (close: %v; remove: %v); manual cleanup required", cause, path, closeErr, removeErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("%w; incomplete protected destination removed after close also failed: %v", cause, closeErr)
+		}
+		return fmt.Errorf("%w; incomplete protected destination removed", cause)
+	}
+	if written, err := file.Write(value); err != nil {
+		return cleanupFailure(fmt.Errorf("write protected secret: %w", err))
+	} else if written != len(value) {
+		return cleanupFailure(fmt.Errorf("write protected secret: %w", io.ErrShortWrite))
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("flush protected secret: %w", err)
+		return cleanupFailure(fmt.Errorf("flush protected secret: %w", err))
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close protected secret: %w", err)
+		removeErr := removeFile(path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		if removeErr != nil {
+			return fmt.Errorf("close protected secret: %w; cleanup of incomplete protected destination %q failed: %v; manual cleanup required", err, path, removeErr)
+		}
+		return fmt.Errorf("close protected secret: %w; incomplete protected destination removed", err)
 	}
-	ok = true
 	return nil
 }
 
