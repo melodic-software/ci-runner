@@ -223,3 +223,4 @@ needed, then rerun affected workflows hosted.
 - [Worker image and isolation contract](docs/worker-image.md)
 - [Queue-monitor behavior and scheduler limits](docs/queue-monitor.md)
 - [Immutable releases, freshness, and rollback](docs/releases.md)
+- [Deferred capabilities and non-workaround boundaries](docs/roadmap.md)
