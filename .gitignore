@@ -1,2 +1,7 @@
-# Host-local runner config: holds the App client ID and the private-key path.
+# Host-local legacy runner config. Remove this rule with the legacy Compose
+# implementation after the live cutover; never commit its credential content.
 .env
+
+# Generated release and scheduled-monitor evidence.
+dist/
+dependency-drift.json

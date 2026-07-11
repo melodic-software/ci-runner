@@ -3,10 +3,16 @@ name: pr-title
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  merge_group:
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pr-title:
+    permissions:
+      pull-requests: read # Reusable semantic-title gate requires no write permission.
     uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@1d3762c2ace413db0f347048307946c46850161c # 1d3762c 2026-07-10

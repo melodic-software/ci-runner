@@ -1,46 +1,62 @@
-# Dependabot keeps this repo's pins current with REVIEWED pull requests; never
-# auto-merge (a base-image or action bump is executable CI/runner code) - that
-# human review is the gate. Both ecosystems also request a 7-day cooldown so a
-# compromised or yanked release ages out before it is even proposed (security
-# advisories bypass it). Caveat: Dependabot does not currently honor cooldown
-# for the docker ecosystem (dependabot/dependabot-core#15446), so for the base
-# image that delay is best-effort until upstream fixes it - the reviewed-PR gate
-# is what actually holds meanwhile.
 version: 2
 updates:
-  # Bumps the Dockerfile's digest-pinned catthehacker base when upstream moves
-  # the act-latest tag.
+  - package-ecosystem: gomod
+    directory: /
+    labels: ["dependencies"]
+    schedule:
+      interval: daily
+      time: '05:20'
+      timezone: America/New_York
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
+    groups:
+      actions-scale-set-client:
+        patterns:
+          - github.com/actions/scaleset
+      go-production:
+        dependency-type: production
+        patterns:
+          - '*'
+        exclude-patterns:
+          - github.com/actions/scaleset
+
   - package-ecosystem: docker
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: weekly
-    commit-message:
-      prefix: build
+      interval: daily
+      time: '05:30'
+      timezone: America/New_York
     cooldown:
       default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
     ignore:
-      # docker-compose.yml floats ghcr.io/melodic-software/ci-runner:latest by
-      # design (pull_policy: always; first-party image published by this repo) -
-      # Dependabot must not pin or bump it. Only the third-party catthehacker
-      # base in the Dockerfile is managed by this ecosystem entry.
-      - dependency-name: "ghcr.io/melodic-software/ci-runner"
+      # Legacy Compose is retained only until the canary proves the new
+      # controller. It must never drive a mutable deployment update.
+      - dependency-name: ghcr.io/melodic-software/ci-runner
     groups:
-      docker:
+      worker-image:
         patterns:
-          - "*"
+          - '*'
 
-  # Keeps the SHA-pinned actions in .github/workflows/ current.
   - package-ecosystem: github-actions
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: weekly
-    commit-message:
-      prefix: build
+      interval: daily
+      time: '05:40'
+      timezone: America/New_York
     cooldown:
       default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
     groups:
       github-actions:
         patterns:
-          - "*"
+          - '*'

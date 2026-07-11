@@ -1,8 +1,13 @@
-# Fleet of ephemeral JIT runners. Each container registers, runs exactly one
-# job, and exits; `restart: always` re-registers it fresh — that restart loop
-# IS the runner lifecycle. Configure via a host-local .env (see .env.example);
-# the App private key travels base64-encoded in the environment (never a file
-# on the container), device-bound to this host and revocable per host.
+# LEGACY MIGRATION EVIDENCE ONLY. DO NOT DEPLOY OR USE THIS FILE TO BOOTSTRAP
+# CREDENTIALS. The production controller imports a source PEM through
+# `ci-runner secret import`, writes and ACL-hardens its current-user DPAPI
+# destination, verifies it by readback, then removes the named plaintext source
+# before reporting success.
+#
+# The former fleet registered one JIT runner per container and used
+# `restart: always` as its lifecycle. It passed a reusable App private key in
+# the container environment through a host-local .env. These files remain only
+# until live cutover proof permits their deletion.
 services:
   runner:
     image: ghcr.io/melodic-software/ci-runner:latest

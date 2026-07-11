@@ -1,0 +1,10 @@
+paths:
+  .github/workflows/release.yml:
+    # actionlint v1.7.12 and its current main parser predate GitHub's official
+    # May 2026 concurrency.queue syntax. Test-ReleasePins.ps1 independently
+    # requires the exact `queue: max` value; no other diagnostic is suppressed.
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/dependency-drift.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

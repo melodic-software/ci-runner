@@ -1,117 +1,266 @@
 # ci-runner
 
-Self-hosted GitHub Actions runner image — primary CI compute for the org's
-**private** repos, with GitHub-hosted fallback. Published to
-`ghcr.io/melodic-software/ci-runner`.
+`ci-runner` is the Windows host controller and disposable Linux worker image
+for a small, demand-scaled GitHub Actions fleet. Its purpose is to move eligible
+private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
+`melo-lap-001` without creating a second CI contract or making local capacity a
+hard dependency.
 
-## How it works
+The production architecture is under implementation and must remain routed
+`hosted-only` until the canary gates pass. The former Compose/restart-in-place
+implementation is migration evidence only; it is not the supported lifecycle.
+Do not copy the retained `.env.example` or use `docker-compose.yml` to bootstrap
+a host or credential; the only production credential entry point is
+`ci-runner secret import --file PATH`.
 
-Each container is an **ephemeral just-in-time runner**: on start,
-`entrypoint.sh` authenticates as a GitHub App, mints an installation token
-downscoped to `organization_self_hosted_runners: write`, resolves the
-`self-hosted` runner group, requests a JIT runner config, and `exec`s the
-runner. A JIT runner accepts **exactly one job** and exits; Docker's
-`restart: always` then starts a fresh container, which registers anew. Every
-job therefore gets a clean environment, and no long-lived registration token
-or runner state survives between jobs.
+## Runtime architecture
 
-The image is `ghcr.io/catthehacker/ubuntu:act-latest` (the toolchain most
-actions expect) plus a pinned [`actions/runner`](https://github.com/actions/runner)
-and a non-root `runner` user (uid 1001, passwordless sudo) mirroring
-GitHub-hosted conventions.
+```mermaid
+flowchart LR
+    W["Reusable workflow selector"] -->|"idle managed runner"| S["Host-owned scale sets"]
+    W -->|"no safe idle capacity or rerun"| H["GitHub-hosted ubuntu-24.04"]
+    S --> C1["Windows controller\nmelo-desk-001"]
+    S --> C2["Windows controller\nmelo-lap-001"]
+    C1 --> D1["Fresh one-job Linux containers"]
+    C2 --> D2["Fresh one-job Linux containers"]
+```
 
-## Security model
+Each host owns an independent scale-set ID and listener session. Organization
+hosts advertise the same workflow label, so GitHub can distribute work and
+reassign a job before acquisition if one host disappears. The controller uses
+GitHub's official [Runner Scale Set Client](https://github.com/actions/scaleset)
+outside Kubernetes and scales from its authoritative `TotalAssignedJobs`
+statistic.
 
-- **Private repos only.** The `self-hosted` org runner group (governed by
-  [`github-iac`](https://github.com/melodic-software/github-iac)) blocks
-  public repositories, so fork PRs can never reach these hosts. Everything
-  that runs here is this org's own first-party code — that trust assumption
-  underpins the rest of this section.
-- **GitHub App, not PATs.** The only durable credential is the App's private
-  key — device-bound, one per host, revocable per host. Everything else (JWT,
-  installation token, JIT config) is minted per container start and dies with
-  it.
-- **Least privilege.** The App needs only the organization
-  **Self-hosted runners: write** permission, and the installation token is
-  downscoped to exactly that at mint time. A stolen key can register rogue
-  runners — nothing else — and revoking that host's key ends it.
-- **Key handling.** The key reaches the container base64-encoded in the
-  environment, is consumed via process substitution for one JWT signature
-  (never written to any filesystem), and is dropped from the live environment
-  before the job starts. The entrypoint holds it as root; the runner — and
-  every job step — runs de-privileged as `runner`.
-- **Third-party base, digest-pinned.** The catthehacker base image is pulled
-  by immutable digest, so a moved or compromised upstream `act-latest` tag
-  cannot silently enter a build. Digest bumps arrive as reviewed Dependabot
-  PRs that are never auto-merged, so upstream changes are adopted deliberately,
-  never implicitly. A 7-day Dependabot cooldown is also configured, but it is
-  not currently enforced for the Docker ecosystem
-  ([dependabot-core#15446](https://github.com/dependabot/dependabot-core/issues/15446)),
-  so the reviewed-PR gate — not a time delay — is the guarantee.
-- **First-party float, deliberate.** Hosts run
-  `ghcr.io/melodic-software/ci-runner:latest` with `pull_policy: always`, so
-  every compose up (provisioning re-runs it at logon) adopts whatever the org
-  last published. Accepted: only this repo's merge-gated `main` publishes that
-  tag and the org controls every link of that path (repo, workflow, GHCR
-  package), so the float tracks our own reviewed publishes, not a third
-  party's. Revisit if publish rights ever widen beyond the image job in
-  `.github/workflows/ci.yml`.
-- **Accepted residual.** Workflows keep passwordless `sudo` (GitHub-hosted
-  parity; medley's dotnet lane trusts its dev cert with it), and root can read
-  PID 1's original environment — so a *malicious* job could recover the key.
-  Accepted deliberately: the group admits only this org's private repos, the
-  key's blast radius is runner registration, and per-host revocation is one
-  click. Revisit before this fleet ever serves less-trusted code.
-- **Job hygiene.** The work dir and temp are scrubbed before each
-  registration. `/opt/hostedtoolcache` **and the runner's `$HOME`** (dotfiles,
-  `~/.nuget`, other per-user caches) deliberately survive container restarts —
-  re-downloading toolchains and packages every job costs more than the
-  poisoning risk under the same trusted-code assumption; image updates
-  recreate containers outright. If the fleet ever serves less-trusted code,
-  the escape hatch is a recreate-per-job supervisor, not a longer scrub list.
+Every admitted job gets a new container from the digest-pinned official
+`actions/actions-runner` image. The controller streams the one-job JIT payload
+over attached stdin; the entrypoint exposes it to the official runner through
+the documented `ACTIONS_RUNNER_INPUT_JITCONFIG` input. The payload is absent
+from Docker's persistent config and `docker inspect`. The container has no host
+mount, Docker socket, device, GPU, persistent home, work directory, temp, or
+tool cache, and is removed after terminal diagnostics are copied out.
 
-## Host setup
+The Windows process is the only control plane. GitHub App keys are protected
+with current-user DPAPI and never enter worker containers. The controller talks
+only to the fixed local Docker Engine endpoint and requires a Linux/amd64
+engine; `DOCKER_HOST`, TLS, and API-version environment overrides are ignored.
 
-1. Create (once, org-wide) a dedicated **runner-registration GitHub App**:
-   org permission *Self-hosted runners: write*, no repo permissions, no
-   webhook. Install it on the org.
-2. On each runner host: generate a **new private key** in the App settings,
-   store it under the user profile (e.g.
-   `%USERPROFILE%\.ci-runner\github-app-key.pem` — not `ProgramData`, whose
-   subdirectories all local users can read), and never sync or commit it.
-3. Copy `.env.example` to `.env` beside `docker-compose.yml`, fill in the
-   client ID, the base64-encoded key (one-liner in `.env.example`), and the
-   replica count.
-4. `docker compose up -d`. Boot-time start and image refresh are wired by the
-   host's provisioning (see the `provisioning` repo).
+## Routing and fallback contract
 
-### Configuration
+Eligible workflows call the central selector in
+[`melodic-software/ci-workflows`](https://github.com/melodic-software/ci-workflows).
+It chooses local capacity only when an exact managed label and runner-name
+prefix identify an online, idle, ephemeral runner. Missing configuration,
+missing credentials, invalid API data, timeouts, API failures, public or fork
+workflows, Dependabot, and explicit `hosted-only` policy all route hosted.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `APP_CLIENT_ID` | *(required)* | GitHub App client ID (JWT issuer) |
-| `APP_PRIVATE_KEY_B64` | *(required)* | This device's App private key, base64-encoded |
-| `RUNNER_REPLICAS` | `2` | Concurrent one-job runner containers |
-| `RUNNER_LABELS` | `self-hosted-medley` | Comma-separated `runs-on` routing labels. JIT runners get **no implicit labels** (`self-hosted`/`Linux`/`X64`), deliberately: workflows target this fleet only by naming its explicit label |
-| `ORG` | `melodic-software` | Organization to register with |
-| `RUNNER_GROUP` | `self-hosted` | Runner group to join |
+A full workflow rerun has `github.run_attempt > 1` and always routes hosted.
+This is the recovery path for the irreducible case where both local hosts
+disappear after local selection. GitHub does not provide an atomic
+hosted-or-self-hosted `runs-on` operator, so simultaneous selector jobs can
+observe the same idle runner and briefly queue. The hosted queue monitor reports
+that condition; it never cancels or replays work automatically.
 
-## Publishing
+The selector's two-minute `ubuntu-slim` job is independent of downstream job
+timeouts. A selected build/test job can run longer than the selector and longer
+than `ubuntu-slim`'s 15-minute platform limit.
 
-The `image` job in `.github/workflows/ci.yml` builds on every PR (validation
-only) and pushes `latest` + commit-SHA tags on merge to `main`, plus a weekly
-scheduled rebuild so the apt-installed layers stay patched between base-image
-digest bumps. The same workflow supplies the repository's required
-`ci-status` aggregate check.
+Authoritative behavior:
 
-`actions/runner` is pinned by version + checksum in the `Dockerfile`.
-Ephemeral runners cannot self-update and GitHub eventually refuses versions
-that fall too far behind, so bump `RUNNER_VERSION`/`RUNNER_SHA256` (release
-notes carry the SHA) when a new runner ships.
+- [GitHub self-hosted routing](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#routing-precedence-for-self-hosted-runners)
+- [Runner scale-set high availability](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover)
+- [`runs-on` syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idruns-on)
+- [`ubuntu-slim` limits](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
-## Limitations
+## Host lifecycle
 
-- Jobs run *inside* the container: no Docker CLI, no nested containers. A
-  workflow that needs Docker (e.g. Testcontainers) must stay on GitHub-hosted
-  runners until docker-in-docker or socket passthrough is deliberately added.
-- Linux x64 only.
+`ci-runner.exe` is the only operator interface. With no subcommand it opens the
+interactive menu; the same operations are available for automation:
+
+```text
+ci-runner host
+ci-runner host status [--json]
+ci-runner host enable [--wait]
+ci-runner host disable [--wait|--detach]
+ci-runner host game [--wait|--detach]
+ci-runner host doctor [--json]
+ci-runner host logs [--follow|--job ID|--cleanup]
+ci-runner host force-stop
+ci-runner secret import --file PATH
+```
+
+Modes are persisted separately from checked-in configuration:
+
+- `enabled` starts Docker when policy allows, advertises capacity, and maintains
+  configured warm workers;
+- `disabled` advertises zero, drains CI, and removes idle workers without
+  touching unrelated Docker or WSL workloads;
+- `gaming` drains CI, stops Docker Desktop, shuts down every WSL distribution,
+  verifies both are down, and remains down across logons.
+
+No normal timeout implies force. Busy jobs finish naturally, including drains
+longer than the warning threshold. `force-stop` is a separate destructive path
+that inventories affected jobs and requires typed confirmation. `Ctrl+C` while
+watching a drain detaches from the display; it does not cancel the drain.
+
+The windowless `ci-runner-controller.exe` runs from a current-user logon task
+because Docker Desktop is user-session software. Task Scheduler only restarts
+the controller. Battery, resource admission, drain, Docker Desktop, and WSL
+policy remain in the shared Go state machine.
+
+## Configuration and ownership
+
+The checked-in, nonsecret host YAML is owned by
+[`kyle-sexton/provisioning`](https://github.com/kyle-sexton/provisioning) and is
+installed as `%LOCALAPPDATA%\ci-runner\config.yaml`. The strict parser rejects
+unknown properties, unsupported schemas, invalid units, duplicate targets,
+unsafe paths, and inconsistent thresholds.
+
+Provisioning verifies ownership boundaries through the product rather than
+parsing YAML itself. `config validate --json` returns the normalized
+`release.compatibilityManifest` and `paths` (`secrets`, `state`, `logs`, and
+`diagnostics`) contract. `host status --json` returns the authenticated live
+controller's PID, exact version, phase, shutdown state, and job counts under
+`controller`; provisioning requires a new nonzero PID and the requested version
+before committing an install transaction.
+
+Mutable local state is separate:
+
+```text
+%LOCALAPPDATA%\ci-runner\
+  state\desired.json       # user-owned mode and temporary capacity override
+  state\observed.json      # controller heartbeat, pools, workers, and problems
+  state\jobs.json          # exact job-to-artifact correlation
+  secrets\                 # current-user DPAPI-protected App keys
+  logs\controller\         # structured JSON Lines controller events
+  logs\workers\            # externally captured runner stdout/stderr
+  diagnostics\             # copied runner _diag archives
+```
+
+Permanent capacity and threshold changes are YAML changes, never source-code
+changes. A menu capacity override is local state and can be reset to the
+checked-in value. Provisioning must not overwrite desired mode.
+
+One diagnostics policy governs both copied runner stdout and compressed `_diag`
+archives. `maxFileSize`, `rawDiagnosticMaxInput`, retention, total-cap, and
+cleanup cadence are strict host configuration. Startup retention runs only
+after every managed active or exited container has been adopted. The explicit
+`host logs --cleanup` command first inventories the fixed local Docker endpoint
+and refuses to run if that safety inventory is unavailable.
+
+Default worker parity is 2 CPU, 8 GiB memory, no additional swap, 4096 PIDs,
+and no devices. Admission also honors configurable host memory/CPU thresholds,
+hysteresis, global worker limits, and laptop AC-only policy. Active workers are
+never killed to reclaim resources.
+
+## Credential boundary
+
+The organization host App has only organization **Self-hosted runners: write**;
+each physical host gets a distinct private key. A separate observer App is
+read-only. Personal-repository host credentials are introduced only after the
+organization soak gate.
+
+`ci-runner secret import` validates RSA PKCS#1/PKCS#8 PEM, BitLocker protection,
+current-user DPAPI protection, and exact current-user/SYSTEM ACLs. Before it
+reports success, it reads the protected destination back under the current
+identity and verifies its fingerprint and import metadata. On Windows, the
+import keeps the exact source file open with read and delete access while
+withholding write/delete sharing. It rechecks that file identity at commit and
+uses handle-bound deletion, so a moved, missing, or replacement pathname is
+never deleted as though it were the imported PEM. If that identity check or
+deletion is ambiguous, the verified DPAPI destination is retained and the
+command fails with explicit manual-cleanup instructions. Failures before the
+source-deletion commit leave the PEM untouched and roll back the destination
+where possible. Any failed rollback or incomplete exclusive write that cannot
+be removed is also reported as requiring manual cleanup and is never presented
+as success.
+
+The reported fingerprint is standard Base64 of the SHA-256 digest of the DER
+public key. This is the exact format produced by GitHub's documented
+[`openssl` verification command](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps#verifying-private-keys),
+so the CLI value can be compared directly with the fingerprint in the GitHub
+App's settings.
+
+Protected-secret schema v2 records that Base64 fingerprint. The loader remains
+backward compatible with schema v1 files, which stored the same SPKI SHA-256
+digest as lowercase hexadecimal, and reports their fingerprint in canonical
+Base64 after validation. New imports never write the legacy representation.
+
+Source cleanup is ordinary filesystem deletion. On Windows, deletion can fail
+for reasons such as an incompatible open handle, a read-only file, or
+insufficient access, and this product does not weaken those protections or
+silently continue. The identity lock follows Microsoft's documented
+[`CreateFile` sharing contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+where withholding delete sharing also prevents rename, and commit uses
+[`SetFileInformationByHandle`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+with `FileDispositionInfo`, which requires delete access and deletes the opened
+file object when its handle closes. Import is deliberately Windows-only; it
+does not emulate this guarantee with a pathname-only unlink on other systems.
+File deletion is not a forensic secure erase or a claim of media sanitization.
+Use an appropriate sanitization process when the storage medium is reused or
+disposed of, following [NIST SP 800-88 Rev. 2](https://csrc.nist.gov/pubs/sp/800/88/r2/final).
+The key is decrypted only in controller memory. Rotation overlaps old and new
+keys until the new key can create a JIT runner, then revokes the old key.
+
+The disposable worker necessarily contains its own decoded one-job runner
+credentials because that is how the stock GitHub runner connects and executes a
+job under one identity. Workflow code must be treated as able to inspect those
+ephemeral credentials. The enforced boundary is that no reusable App key,
+observer key, controller JWT, installation token, Docker control socket, or host
+filesystem enters the worker.
+
+See [the worker-image contract](docs/worker-image.md) and GitHub's
+[self-hosted-runner security guidance](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners).
+
+## Supported workload
+
+V1 is Linux x64 only. Versioned runtimes come from the same official setup
+actions used on `ubuntu-24.04`; the image adds only the documented compatibility
+baseline. GitHub-managed Actions caches continue to work across hosted and
+self-hosted execution, but cache content is untrusted and must contain no
+secrets.
+
+These workloads stay GitHub-hosted:
+
+- public repositories and fork pull requests;
+- Windows jobs;
+- service containers, job containers, Testcontainers, Docker actions, or jobs
+  requiring a Docker socket;
+- GPU/device/privileged workloads;
+- broad cross-repository write/control-plane jobs;
+- publication of this controller and worker image.
+
+See [GitHub dependency caching](https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching)
+and [Docker resource constraints](https://docs.docker.com/engine/containers/resource_constraints/).
+
+## Build, release, and rollback
+
+Local gates include module verification, vet, unit and race tests, Windows and
+Linux builds, `govulncheck`, Actionlint, Zizmor, strict configuration tests, and
+the live worker-image verifier. Release tags first run the complete read-only
+gate against the exact tagged source. Only a dependent publication job receives
+`contents`, `packages`, `attestations`, and OIDC write permissions.
+
+Releases produce an immutable pair:
+
+- versioned Windows ZIP and SHA-256 checksums;
+- exact OCI worker image digest;
+- controller and worker SBOM/provenance attestations;
+- a compatibility manifest tying source SHA, controller, image, runner, Scale
+  Set Client, Go, PowerShell, Buildx, BuildKit, and SBOM-generator pins together.
+
+Dependencies and Actions are exact pins. Daily official-source drift evidence
+opens an issue within 24 hours and hard-fails after 14 days; updates remain
+reviewed and are never auto-merged. Deployment uses a versioned install
+directory plus `current` junction and retains the latest three known-good pairs.
+
+Rollback order is: set routing `hosted-only`, drain without killing work,
+restore the prior immutable pair, restore the prior reusable-workflow SHA if
+needed, then rerun affected workflows hosted.
+
+## Further documentation
+
+- [Worker image and isolation contract](docs/worker-image.md)
+- [Queue-monitor behavior and scheduler limits](docs/queue-monitor.md)
+- [Immutable releases, freshness, and rollback](docs/releases.md)
+- [Deferred capabilities and non-workaround boundaries](docs/roadmap.md)
