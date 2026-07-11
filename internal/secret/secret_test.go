@@ -440,6 +440,7 @@ func TestParseRSAPrivateKeyRejectsTrailingData(t *testing.T) {
 }
 
 func TestPublicKeyFingerprintMatchesGitHubVerificationFormat(t *testing.T) {
+	// spellchecker:off -- deterministic PEM fixture is opaque Base64.
 	const publicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAodLwG+3TcQfJ3RafRUvj
 sH0fcSWXHoIf6XkYVkncRb4dA8QGlBwCyyRM3EMv1fe44lLxJ3Ae/GU/UbXa3g9g
@@ -449,6 +450,7 @@ cjIEOjI7i921potsN+KIL9Xzl2qJTltEIS05jU+JcoQlGaMJI+KmWQrk431xgNm1
 OTJ2QmLimlpnrMDwTbdY7FoYGHUS6y2yshMrow6oQZ3zJmbg4Lrt6XqV2HjKmaeh
 /wIDAQAB
 -----END PUBLIC KEY-----`
+	// spellchecker:on
 	block, rest := pem.Decode([]byte(publicKeyPEM))
 	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
 		t.Fatal("decode deterministic public-key fixture")
