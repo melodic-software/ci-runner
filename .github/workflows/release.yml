@@ -325,7 +325,7 @@ jobs:
         if: ${{ steps.release.outputs.exists != 'true' }}
         env:
           WORKER_CANDIDATE: ghcr.io/${{ github.repository }}@${{ steps.worker.outputs.digest }}
-          SCANNER_AMD64_DIGEST: sha256:13864237fb990943433f89d698590aad1de38d4a7e13d38e7b12f2488c1952e7
+          SCANNER_MANIFEST_DIGEST: sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
         run: |
           set -Eeuo pipefail
           docker pull "$WORKER_CANDIDATE"
@@ -336,10 +336,11 @@ jobs:
             (if has("SPDX") then .SPDX else .["linux/amd64"].SPDX end)
             | .SPDXID == "SPDXRef-DOCUMENT" and (.packages | type == "array")
           ' "$RUNNER_TEMP/worker-sbom.json" >/dev/null
-          jq --exit-status --arg digest "${SCANNER_AMD64_DIGEST#sha256:}" '
+          jq --exit-status --arg digest "${SCANNER_MANIFEST_DIGEST#sha256:}" '
             (if has("SLSA") then .SLSA else .["linux/amd64"].SLSA end)
-            | .buildType == "https://mobyproject.org/buildkit@v1"
-              and any(.materials[]?; .digest.sha256 == $digest)
+            | (.buildDefinition.resolvedDependencies | type == "array")
+              and .buildDefinition.buildType == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+              and any(.buildDefinition.resolvedDependencies[]?; .digest.sha256 == $digest)
           ' "$RUNNER_TEMP/worker-provenance.json" >/dev/null
 
       - name: Build Windows controller, CLI, and archive content manifest

@@ -108,6 +108,10 @@ foreach ($field in $compatibilityFields) {
 foreach ($required in @(
         "image=$buildKitReference",
         "sbom: generator=$scannerReference",
+        "SCANNER_MANIFEST_DIGEST: $($dependencies.buildKitSbomScanner.digest)",
+        '.buildDefinition.resolvedDependencies | type == "array"',
+        '.buildDefinition.resolvedDependencies[]?',
+        'https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md',
         'cache-binary: false',
         'buildkitd-flags: --debug=false',
         'queue: max',
@@ -125,6 +129,10 @@ if ($workflowText -match '(?m)^\s*sbom:\s*true\s*$' -or
     $workflowText -match '(?i)buildkit-syft-scanner:(?:stable|latest)' -or
     $workflowText -match '(?i)moby/buildkit:(?:buildx-stable|latest|master)') {
     throw 'Workflow contains a mutable BuildKit or SBOM generator configuration'
+}
+if ($workflowText.Contains('SCANNER_AMD64_DIGEST') -or
+    $workflowText.Contains('.materials[]?')) {
+    throw 'Workflow still validates obsolete pre-SLSA-v1 provenance fields'
 }
 $setupBuildxPattern = '(?ms)^\s{8}uses:\s*docker/setup-buildx-action@[0-9a-f]{40}[^\r\n]*\r?\n(?<block>.*?)(?=^\s{6}- name:|^\s{2}[A-Za-z0-9_-]+:|\z)'
 $setupBuildxMatches = [regex]::Matches($workflowText, $setupBuildxPattern)
