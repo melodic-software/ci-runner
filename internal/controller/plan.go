@@ -208,7 +208,8 @@ func BuildPlan(input PlanInput) Plan {
 	}
 
 	ready := make(map[string]bool, len(targets))
-	assignedByPool := make(map[string]int, len(targets))
+	assignmentReservations := make(map[string]int, len(targets))
+	assignmentOverCap := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		pool, exists := poolByID[target.ID]
 		if !exists || !pool.Ready {
@@ -221,7 +222,11 @@ func BuildPlan(input PlanInput) Plan {
 			plan.Problems = append(plan.Problems, problem(input.Now, "invalid-assigned-job-count", "GitHub reported a negative TotalAssignedJobs value", target.ID, true))
 		}
 		ready[target.ID] = true
-		assignedByPool[target.ID] = assigned
+		assignmentReservations[target.ID] = minInt(assigned, target.MaxCapacity)
+		if assigned > target.MaxCapacity {
+			assignmentOverCap[target.ID] = true
+			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-count-exceeds-pool-cap", "GitHub reported more assigned jobs than the configured pool maximum; excess assignments are not reserved and listener capacity is held at zero", target.ID, true))
+		}
 	}
 
 	allocate := func(target config.Target, requested int) {
@@ -252,7 +257,7 @@ func BuildPlan(input PlanInput) Plan {
 		if !ready[target.ID] {
 			continue
 		}
-		assigned := maxInt(assignedByPool[target.ID], busyByPool[target.ID])
+		assigned := maxInt(assignmentReservations[target.ID], busyByPool[target.ID])
 		allocate(target, assigned)
 		if plan.DesiredWorkers[target.ID] < assigned {
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds currently serviceable host capacity", target.ID, true))
@@ -265,7 +270,7 @@ func BuildPlan(input PlanInput) Plan {
 		if !ready[target.ID] {
 			continue
 		}
-		assigned := assignedByPool[target.ID]
+		assigned := assignmentReservations[target.ID]
 		requested := minInt(target.MaxCapacity, assigned+target.WarmIdle)
 		requested = maxInt(requested, maxInt(assigned, busyByPool[target.ID]))
 		allocate(target, requested)
@@ -307,7 +312,7 @@ func BuildPlan(input PlanInput) Plan {
 				plan.Remove = append(plan.Remove, worker)
 				excess--
 			}
-		} else if !capacityDebt && ready[target.ID] {
+		} else if !capacityDebt && ready[target.ID] && !assignmentOverCap[target.ID] {
 			plan.AdvertisedCapacity[target.ID] = desired
 			advertisable[target.ID] = true
 		}

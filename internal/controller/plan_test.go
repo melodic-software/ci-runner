@@ -145,6 +145,66 @@ func TestMultiPoolAssignmentsRemainReservedWhileResourceGateAdvertisesZero(t *te
 	}
 }
 
+func TestAssignmentReservationNeverExceedsPoolMaximum(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Pools[0].TotalAssignedJobs = 5
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 3 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("over-cap assignment reservation = desired %d starts %#v, want pool maximum 3", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("over-cap assignment reopened listener capacity: %#v", plan.AdvertisedCapacity)
+	}
+	if plan.Phase != model.PhaseDegraded || !hasProblem(plan.Problems, "assigned-job-count-exceeds-pool-cap", "org") {
+		t.Fatalf("over-cap assignment was not explicit and degraded: phase=%s problems=%#v", plan.Phase, plan.Problems)
+	}
+}
+
+func TestOverCapPoolCannotConsumeAnotherPoolsAssignmentReservation(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].MaxCapacity = 2
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 2, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools[0].TotalAssignedJobs = 5
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, Ready: true})
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 2 || plan.DesiredWorkers["personal"] != 1 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("cross-pool over-cap reservation = desired %#v starts %#v, want capped 2 plus assigned 1", plan.DesiredWorkers, plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 || plan.AdvertisedCapacity["personal"] != 1 {
+		t.Fatalf("cross-pool over-cap capacities = %#v, want offending pool zero and healthy pool one", plan.AdvertisedCapacity)
+	}
+	if !hasProblem(plan.Problems, "assigned-job-count-exceeds-pool-cap", "org") {
+		t.Fatalf("cross-pool excess assignment problem missing: %#v", plan.Problems)
+	}
+}
+
+func TestBusyWorkersAbovePoolMaximumArePreservedWithoutAdditionalStarts(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].MaxCapacity = 2
+	input.Pools[0].TotalAssignedJobs = 4
+	input.Workers = []model.Worker{
+		{ID: "busy-1", PoolID: "org", State: model.WorkerBusy},
+		{ID: "busy-2", PoolID: "org", State: model.WorkerBusy},
+		{ID: "busy-3", PoolID: "org", State: model.WorkerBusy},
+	}
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 3 || len(plan.Start) != 0 || plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("busy over-cap preservation = desired %d starts %#v capacity %d", plan.DesiredWorkers["org"], plan.Start, plan.AdvertisedCapacity["org"])
+	}
+	assertNotRemoved(t, plan.Remove, "busy-1", "busy-2", "busy-3")
+}
+
 func TestDisabledDrainNeverRemovesBusyWorker(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
@@ -710,6 +770,15 @@ func totalStarts(decisions []StartDecision) int {
 		total += decision.Count
 	}
 	return total
+}
+
+func hasProblem(problems []model.Problem, code, poolID string) bool {
+	for _, item := range problems {
+		if item.Code == code && item.PoolID == poolID {
+			return true
+		}
+	}
+	return false
 }
 
 func assertRemoved(t *testing.T, workers []model.Worker, ids ...string) {
