@@ -72,24 +72,76 @@ func TestAdvertisedServiceCapacityRemainsMemoryBounded(t *testing.T) {
 	}
 }
 
-func TestGlobalCapacityUsesPriorityAcrossPools(t *testing.T) {
+func TestGlobalCapacityReservesAssignmentsAcrossPoolsBeforeWarmIdle(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
 	input.Config.Resources.MaximumConcurrentWorkers = 2
 	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
 		config.Target{ID: "personal", MaxCapacity: 2, WarmIdle: 1, Priority: 10},
 	)
-	input.Pools[0].TotalAssignedJobs = 1 // org wants two including its warm worker
+	input.Pools[0].TotalAssignedJobs = 1
 	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, Ready: true})
 	plan := BuildPlan(input)
-	if got := plan.DesiredWorkers["org"]; got != 2 {
-		t.Fatalf("org desired = %d, want 2", got)
+	if got := plan.DesiredWorkers["org"]; got != 1 {
+		t.Fatalf("org desired = %d, want its assigned worker without optional warm idle", got)
 	}
-	if got := plan.DesiredWorkers["personal"]; got != 0 {
-		t.Fatalf("personal desired = %d, want 0 after higher-priority allocation", got)
+	if got := plan.DesiredWorkers["personal"]; got != 1 {
+		t.Fatalf("personal desired = %d, want its assignment reserved before priority", got)
 	}
 	if totalStarts(plan.Start) != 2 {
 		t.Fatalf("starts = %#v", plan.Start)
+	}
+}
+
+func TestAdvertisedMultiPoolCombinationRemainsGloballyServiceable(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 3, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", Ready: true})
+
+	idle := BuildPlan(input)
+	if idle.DesiredWorkers["org"] != 1 || idle.DesiredWorkers["personal"] != 1 ||
+		idle.AdvertisedCapacity["org"] != 2 || idle.AdvertisedCapacity["personal"] != 1 {
+		t.Fatalf("idle allocation = desired %#v capacity %#v, want warm 1/1 and advertised 2/1", idle.DesiredWorkers, idle.AdvertisedCapacity)
+	}
+
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[1].TotalAssignedJobs = 1
+	assigned := BuildPlan(input)
+	if assigned.DesiredWorkers["org"] != 2 || assigned.DesiredWorkers["personal"] != 1 {
+		t.Fatalf("assigned desired = %#v, want every advertised obligation serviceable", assigned.DesiredWorkers)
+	}
+	if assigned.AdvertisedCapacity["org"] != 2 || assigned.AdvertisedCapacity["personal"] != 1 || totalStarts(assigned.Start) != 3 {
+		t.Fatalf("assigned plan = starts %#v capacity %#v", assigned.Start, assigned.AdvertisedCapacity)
+	}
+
+	input.Pools[0].TotalAssignedJobs = 1
+	input.Pools[1].TotalAssignedJobs = 2
+	reversed := BuildPlan(input)
+	if reversed.DesiredWorkers["org"] != 1 || reversed.DesiredWorkers["personal"] != 2 || totalStarts(reversed.Start) != 3 {
+		t.Fatalf("reversed assigned plan = desired %#v starts %#v", reversed.DesiredWorkers, reversed.Start)
+	}
+}
+
+func TestMultiPoolAssignmentsRemainReservedWhileResourceGateAdvertisesZero(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 3, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[0].DrainServiceCapacity = 2
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, DrainServiceCapacity: 1, Ready: true})
+	input.Resources = model.ResourceSnapshot{}
+
+	plan := BuildPlan(input)
+	if plan.AdvertisedCapacity["org"] != 0 || plan.AdvertisedCapacity["personal"] != 0 {
+		t.Fatalf("resource gate reopened capacity: %#v", plan.AdvertisedCapacity)
+	}
+	if plan.DesiredWorkers["org"] != 2 || plan.DesiredWorkers["personal"] != 1 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("resource gate stranded assignments: desired %#v starts %#v", plan.DesiredWorkers, plan.Start)
 	}
 }
 
