@@ -56,8 +56,9 @@ type ControllerControl interface {
 }
 
 type DoctorInspection struct {
-	CheckDocker   bool
-	RequireDocker bool
+	CheckDocker     bool
+	RequireDocker   bool
+	IncludeElevated bool
 }
 
 type DoctorInspector interface {
@@ -582,7 +583,7 @@ func (a *Application) usage() {
   ci-runner host enable [--wait]
   ci-runner host disable [--wait|--detach]
   ci-runner host game [--wait|--detach]
-  ci-runner host doctor [--json]
+  ci-runner host doctor [--json] [--include-elevated]
   ci-runner host logs [--follow|--job ID]
   ci-runner host force-stop
 	ci-runner host controller restart

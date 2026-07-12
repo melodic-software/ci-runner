@@ -66,7 +66,13 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 		})
 	}
 
-	if i.BitLocker == nil {
+	if !request.IncludeElevated {
+		checks = append(checks, DoctorCheck{
+			Name:    "bitlocker",
+			Skipped: true,
+			Detail:  "requires an elevated BitLocker status probe that may open an Administrator UAC prompt; rerun with --include-elevated to perform it",
+		})
+	} else if i.BitLocker == nil {
 		checks = append(checks, DoctorCheck{Name: "bitlocker", Healthy: false, Detail: "BitLocker verifier is unavailable"})
 	} else if err := i.BitLocker.VerifyProtected(ctx, i.Config.Paths.Secrets); err != nil {
 		checks = append(checks, DoctorCheck{Name: "bitlocker", Healthy: false, Detail: err.Error()})
