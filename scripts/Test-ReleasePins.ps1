@@ -71,6 +71,32 @@ foreach ($expected in @($expectedPowerShellVersion, $expectedPowerShellDigest)) 
     }
 }
 
+$workerVerifier = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'scripts\verify-worker-image.sh')
+$rootlessDotnetContract = @(
+    'install --directory --owner=runner --group=runner --mode=0755',
+    'DOTNET_INSTALL_DIR=/home/runner/.dotnet',
+    'DOTNET_ROOT=/home/runner/.dotnet',
+    'NUGET_PACKAGES=/home/runner/.nuget/packages',
+    'PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:${PATH}'
+)
+foreach ($fragment in $rootlessDotnetContract) {
+    if (-not $dockerfile.Contains($fragment)) {
+        throw "Dockerfile is missing the rootless .NET worker contract: $fragment"
+    }
+}
+foreach ($fragment in @(
+        "image_env DOTNET_INSTALL_DIR",
+        "image_env DOTNET_ROOT",
+        "image_env NUGET_PACKAGES",
+        'RUNNER_TOOL_CACHE RUNNER_TOOLSDIRECTORY AGENT_TOOLSDIRECTORY')) {
+    if (-not $workerVerifier.Contains($fragment)) {
+        throw "Worker image verifier is missing the rootless .NET/toolcache contract: $fragment"
+    }
+}
+if ($dockerfile -match '(?m)^\s*(?:ENV\s+)?(?:RUNNER_TOOL_CACHE|RUNNER_TOOLSDIRECTORY|AGENT_TOOLSDIRECTORY)=') {
+    throw 'Dockerfile must leave runner toolcache selection to the official runner process'
+}
+
 $goModPath = Join-Path $RepositoryRoot 'go.mod'
 if (Test-Path -LiteralPath $goModPath) {
     $goMod = Get-Content -Raw -LiteralPath $goModPath
