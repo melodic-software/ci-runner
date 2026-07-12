@@ -3,7 +3,8 @@ package host
 import (
 	"context"
 	"fmt"
-	"os/exec"
+
+	"github.com/melodic-software/ci-runner/internal/childprocess"
 )
 
 // CommandRunner is the process boundary used by host adapters. Keeping it
@@ -19,7 +20,7 @@ type CommandRunner interface {
 type ExecCommandRunner struct{}
 
 func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := childprocess.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("run %s: %w", name, err)
