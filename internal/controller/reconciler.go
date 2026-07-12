@@ -166,7 +166,7 @@ func telemetrySnapshot(result ReconcileResult) telemetry.ReconcileSnapshot {
 		CPUPercent:           observed.Resources.CPUUtilizationPercent,
 		AvailableMemoryBytes: observed.Resources.AvailableMemoryBytes,
 		ResourceGateBlocked:  observed.ResourceGate.Blocked,
-		PowerGateBlocked:     observed.Phase == model.PhasePowerSuspended,
+		PowerGateBlocked:     result.Plan.Phase == model.PhasePowerSuspended,
 		CheckpointAge:        result.CheckpointAge,
 		CheckpointAgeValid:   result.CheckpointAgeValid,
 		Pools:                make([]telemetry.ReconcilePool, 0, len(observed.Pools)),

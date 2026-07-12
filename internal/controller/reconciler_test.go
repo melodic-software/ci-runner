@@ -62,6 +62,18 @@ func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) 
 	}
 }
 
+func TestTelemetrySnapshotPreservesPowerGateWhenOperationFailureDegradesObservedPhase(t *testing.T) {
+	t.Parallel()
+	result := ReconcileResult{
+		Observed: model.ObservedState{SchemaVersion: 1, Phase: model.PhaseDegraded},
+		Plan:     Plan{Phase: model.PhasePowerSuspended},
+	}
+	snapshot := telemetrySnapshot(result)
+	if !snapshot.PowerGateBlocked {
+		t.Fatalf("power gate blocked = false for degraded observed phase with power-suspended plan: %#v", snapshot)
+	}
+}
+
 func TestReconcilerOmitsCheckpointAgeWithoutValidPriorCheckpoint(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
