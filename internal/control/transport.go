@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 )
 
-const maximumMessageSize = 64 << 10
+const (
+	maximumMessageSize                        = 64 << 10
+	legacyShutdownControllerVersion           = "v0.1.7"
+	legacyShutdownIdentityFieldRejectionError = `decode control request: json: unknown field "expectedProcessId"`
+)
 
 var ErrUnavailable = errors.New("controller control plane is unavailable")
 
@@ -226,7 +229,7 @@ func (c *Client) Shutdown(ctx context.Context, reason string, expected Status, r
 		},
 	}
 	response, err := c.roundTrip(ctx, request)
-	if !restart && legacyShutdownFieldRejection(err) {
+	if !restart && legacyShutdownFieldRejection(err, expected.Version) {
 		response, err = c.roundTripMessage(ctx, requestID, legacyShutdownEnvelope{
 			SchemaVersion: SchemaVersion,
 			RequestID:     requestID,
@@ -252,13 +255,15 @@ func (c *Client) Shutdown(ctx context.Context, reason string, expected Status, r
 	return *response.Status, nil
 }
 
-func legacyShutdownFieldRejection(err error) bool {
+func legacyShutdownFieldRejection(err error, expectedVersion string) bool {
+	if expectedVersion != legacyShutdownControllerVersion {
+		return false
+	}
 	var responseErr *ResponseError
 	if !errors.As(err, &responseErr) || responseErr.Code != "invalid-request" {
 		return false
 	}
-	return strings.Contains(responseErr.Message, `unknown field "expectedProcessId"`) ||
-		strings.Contains(responseErr.Message, `unknown field "expectedVersion"`)
+	return responseErr.Message == legacyShutdownIdentityFieldRejectionError
 }
 
 func (c *Client) ForceStopPreview(ctx context.Context) ([]ForceStopTarget, error) {

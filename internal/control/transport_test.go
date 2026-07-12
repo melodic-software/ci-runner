@@ -198,33 +198,69 @@ func TestStopForUpdateFallsBackToV017ShutdownShape(t *testing.T) {
 	}
 }
 
-func TestRestartNeverFallsBackToLegacyShutdownShape(t *testing.T) {
+func TestShutdownNeverFallsBackOutsideExactV017StopHandshake(t *testing.T) {
 	t.Parallel()
-	attempts := 0
-	client, err := NewClient(func(context.Context) (net.Conn, error) {
-		serverConnection, clientConnection := net.Pipe()
-		attempts++
-		go func() {
-			defer serverConnection.Close()
-			var request Request
-			if decodeErr := json.NewDecoder(serverConnection).Decode(&request); decodeErr != nil {
-				return
-			}
-			_ = json.NewEncoder(serverConnection).Encode(Response{
-				SchemaVersion: SchemaVersion,
-				RequestID:     request.RequestID,
-				ErrorCode:     "invalid-request",
-				Error:         `decode control request: json: unknown field "expectedProcessId"`,
-			})
-		}()
-		return clientConnection, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	tests := map[string]struct {
+		restart bool
+		version string
+		code    string
+		message string
+	}{
+		"restart": {
+			restart: true, version: legacyShutdownControllerVersion, code: "invalid-request",
+			message: legacyShutdownIdentityFieldRejectionError,
+		},
+		"wrong controller version": {
+			version: "v0.1.6", code: "invalid-request", message: legacyShutdownIdentityFieldRejectionError,
+		},
+		"message prefix": {
+			version: legacyShutdownControllerVersion, code: "invalid-request",
+			message: "spoofed: " + legacyShutdownIdentityFieldRejectionError,
+		},
+		"message suffix": {
+			version: legacyShutdownControllerVersion, code: "invalid-request",
+			message: legacyShutdownIdentityFieldRejectionError + " trailing",
+		},
+		"other error code": {
+			version: legacyShutdownControllerVersion, code: "shutdown-state-changed",
+			message: legacyShutdownIdentityFieldRejectionError,
+		},
+		"other error message": {
+			version: legacyShutdownControllerVersion, code: "invalid-request",
+			message: `decode control request: json: unknown field "expectedVersion"`,
+		},
 	}
-	_, err = client.Shutdown(context.Background(), "restart", Status{ProcessID: 123, Version: "test"}, true)
-	if err == nil || attempts != 1 {
-		t.Fatalf("restart error=%v attempts=%d, want one rejected current request and no legacy fallback", err, attempts)
+	for name, test := range tests {
+		name, test := name, test
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			attempts := 0
+			client, err := NewClient(func(context.Context) (net.Conn, error) {
+				serverConnection, clientConnection := net.Pipe()
+				attempts++
+				go func() {
+					defer serverConnection.Close()
+					var request Request
+					if decodeErr := json.NewDecoder(serverConnection).Decode(&request); decodeErr != nil {
+						return
+					}
+					_ = json.NewEncoder(serverConnection).Encode(Response{
+						SchemaVersion: SchemaVersion,
+						RequestID:     request.RequestID,
+						ErrorCode:     test.code,
+						Error:         test.message,
+					})
+				}()
+				return clientConnection, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Shutdown(context.Background(), "test", Status{ProcessID: 123, Version: test.version}, test.restart)
+			if err == nil || attempts != 1 {
+				t.Fatalf("shutdown error=%v attempts=%d, want one rejected current request and no legacy fallback", err, attempts)
+			}
+		})
 	}
 }
 
