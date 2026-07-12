@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -25,11 +26,15 @@ func (doctorControlFake) Shutdown(context.Context, string, control.Status, bool)
 }
 
 type doctorInspectorFake struct {
-	request DoctorInspection
-	checks  []DoctorCheck
+	beforeInspect func()
+	request       DoctorInspection
+	checks        []DoctorCheck
 }
 
 func (f *doctorInspectorFake) Inspect(_ context.Context, request DoctorInspection) []DoctorCheck {
+	if f.beforeInspect != nil {
+		f.beforeInspect()
+	}
 	f.request = request
 	return append([]DoctorCheck(nil), f.checks...)
 }
@@ -47,6 +52,7 @@ func TestDoctorDisabledHealthyRequiresLiveControllerAndExitsZero(t *testing.T) {
 	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
 	inspector := &doctorInspectorFake{checks: []DoctorCheck{
 		{Name: "environment", Healthy: true, Detail: "verified"},
+		{Name: "bitlocker", Skipped: true, Detail: "explicit opt-in required"},
 		{Name: "github-jit-proof", Skipped: true, Detail: "live canary only"},
 	}}
 	application.dependencies.Doctor = inspector
@@ -54,8 +60,78 @@ func TestDoctorDisabledHealthyRequiresLiveControllerAndExitsZero(t *testing.T) {
 	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
 		t.Fatalf("doctor exit code = %d; output:\n%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "[PASS] controller-control-plane") || !strings.Contains(out.String(), "[SKIP] github-jit-proof") || inspector.request.RequireDocker {
+	if !strings.Contains(out.String(), "[PASS] controller-control-plane") ||
+		!strings.Contains(out.String(), "[SKIP] bitlocker") ||
+		!strings.Contains(out.String(), "[SKIP] github-jit-proof") ||
+		inspector.request.RequireDocker || inspector.request.IncludeElevated {
 		t.Fatalf("unexpected doctor result or Docker requirement: %#v\n%s", inspector.request, out.String())
+	}
+}
+
+func TestDoctorJSONDefaultsToNonElevatedInspectionWithoutWarning(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, errOut := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	inspector := &doctorInspectorFake{checks: []DoctorCheck{{
+		Name: "bitlocker", Skipped: true, Detail: "explicit opt-in required",
+	}}}
+	application.dependencies.Doctor = inspector
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d; stdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if inspector.request.IncludeElevated || errOut.Len() != 0 {
+		t.Fatalf("default JSON doctor requested elevation or warned: request=%#v stderr=%q", inspector.request, errOut.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, out.String())
+	}
+	if check := doctorCheckNamed(t, result.Checks, "bitlocker"); !check.Skipped {
+		t.Fatalf("default JSON BitLocker check = %#v, want skipped", check)
+	}
+}
+
+func TestDoctorIncludeElevatedWarnsBeforeInspectionAndPreservesJSON(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, errOut := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	warnedBeforeInspection := false
+	inspector := &doctorInspectorFake{
+		beforeInspect: func() {
+			warnedBeforeInspection = strings.Contains(errOut.String(), "may open an Administrator UAC prompt")
+		},
+		checks: []DoctorCheck{{Name: "bitlocker", Healthy: true, Detail: "verified"}},
+	}
+	application.dependencies.Doctor = inspector
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json", "--include-elevated"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d; stdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if !inspector.request.IncludeElevated || !warnedBeforeInspection {
+		t.Fatalf("elevated request or warning order is wrong: request=%#v warnedBeforeInspection=%t stderr=%q", inspector.request, warnedBeforeInspection, errOut.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("doctor --json output was corrupted by the warning: %v\n%s", err, out.String())
 	}
 }
 

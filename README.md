@@ -83,7 +83,7 @@ ci-runner host status [--json]
 ci-runner host enable [--wait]
 ci-runner host disable [--wait|--detach]
 ci-runner host game [--wait|--detach]
-ci-runner host doctor [--json]
+ci-runner host doctor [--json] [--include-elevated]
 ci-runner host logs [--follow|--job ID|--cleanup]
 ci-runner host force-stop
 ci-runner secret import --file PATH
@@ -102,6 +102,12 @@ No normal timeout implies force. Busy jobs finish naturally, including drains
 longer than the warning threshold. `force-stop` is a separate destructive path
 that inventories affected jobs and requires typed confirmation. `Ctrl+C` while
 watching a drain detaches from the display; it does not cancel the drain.
+
+`host doctor` is non-elevating by default. It reports the BitLocker check as
+skipped while still running every ordinary diagnostic. `--include-elevated`
+explicitly enables the full BitLocker verification and writes a warning before
+the verifier can open an Administrator UAC prompt; use it only in an interactive
+session where that prompt is expected.
 
 The windowless `ci-runner-controller.exe` runs from a current-user logon task
 because Docker Desktop is user-session software. Task Scheduler only restarts

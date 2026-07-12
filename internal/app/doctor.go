@@ -26,8 +26,12 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("host doctor", flag.ContinueOnError)
 	flags.SetOutput(a.errOut)
 	jsonOutput := flags.Bool("json", false, "write machine-readable checks")
+	includeElevated := flags.Bool("include-elevated", false, "include the BitLocker probe, which may open an Administrator UAC prompt")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return ExitUsage
+	}
+	if *includeElevated {
+		fmt.Fprintln(a.errOut, "WARNING: --include-elevated may open an Administrator UAC prompt while verifying BitLocker; continue only when that prompt is expected.")
 	}
 	checks := []DoctorCheck{{Name: "configuration", Healthy: true, Detail: "strict configuration loaded and validated"}}
 
@@ -129,8 +133,9 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	} else {
 		probeContext, cancelProbe := a.localProbeContext(ctx)
 		checks = append(checks, a.dependencies.Doctor.Inspect(probeContext, DoctorInspection{
-			CheckDocker:   dockerReachable,
-			RequireDocker: requireDocker,
+			CheckDocker:     dockerReachable,
+			RequireDocker:   requireDocker,
+			IncludeElevated: *includeElevated,
 		})...)
 		cancelProbe()
 	}
