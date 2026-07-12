@@ -3,7 +3,9 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -109,6 +111,120 @@ func TestTransportRejectsRestartAcceptanceWithoutRequestID(t *testing.T) {
 	_, err = client.Shutdown(context.Background(), "test restart", Status{ProcessID: 123, Version: "test"}, true)
 	if err == nil || !strings.Contains(err.Error(), "authenticated request ID") {
 		t.Fatalf("Shutdown error = %v, want missing authenticated request ID", err)
+	}
+}
+
+func TestStopForUpdateFallsBackToV017ShutdownShape(t *testing.T) {
+	t.Parallel()
+	type v017Shutdown struct {
+		Reason                    string `json:"reason"`
+		ExpectedAssignedJobCount  int    `json:"expectedAssignedJobCount"`
+		ExpectedActiveJobCount    int    `json:"expectedActiveJobCount"`
+		ExpectedActiveWorkerCount int    `json:"expectedActiveWorkerCount"`
+		RestartViaTaskScheduler   bool   `json:"restartViaTaskScheduler"`
+	}
+	type v017Request struct {
+		SchemaVersion int           `json:"schemaVersion"`
+		RequestID     string        `json:"requestId"`
+		Operation     Operation     `json:"op"`
+		Shutdown      *v017Shutdown `json:"shutdown,omitempty"`
+	}
+
+	expected := Status{
+		ProcessID: 123, Version: "v0.1.7", AssignedJobCount: 3,
+		ActiveJobCount: 2, ActiveWorkerCount: 4,
+	}
+	attempts := 0
+	serverResults := make(chan error, 2)
+	client, err := NewClient(func(context.Context) (net.Conn, error) {
+		serverConnection, clientConnection := net.Pipe()
+		attempt := attempts
+		attempts++
+		go func() {
+			defer serverConnection.Close()
+			decoder := json.NewDecoder(serverConnection)
+			decoder.DisallowUnknownFields()
+			var request v017Request
+			decodeErr := decoder.Decode(&request)
+			response := Response{SchemaVersion: SchemaVersion, RequestID: request.RequestID}
+			if attempt == 0 {
+				if decodeErr == nil || !strings.Contains(decodeErr.Error(), `unknown field "expectedProcessId"`) {
+					serverResults <- fmt.Errorf("current request was not rejected by the v0.1.7 decoder: %v", decodeErr)
+					return
+				}
+				response.ErrorCode = "invalid-request"
+				response.Error = fmt.Sprintf("decode control request: %v", decodeErr)
+			} else {
+				if decodeErr != nil {
+					serverResults <- fmt.Errorf("legacy fallback did not decode: %w", decodeErr)
+					return
+				}
+				if request.Operation != OperationShutdown || request.Shutdown == nil ||
+					request.Shutdown.Reason != "release update" ||
+					request.Shutdown.ExpectedAssignedJobCount != expected.AssignedJobCount ||
+					request.Shutdown.ExpectedActiveJobCount != expected.ActiveJobCount ||
+					request.Shutdown.ExpectedActiveWorkerCount != expected.ActiveWorkerCount ||
+					request.Shutdown.RestartViaTaskScheduler {
+					serverResults <- fmt.Errorf("unexpected v0.1.7 fallback request: %#v", request)
+					return
+				}
+				response.OK = true
+				status := expected
+				status.ShuttingDown = true
+				response.Status = &status
+			}
+			if encodeErr := json.NewEncoder(serverConnection).Encode(response); encodeErr != nil {
+				serverResults <- encodeErr
+				return
+			}
+			serverResults <- nil
+		}()
+		return clientConnection, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.Shutdown(context.Background(), "release update", expected, false)
+	if err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if !status.ShuttingDown || status.ProcessID != expected.ProcessID || attempts != 2 {
+		t.Fatalf("status=%#v attempts=%d, want accepted v0.1.7 fallback after one rejected current request", status, attempts)
+	}
+	for range 2 {
+		if result := <-serverResults; result != nil {
+			t.Fatal(result)
+		}
+	}
+}
+
+func TestRestartNeverFallsBackToLegacyShutdownShape(t *testing.T) {
+	t.Parallel()
+	attempts := 0
+	client, err := NewClient(func(context.Context) (net.Conn, error) {
+		serverConnection, clientConnection := net.Pipe()
+		attempts++
+		go func() {
+			defer serverConnection.Close()
+			var request Request
+			if decodeErr := json.NewDecoder(serverConnection).Decode(&request); decodeErr != nil {
+				return
+			}
+			_ = json.NewEncoder(serverConnection).Encode(Response{
+				SchemaVersion: SchemaVersion,
+				RequestID:     request.RequestID,
+				ErrorCode:     "invalid-request",
+				Error:         `decode control request: json: unknown field "expectedProcessId"`,
+			})
+		}()
+		return clientConnection, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Shutdown(context.Background(), "restart", Status{ProcessID: 123, Version: "test"}, true)
+	if err == nil || attempts != 1 {
+		t.Fatalf("restart error=%v attempts=%d, want one rejected current request and no legacy fallback", err, attempts)
 	}
 }
 
