@@ -42,41 +42,86 @@ type fakeSecretImporter struct {
 }
 
 type fakeControllerControl struct {
-	statuses      []control.Status
-	statusCalls   int
-	shutdownCalls int
+	statuses             []control.Status
+	statusErrors         []error
+	statusErr            error
+	statusCalls          int
+	shutdownCalls        int
+	omitRestartRequestID bool
 }
+
+const testRestartRequestID = "test-restart-request-1"
 
 func (f *fakeControllerControl) Status(context.Context) (control.Status, error) {
 	index := f.statusCalls
 	f.statusCalls++
-	if index >= len(f.statuses) {
-		index = len(f.statuses) - 1
+	var status control.Status
+	if len(f.statuses) > 0 {
+		statusIndex := min(index, len(f.statuses)-1)
+		status = f.statuses[statusIndex]
 	}
-	return f.statuses[index], nil
+	if index < len(f.statusErrors) && f.statusErrors[index] != nil {
+		return status, f.statusErrors[index]
+	}
+	if index >= len(f.statusErrors) && f.statusErr != nil {
+		return status, f.statusErr
+	}
+	return status, nil
 }
 
-func (f *fakeControllerControl) Shutdown(_ context.Context, _ string, expected control.Status, _ bool) (control.Status, error) {
+func (f *fakeControllerControl) Shutdown(_ context.Context, _ string, expected control.Status, restart bool) (control.Status, error) {
 	f.shutdownCalls++
 	status := expected
 	status.ShuttingDown = true
+	if restart && !f.omitRestartRequestID {
+		status.RestartRequestID = testRestartRequestID
+	}
 	return status, nil
+}
+
+type fakeRestartReceiptReader struct {
+	receipt model.RestartReceipt
+	err     error
+	loads   int
+}
+
+func (f *fakeRestartReceiptReader) LoadRestartReceipt(context.Context) (model.RestartReceipt, error) {
+	f.loads++
+	return f.receipt, f.err
 }
 
 type fakeProcessObserver struct{ handle *fakeProcessHandle }
 
 func (f fakeProcessObserver) Open(uint32) (host.ProcessHandle, error) { return f.handle, nil }
 
-type fakeProcessHandle struct{ exitCode uint32 }
+type fakeProcessHandle struct {
+	exitCode uint32
+	waited   bool
+}
 
-func (f *fakeProcessHandle) Wait(context.Context) (uint32, error) { return f.exitCode, nil }
-func (*fakeProcessHandle) Close() error                           { return nil }
+func (f *fakeProcessHandle) Wait(context.Context) (uint32, error) {
+	f.waited = true
+	return f.exitCode, nil
+}
+func (*fakeProcessHandle) Close() error { return nil }
 
-type fakeTaskStarter struct{ names []string }
+type fakeTaskStarter struct {
+	names   []string
+	errors  []error
+	err     error
+	onStart func()
+}
 
 func (f *fakeTaskStarter) Start(_ context.Context, name string) error {
+	if f.onStart != nil {
+		f.onStart()
+	}
+	index := len(f.names)
 	f.names = append(f.names, name)
-	return nil
+	if index < len(f.errors) {
+		return f.errors[index]
+	}
+	return f.err
 }
 
 func (f *fakeSecretImporter) Import(_ context.Context, source, destination string) (secret.ImportResult, error) {
@@ -117,9 +162,13 @@ func newTestApplication(t *testing.T, input string, store state.Store, force For
 		Config: config.Config{Controller: config.Controller{
 			LocalProbeTimeout: config.Duration{Duration: time.Second}, StartupTimeout: config.Duration{Duration: time.Second},
 		}},
-		Store:        store,
-		Gaming:       fakeGamingHost{},
-		ForceStop:    force,
+		Store:     store,
+		Gaming:    fakeGamingHost{},
+		ForceStop: force,
+		RestartReceipts: &fakeRestartReceiptReader{receipt: model.RestartReceipt{
+			SchemaVersion: 1, RequestID: testRestartRequestID, ProcessID: 100,
+			Version: buildinfo.Version, CompletedAt: time.Date(2026, 7, 9, 1, 2, 4, 0, time.UTC),
+		}},
 		Now:          func() time.Time { return time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC) },
 		PollInterval: time.Millisecond,
 	}, strings.NewReader(input), &out, &errOut)
@@ -353,18 +402,31 @@ func TestConfigValidateJSONIsReadOnlyAndStable(t *testing.T) {
 	}
 }
 
-func TestControllerRestartUsesCleanHandshakeAndScheduledTask(t *testing.T) {
+func TestControllerRestartExplicitlyStartsCanonicalTaskAfterCleanHandshake(t *testing.T) {
 	store := state.NewMemoryStore()
 	now := time.Now().UTC()
 	_ = store.SaveObserved(context.Background(), model.ObservedState{SchemaVersion: 1, Phase: model.PhaseDisabled, HeartbeatAt: now})
-	application, _, _ := newTestApplication(t, "", store, nil)
-	controlClient := &fakeControllerControl{statuses: []control.Status{
-		{ProcessID: 100, Version: "old", Phase: model.PhaseDisabled},
-		{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+	application, out, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version, Phase: model.PhaseDisabled},
+			{},
+			{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, nil},
+	}
+	handle := &fakeProcessHandle{exitCode: ControllerRestartExitCode}
+	receipts := application.dependencies.RestartReceipts.(*fakeRestartReceiptReader)
+	tasks := &fakeTaskStarter{onStart: func() {
+		if !handle.waited {
+			t.Fatal("scheduled task was started before the old process exit was verified")
+		}
+		if receipts.loads != 1 {
+			t.Fatal("scheduled task was started before the exact durable restart receipt was verified")
+		}
 	}}
-	tasks := &fakeTaskStarter{}
 	application.dependencies.Control = controlClient
-	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
+	application.dependencies.Processes = fakeProcessObserver{handle: handle}
 	application.dependencies.Tasks = tasks
 	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
 	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOK {
@@ -373,8 +435,12 @@ func TestControllerRestartUsesCleanHandshakeAndScheduledTask(t *testing.T) {
 	if controlClient.shutdownCalls != 1 {
 		t.Fatalf("shutdown calls = %d, want 1", controlClient.shutdownCalls)
 	}
-	if len(tasks.names) != 0 {
-		t.Fatalf("running restart must rely on Task Scheduler recovery, direct starts = %#v", tasks.names)
+	if len(tasks.names) != 1 || tasks.names[0] != controllerTaskName {
+		t.Fatalf("canonical task starts = %#v, want [%q]", tasks.names, controllerTaskName)
+	}
+	if !strings.Contains(out.String(), "exact durable completion receipt verified") ||
+		!strings.Contains(out.String(), "Starting canonical scheduled task") || !strings.Contains(out.String(), "pid 200") {
+		t.Fatalf("restart did not report explicit verified task recovery:\n%s", out.String())
 	}
 }
 
@@ -387,21 +453,228 @@ func TestControllerRestartDrainsBusyWorkWithoutForce(t *testing.T) {
 		HeartbeatAt:   now,
 		Workers:       []model.Worker{{ID: "busy", PoolID: "org", State: model.WorkerBusy}},
 	})
-	application, _, _ := newTestApplication(t, "", store, nil)
-	controlClient := &fakeControllerControl{statuses: []control.Status{
-		{ProcessID: 100, AssignedJobCount: 1, ActiveJobCount: 1, ActiveWorkerCount: 1},
-		{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
-	}}
+	application, out, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version, AssignedJobCount: 1, ActiveJobCount: 1, ActiveWorkerCount: 1},
+			{},
+			{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, nil},
+	}
 	application.dependencies.Control = controlClient
-	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
 	tasks := &fakeTaskStarter{}
 	application.dependencies.Tasks = tasks
 	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
 	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOK {
 		t.Fatalf("exit code %d, want success", code)
 	}
-	if controlClient.shutdownCalls != 1 || len(tasks.names) != 0 {
+	if controlClient.shutdownCalls != 1 || len(tasks.names) != 1 || tasks.names[0] != controllerTaskName {
 		t.Fatalf("shutdown=%d task starts=%#v", controlClient.shutdownCalls, tasks.names)
+	}
+	if !strings.Contains(out.String(), "assigned jobs: 1, active jobs: 1, active workers: 1") ||
+		!strings.Contains(out.String(), "Existing work will finish naturally") {
+		t.Fatalf("busy restart did not preserve the graceful-drain contract:\n%s", out.String())
+	}
+}
+
+func TestControllerRestartRetriesCanonicalTaskAcrossIgnoreNewRace(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version, Phase: model.PhaseReady},
+			{},
+			{},
+			{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, control.ErrUnavailable, nil},
+	}
+	tasks := &fakeTaskStarter{errors: []error{nil, errors.New("task is already running")}}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOK {
+		t.Fatalf("exit code %d, want success", code)
+	}
+	if len(tasks.names) != 2 {
+		t.Fatalf("canonical task starts = %#v, want two attempts across IgnoreNew race", tasks.names)
+	}
+	for _, name := range tasks.names {
+		if name != controllerTaskName {
+			t.Fatalf("started noncanonical task %q", name)
+		}
+	}
+}
+
+func TestControllerRestartFailsClosedWithoutVerifiedReplacement(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses:     []control.Status{{ProcessID: 100, Version: buildinfo.Version}, {}},
+		statusErrors: []error{nil},
+		statusErr:    control.ErrUnavailable,
+	}
+	tasks := &fakeTaskStarter{err: errors.New("scheduled task start failed")}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
+	application.dependencies.Config.Controller.StartupTimeout.Duration = 30 * time.Millisecond
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOperationTimedOut {
+		t.Fatalf("exit code %d, want timeout", code)
+	}
+	if len(tasks.names) != maxControllerTaskStartAttempts {
+		t.Fatalf("canonical task starts = %d, want bounded maximum %d: %#v", len(tasks.names), maxControllerTaskStartAttempts, tasks.names)
+	}
+	if !strings.Contains(errOut.String(), "last canonical task start attempt failed") ||
+		!strings.Contains(errOut.String(), "at most 4 canonical task start attempt") {
+		t.Fatalf("timeout did not retain fail-closed evidence:\n%s", errOut.String())
+	}
+}
+
+func TestControllerRestartRejectsReplacementAtWrongVersion(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version},
+			{},
+			{ProcessID: 200, Version: "unexpected"},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, nil},
+	}
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+		t.Fatalf("exit code %d, want state-changed", code)
+	}
+	if len(tasks.names) != 1 || !strings.Contains(errOut.String(), "does not match expected version") {
+		t.Fatalf("wrong-version replacement was not rejected: tasks=%#v error=%s", tasks.names, errOut.String())
+	}
+}
+
+func TestControllerRestartNeverTreatsUnavailableAsProofOfShutdown(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{statusErrors: []error{control.ErrUnavailable}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 0}}
+	application.dependencies.Tasks = tasks
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitDegraded {
+		t.Fatalf("exit code %d, want degraded", code)
+	}
+	if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "cannot be proven") {
+		t.Fatalf("unavailable control plane authorized task start: tasks=%#v error=%s", tasks.names, errOut.String())
+	}
+}
+
+func TestControllerRestartRequiresDurableReceiptInsteadOfExitCode(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.RestartReceipts = &fakeRestartReceiptReader{err: state.ErrNotFound}
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+		t.Fatalf("exit code %d, want state-changed", code)
+	}
+	if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "without a durable restart completion receipt") {
+		t.Fatalf("dedicated exit code without receipt authorized task start: tasks=%#v error=%s", tasks.names, errOut.String())
+	}
+}
+
+func TestControllerRestartRejectsOrdinaryNonzeroExitEvenWithReceipt(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	receipts := application.dependencies.RestartReceipts.(*fakeRestartReceiptReader)
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
+	application.dependencies.Tasks = tasks
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+		t.Fatalf("exit code %d, want state-changed", code)
+	}
+	if receipts.loads != 0 || len(tasks.names) != 0 || !strings.Contains(errOut.String(), "instead of dedicated restart code") {
+		t.Fatalf("ordinary failure authorized restart: receipt loads=%d tasks=%#v error=%s", receipts.loads, tasks.names, errOut.String())
+	}
+}
+
+func TestControllerRestartRejectsMismatchedCompletionReceipt(t *testing.T) {
+	tests := map[string]func(*model.RestartReceipt){
+		"schema":     func(receipt *model.RestartReceipt) { receipt.SchemaVersion = 2 },
+		"request ID": func(receipt *model.RestartReceipt) { receipt.RequestID = "other-request" },
+		"process ID": func(receipt *model.RestartReceipt) { receipt.ProcessID = 999 },
+		"version":    func(receipt *model.RestartReceipt) { receipt.Version = "unexpected" },
+		"completion": func(receipt *model.RestartReceipt) { receipt.CompletedAt = time.Time{} },
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			store := state.NewMemoryStore()
+			application, _, errOut := newTestApplication(t, "", store, nil)
+			receipts := application.dependencies.RestartReceipts.(*fakeRestartReceiptReader)
+			mutate(&receipts.receipt)
+			tasks := &fakeTaskStarter{}
+			application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
+			application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+			application.dependencies.Tasks = tasks
+			if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+				t.Fatalf("exit code %d, want state-changed", code)
+			}
+			if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "does not match the authenticated request") {
+				t.Fatalf("mismatched receipt authorized task start: tasks=%#v error=%s", tasks.names, errOut.String())
+			}
+		})
+	}
+}
+
+func TestControllerRestartCanRejoinAuthenticatedDrain(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version, ShuttingDown: true, RestartRequestID: testRestartRequestID},
+			{},
+			{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, nil},
+	}
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: ControllerRestartExitCode}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOK {
+		t.Fatalf("exit code %d, want success", code)
+	}
+	if controlClient.shutdownCalls != 0 || len(tasks.names) != 1 {
+		t.Fatalf("shutdown calls=%d task starts=%#v", controlClient.shutdownCalls, tasks.names)
+	}
+}
+
+func TestControllerRestartRejectsAcknowledgementWithoutRequestID(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	handle := &fakeProcessHandle{exitCode: ControllerRestartExitCode}
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{
+		statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}, omitRestartRequestID: true,
+	}
+	application.dependencies.Processes = fakeProcessObserver{handle: handle}
+	application.dependencies.Tasks = tasks
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+		t.Fatalf("exit code %d, want state-changed", code)
+	}
+	if handle.waited || len(tasks.names) != 0 || !strings.Contains(errOut.String(), "omitted its authenticated request ID") {
+		t.Fatalf("missing request ID advanced restart: waited=%t tasks=%#v error=%s", handle.waited, tasks.names, errOut.String())
 	}
 }
 

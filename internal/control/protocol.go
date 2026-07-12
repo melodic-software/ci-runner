@@ -47,6 +47,8 @@ type ForceStopTarget struct {
 
 type ShutdownRequest struct {
 	Reason                    string `json:"reason"`
+	ExpectedProcessID         uint32 `json:"expectedProcessId"`
+	ExpectedVersion           string `json:"expectedVersion"`
 	ExpectedAssignedJobCount  int    `json:"expectedAssignedJobCount"`
 	ExpectedActiveJobCount    int    `json:"expectedActiveJobCount"`
 	ExpectedActiveWorkerCount int    `json:"expectedActiveWorkerCount"`
@@ -71,6 +73,11 @@ type Status struct {
 	ActiveJobCount    int         `json:"activeJobCount"`
 	ActiveWorkerCount int         `json:"activeWorkerCount"`
 	ShuttingDown      bool        `json:"shuttingDown"`
+	// RestartRequestID identifies an accepted authenticated restart. It is also
+	// exposed by status while that exact drain is in progress so a reconnecting
+	// CLI can retain the proof chain. The controller binds the same ID into its
+	// durable completion receipt after all drain and runtime closes succeed.
+	RestartRequestID string `json:"restartRequestId,omitempty"`
 }
 
 // Handler uses a two-phase shutdown contract. Handle may mark shutdown as
@@ -101,6 +108,12 @@ func (r Request) Validate() error {
 		}
 		if strings.TrimSpace(r.Shutdown.Reason) == "" || len(r.Shutdown.Reason) > 256 {
 			return errors.New("shutdown reason is required and must be at most 256 characters")
+		}
+		if r.Shutdown.ExpectedProcessID == 0 {
+			return errors.New("expected shutdown process ID is required")
+		}
+		if strings.TrimSpace(r.Shutdown.ExpectedVersion) == "" || len(r.Shutdown.ExpectedVersion) > 128 {
+			return errors.New("expected shutdown version is required and must be at most 128 characters")
 		}
 		if r.Shutdown.ExpectedAssignedJobCount < 0 || r.Shutdown.ExpectedActiveJobCount < 0 || r.Shutdown.ExpectedActiveWorkerCount < 0 {
 			return errors.New("expected shutdown counts must not be negative")

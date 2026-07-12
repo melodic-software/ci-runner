@@ -2,11 +2,18 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/model"
 )
+
+func exactShutdownRequest(reason string) *control.ShutdownRequest {
+	return &control.ShutdownRequest{
+		Reason: reason, ExpectedProcessID: 1234, ExpectedVersion: "test-version",
+	}
+}
 
 func TestControlHandlerCommitsOnlyExactAcceptedRequest(t *testing.T) {
 	t.Parallel()
@@ -17,11 +24,15 @@ func TestControlHandlerCommitsOnlyExactAcceptedRequest(t *testing.T) {
 	}
 	request := control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-1", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "release promotion", RestartViaTaskScheduler: true},
+		Shutdown: exactShutdownRequest("release promotion"),
 	}
+	request.Shutdown.RestartViaTaskScheduler = true
 	response := handler.Handle(context.Background(), request)
 	if !response.OK || response.Status == nil || !response.Status.ShuttingDown {
 		t.Fatalf("response = %#v", response)
+	}
+	if response.Status.RestartRequestID != request.RequestID {
+		t.Fatalf("restart request ID = %q, want %q", response.Status.RestartRequestID, request.RequestID)
 	}
 	if harness.controller.ShuttingDown() {
 		t.Fatal("shutdown began before response commit")
@@ -33,6 +44,12 @@ func TestControlHandlerCommitsOnlyExactAcceptedRequest(t *testing.T) {
 	handler.CommitShutdown(request.RequestID)
 	if !harness.controller.ShuttingDown() {
 		t.Fatal("accepted request did not begin shutdown")
+	}
+	status := handler.Handle(context.Background(), control.Request{
+		SchemaVersion: control.SchemaVersion, RequestID: "status-after-commit", Operation: control.OperationStatus,
+	})
+	if !status.OK || status.Status == nil || status.Status.RestartRequestID != request.RequestID {
+		t.Fatalf("committed restart status = %#v", status)
 	}
 	select {
 	case signal := <-handler.ShutdownRequests():
@@ -53,7 +70,7 @@ func TestControlHandlerAbortReleasesOnlyUncommittedReservation(t *testing.T) {
 	}
 	first := control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-1", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "failed response"},
+		Shutdown: exactShutdownRequest("failed response"),
 	}
 	if response := handler.Handle(context.Background(), first); !response.OK {
 		t.Fatalf("first response = %#v", response)
@@ -61,7 +78,7 @@ func TestControlHandlerAbortReleasesOnlyUncommittedReservation(t *testing.T) {
 	handler.AbortShutdown("different-request")
 	if response := handler.Handle(context.Background(), control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-2", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "must still be reserved"},
+		Shutdown: exactShutdownRequest("must still be reserved"),
 	}); response.OK || response.ErrorCode != "shutdown-in-progress" {
 		t.Fatalf("mismatched abort released reservation: %#v", response)
 	}
@@ -71,7 +88,7 @@ func TestControlHandlerAbortReleasesOnlyUncommittedReservation(t *testing.T) {
 	}
 	second := control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-2", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "retry"},
+		Shutdown: exactShutdownRequest("retry"),
 	}
 	if response := handler.Handle(context.Background(), second); !response.OK {
 		t.Fatalf("retry response = %#v", response)
@@ -89,21 +106,66 @@ func TestControlHandlerAcceptsExactBusyDrainAndRejectsChangedCounts(t *testing.T
 		t.Fatal(err)
 	}
 	handler, _ := NewControlHandler(harness.controller, 1234)
+	shutdown := exactShutdownRequest("release promotion")
+	shutdown.ExpectedAssignedJobCount = 1
+	shutdown.ExpectedActiveJobCount = 1
+	shutdown.ExpectedActiveWorkerCount = 1
 	response := handler.Handle(context.Background(), control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-1", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{
-			Reason: "release promotion", ExpectedAssignedJobCount: 1, ExpectedActiveJobCount: 1, ExpectedActiveWorkerCount: 1,
-		},
+		Shutdown: shutdown,
 	})
 	if !response.OK || response.Status == nil || response.Status.ActiveJobCount != 1 {
 		t.Fatalf("response = %#v", response)
 	}
 	changed := handler.Handle(context.Background(), control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "restart-2", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "stale preflight"},
+		Shutdown: exactShutdownRequest("stale preflight"),
 	})
 	if changed.OK || changed.ErrorCode != "shutdown-state-changed" {
 		t.Fatalf("changed response = %#v", changed)
+	}
+}
+
+func TestControlHandlerRejectsMatchingCountsForDifferentControllerIdentity(t *testing.T) {
+	t.Parallel()
+	tests := map[string]func(*control.ShutdownRequest){
+		"process ID": func(request *control.ShutdownRequest) { request.ExpectedProcessID++ },
+		"version":    func(request *control.ShutdownRequest) { request.ExpectedVersion = "different-version" },
+	}
+	for name, changeIdentity := range tests {
+		name, changeIdentity := name, changeIdentity
+		t.Run(name, func(t *testing.T) {
+			harness := newHarness(t, model.ModeEnabled)
+			handler, err := NewControlHandler(harness.controller, 1234)
+			if err != nil {
+				t.Fatal(err)
+			}
+			shutdown := exactShutdownRequest("stale controller identity")
+			changeIdentity(shutdown)
+			request := control.Request{
+				SchemaVersion: control.SchemaVersion, RequestID: "identity-changed", Operation: control.OperationShutdown,
+				Shutdown: shutdown,
+			}
+			response := handler.Handle(context.Background(), request)
+			if response.OK || response.ErrorCode != "shutdown-state-changed" || !strings.Contains(response.Error, "identity changed") {
+				t.Fatalf("response = %#v", response)
+			}
+			handler.CommitShutdown(request.RequestID)
+			handler.mu.Lock()
+			pendingRequestID, committed := handler.pendingRequestID, handler.committed
+			handler.mu.Unlock()
+			if pendingRequestID != "" || committed {
+				t.Fatalf("identity mismatch reserved or committed shutdown: pending=%q committed=%t", pendingRequestID, committed)
+			}
+			if harness.controller.ShuttingDown() {
+				t.Fatal("identity mismatch created a committable shutdown reservation")
+			}
+			select {
+			case signal := <-handler.ShutdownRequests():
+				t.Fatalf("identity mismatch emitted shutdown signal %#v", signal)
+			default:
+			}
+		})
 	}
 }
 

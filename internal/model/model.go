@@ -46,6 +46,18 @@ type DesiredState struct {
 	UpdatedAt                 time.Time `json:"updatedAt"`
 }
 
+// RestartReceipt is written only after an authenticated restart request has
+// completed its capacity-zero drain and closed every controller-owned runtime.
+// The CLI binds it to the exact request and old process before starting the
+// canonical scheduled task. It contains no credentials or worker data.
+type RestartReceipt struct {
+	SchemaVersion int       `json:"schemaVersion"`
+	RequestID     string    `json:"requestId"`
+	ProcessID     uint32    `json:"pid"`
+	Version       string    `json:"version"`
+	CompletedAt   time.Time `json:"completedAt"`
+}
+
 // WorkerState is the small lifecycle vocabulary understood by policy code.
 type WorkerState string
 

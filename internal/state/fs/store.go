@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -20,8 +22,11 @@ import (
 const (
 	desiredFilename  = "desired.json"
 	observedFilename = "observed.json"
+	restartFilename  = "restart-completed.json"
 	maximumStateSize = 8 << 20
 )
+
+var restartRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Locker interface {
 	Lock(context.Context) (func() error, error)
@@ -90,6 +95,24 @@ func (s *Store) SaveObserved(ctx context.Context, value model.ObservedState) err
 		return fmt.Errorf("invalid observed state: %w", err)
 	}
 	return s.save(ctx, observedFilename, value)
+}
+
+func (s *Store) LoadRestartReceipt(ctx context.Context) (model.RestartReceipt, error) {
+	var value model.RestartReceipt
+	if err := s.load(ctx, restartFilename, &value); err != nil {
+		return model.RestartReceipt{}, err
+	}
+	if err := validateRestartReceipt(value); err != nil {
+		return model.RestartReceipt{}, fmt.Errorf("invalid restart receipt: %w", err)
+	}
+	return value, nil
+}
+
+func (s *Store) SaveRestartReceipt(ctx context.Context, value model.RestartReceipt) error {
+	if err := validateRestartReceipt(value); err != nil {
+		return fmt.Errorf("invalid restart receipt: %w", err)
+	}
+	return s.save(ctx, restartFilename, value)
 }
 
 // QuarantineObserved preserves the exact corrupt observed.json bytes as a
@@ -301,6 +324,25 @@ func validateObserved(value model.ObservedState) error {
 		if pool.TotalAssignedJobs < 0 || pool.MaxCapacity < 0 || pool.DrainServiceCapacity < 0 || pool.DesiredWorkers < 0 {
 			return fmt.Errorf("pool %q contains a negative count", pool.ID)
 		}
+	}
+	return nil
+}
+
+func validateRestartReceipt(value model.RestartReceipt) error {
+	if value.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported schemaVersion %d", value.SchemaVersion)
+	}
+	if !restartRequestIDPattern.MatchString(value.RequestID) {
+		return errors.New("requestId contains unsupported characters or is too long")
+	}
+	if value.ProcessID == 0 {
+		return errors.New("pid is required")
+	}
+	if strings.TrimSpace(value.Version) == "" || len(value.Version) > 128 {
+		return errors.New("version is required and must be at most 128 characters")
+	}
+	if value.CompletedAt.IsZero() {
+		return errors.New("completedAt is required")
 	}
 	return nil
 }

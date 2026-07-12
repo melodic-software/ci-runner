@@ -14,7 +14,12 @@ import (
 	"sync"
 )
 
-const maximumMessageSize = 64 << 10
+const (
+	maximumMessageSize = 64 << 10
+	// Release builds embed the tag without its leading "v".
+	legacyShutdownControllerVersion           = "0.1.7"
+	legacyShutdownIdentityFieldRejectionError = `decode control request: json: unknown field "expectedProcessId"`
+)
 
 var ErrUnavailable = errors.New("controller control plane is unavailable")
 
@@ -159,6 +164,26 @@ type Client struct {
 	dial func(context.Context) (net.Conn, error)
 }
 
+// legacyShutdownEnvelope is the exact shutdown wire shape shipped through
+// v0.1.7. A replacement CLI first attempts the current identity-bound request,
+// then uses this shape only when an older controller explicitly rejects one of
+// the added identity fields before dispatch. That preserves stop-for-update
+// across the upgrade boundary without weakening current-controller preflight.
+type legacyShutdownEnvelope struct {
+	SchemaVersion int                   `json:"schemaVersion"`
+	RequestID     string                `json:"requestId"`
+	Operation     Operation             `json:"op"`
+	Shutdown      legacyShutdownRequest `json:"shutdown"`
+}
+
+type legacyShutdownRequest struct {
+	Reason                    string `json:"reason"`
+	ExpectedAssignedJobCount  int    `json:"expectedAssignedJobCount"`
+	ExpectedActiveJobCount    int    `json:"expectedActiveJobCount"`
+	ExpectedActiveWorkerCount int    `json:"expectedActiveWorkerCount"`
+	RestartViaTaskScheduler   bool   `json:"restartViaTaskScheduler"`
+}
+
 func NewClient(dial func(context.Context) (net.Conn, error)) (*Client, error) {
 	if dial == nil {
 		return nil, errors.New("control dialer is required")
@@ -190,25 +215,56 @@ func (c *Client) Shutdown(ctx context.Context, reason string, expected Status, r
 	if err != nil {
 		return Status{}, err
 	}
-	response, err := c.roundTrip(ctx, Request{
+	request := Request{
 		SchemaVersion: SchemaVersion,
 		RequestID:     requestID,
 		Operation:     OperationShutdown,
 		Shutdown: &ShutdownRequest{
 			Reason:                    reason,
+			ExpectedProcessID:         expected.ProcessID,
+			ExpectedVersion:           expected.Version,
 			ExpectedAssignedJobCount:  expected.AssignedJobCount,
 			ExpectedActiveJobCount:    expected.ActiveJobCount,
 			ExpectedActiveWorkerCount: expected.ActiveWorkerCount,
 			RestartViaTaskScheduler:   restart,
 		},
-	})
+	}
+	response, err := c.roundTrip(ctx, request)
+	if !restart && legacyShutdownFieldRejection(err, expected.Version) {
+		response, err = c.roundTripMessage(ctx, requestID, legacyShutdownEnvelope{
+			SchemaVersion: SchemaVersion,
+			RequestID:     requestID,
+			Operation:     OperationShutdown,
+			Shutdown: legacyShutdownRequest{
+				Reason:                    reason,
+				ExpectedAssignedJobCount:  expected.AssignedJobCount,
+				ExpectedActiveJobCount:    expected.ActiveJobCount,
+				ExpectedActiveWorkerCount: expected.ActiveWorkerCount,
+				RestartViaTaskScheduler:   false,
+			},
+		})
+	}
 	if err != nil {
 		return Status{}, err
 	}
 	if response.Status == nil {
 		return Status{}, errors.New("controller shutdown response is missing status")
 	}
+	if restart && response.Status.RestartRequestID != requestID {
+		return Status{}, errors.New("controller restart response is missing the authenticated request ID")
+	}
 	return *response.Status, nil
+}
+
+func legacyShutdownFieldRejection(err error, expectedVersion string) bool {
+	if expectedVersion != legacyShutdownControllerVersion {
+		return false
+	}
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) || responseErr.Code != "invalid-request" {
+		return false
+	}
+	return responseErr.Message == legacyShutdownIdentityFieldRejectionError
 }
 
 func (c *Client) ForceStopPreview(ctx context.Context) ([]ForceStopTarget, error) {
@@ -242,6 +298,10 @@ func (c *Client) roundTrip(ctx context.Context, request Request) (Response, erro
 	if err := request.Validate(); err != nil {
 		return Response{}, err
 	}
+	return c.roundTripMessage(ctx, request.RequestID, request)
+}
+
+func (c *Client) roundTripMessage(ctx context.Context, requestID string, request any) (Response, error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -276,7 +336,7 @@ func (c *Client) roundTrip(ctx context.Context, request Request) (Response, erro
 	if err := requireEOF(decoder); err != nil {
 		return Response{}, err
 	}
-	if response.SchemaVersion != SchemaVersion || response.RequestID != request.RequestID {
+	if response.SchemaVersion != SchemaVersion || response.RequestID != requestID {
 		return Response{}, errors.New("control response schema or request ID mismatch")
 	}
 	if !response.OK {

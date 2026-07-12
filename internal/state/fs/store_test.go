@@ -76,6 +76,47 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	if gotObserved.Phase != model.PhaseGaming || gotObserved.Version != "1.2.3" {
 		t.Fatalf("observed mismatch: %#v", gotObserved)
 	}
+	receipt := model.RestartReceipt{
+		SchemaVersion: 1, RequestID: "restart-request-1", ProcessID: 1234,
+		Version: "1.2.3", CompletedAt: now,
+	}
+	if err := store.SaveRestartReceipt(ctx, receipt); err != nil {
+		t.Fatalf("SaveRestartReceipt: %v", err)
+	}
+	gotReceipt, err := store.LoadRestartReceipt(ctx)
+	if err != nil {
+		t.Fatalf("LoadRestartReceipt: %v", err)
+	}
+	if gotReceipt != receipt {
+		t.Fatalf("restart receipt mismatch: %#v", gotReceipt)
+	}
+}
+
+func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+	valid := model.RestartReceipt{
+		SchemaVersion: 1, RequestID: "request-1", ProcessID: 42,
+		Version: "1.2.3", CompletedAt: time.Now().UTC(),
+	}
+	tests := map[string]func(*model.RestartReceipt){
+		"schema":     func(value *model.RestartReceipt) { value.SchemaVersion = 0 },
+		"request ID": func(value *model.RestartReceipt) { value.RequestID = "bad request" },
+		"process ID": func(value *model.RestartReceipt) { value.ProcessID = 0 },
+		"version":    func(value *model.RestartReceipt) { value.Version = "" },
+		"completion": func(value *model.RestartReceipt) { value.CompletedAt = time.Time{} },
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			value := valid
+			mutate(&value)
+			if err := store.SaveRestartReceipt(context.Background(), value); err == nil {
+				t.Fatal("invalid restart receipt was accepted")
+			}
+		})
+	}
 }
 
 func TestStoreRoundTripsUnregisteredWorkerState(t *testing.T) {

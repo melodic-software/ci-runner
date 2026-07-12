@@ -85,6 +85,9 @@ func (h *ControlHandler) Handle(ctx context.Context, request control.Request) co
 	case control.OperationShutdown:
 		// Continue through the two-phase shutdown reservation below.
 	}
+	if status.ProcessID != request.Shutdown.ExpectedProcessID || status.Version != request.Shutdown.ExpectedVersion {
+		return control.ErrorResponse(request.RequestID, "shutdown-state-changed", errors.New("controller process identity changed after shutdown preflight; shutdown was not accepted"))
+	}
 	if status.AssignedJobCount != request.Shutdown.ExpectedAssignedJobCount ||
 		status.ActiveJobCount != request.Shutdown.ExpectedActiveJobCount ||
 		status.ActiveWorkerCount != request.Shutdown.ExpectedActiveWorkerCount {
@@ -102,6 +105,9 @@ func (h *ControlHandler) Handle(ctx context.Context, request control.Request) co
 		h.pendingRestart = request.Shutdown.RestartViaTaskScheduler
 	}
 	response.Status.ShuttingDown = true
+	if request.Shutdown.RestartViaTaskScheduler {
+		response.Status.RestartRequestID = request.RequestID
+	}
 	return response
 }
 
@@ -213,11 +219,15 @@ func (h *ControlHandler) status(ctx context.Context) (control.Status, error) {
 	}
 	h.mu.Lock()
 	pending := h.pendingRequestID != ""
+	restartRequestID := ""
+	if h.pendingRestart {
+		restartRequestID = h.pendingRequestID
+	}
 	h.mu.Unlock()
 	return control.Status{
 		Phase: observed.Phase, ProcessID: h.processID, Version: h.reconciler.version,
 		AssignedJobCount: assignedJobs, ActiveJobCount: activeJobs, ActiveWorkerCount: activeWorkers,
-		ShuttingDown: pending || h.reconciler.ShuttingDown(),
+		ShuttingDown: pending || h.reconciler.ShuttingDown(), RestartRequestID: restartRequestID,
 	}, nil
 }
 
