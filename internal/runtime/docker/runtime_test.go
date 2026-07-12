@@ -616,6 +616,65 @@ func TestStuckLogStreamIsCanceledBeforeWatchRetry(t *testing.T) {
 	}
 }
 
+func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.setBlockLogs(true)
+	engine.addContainer("retry-evidence-worker", "completed", "running")
+	sink := &memoryArtifacts{}
+	recorder := &recordingTelemetry{}
+	options := testOptions(sink)
+	options.FinalizationTimeout = 10 * time.Millisecond
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := runtime.watchForTest("retry-evidence-worker")
+	engine.signalExit("retry-evidence-worker")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, first); err == nil || !strings.Contains(err.Error(), "log stream did not close") {
+		t.Fatalf("first finalization error = %v", err)
+	}
+	sink.mu.Lock()
+	firstResources := append([]ResourceEvidence(nil), sink.resources...)
+	sink.mu.Unlock()
+	if len(firstResources) != 0 {
+		t.Fatalf("timeout persisted immutable fallback evidence: %#v", firstResources)
+	}
+
+	engine.setBlockLogs(false)
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := runtime.watchForTest("retry-evidence-worker")
+	engine.signalExit("retry-evidence-worker")
+	if err := waitForWatch(ctx, second); err != nil {
+		t.Fatalf("resource evidence retry failed: %v", err)
+	}
+	sink.mu.Lock()
+	resources := append([]ResourceEvidence(nil), sink.resources...)
+	sink.mu.Unlock()
+	if len(resources) != 1 || resources[0].Source != resourceEvidenceSourceCgroup || resources[0].Status != "complete" {
+		t.Fatalf("retry resource evidence = %#v, want one real cgroup record", resources)
+	}
+	_, finalizations := recorder.snapshot()
+	recorded := 0
+	for _, finalization := range finalizations {
+		if finalization.value.RecordResourceEvidence {
+			recorded++
+		}
+	}
+	if len(finalizations) != 2 || recorded != 1 || !finalizations[1].value.RecordResourceEvidence || finalizations[1].value.ResourceEvidence == nil || finalizations[1].value.ResourceEvidence.Status != "complete" {
+		t.Fatalf("retry finalization telemetry = %#v", finalizations)
+	}
+}
+
 func TestNewRejectsMutableImageAndMissingArtifactSink(t *testing.T) {
 	t.Parallel()
 	base := testOptions(&memoryArtifacts{})
@@ -1018,6 +1077,11 @@ func (e *fakeEngine) logStreamCounts() (int, int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.activeLogs, e.maximumLogs
+}
+func (e *fakeEngine) setBlockLogs(block bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.blockLogs = block
 }
 
 type recordingConnection struct {

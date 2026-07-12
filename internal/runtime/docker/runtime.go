@@ -744,8 +744,17 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) error {
 
 func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata) (ResourceEvidence, bool, error) {
 	evidence := fallbackResourceEvidence("unavailable", "docker-copy-unavailable")
+	if err := ctx.Err(); err != nil {
+		// A finalization timeout is an attempt failure, not evidence that Docker
+		// or cgroup data is unavailable. Do not publish an immutable fallback;
+		// the retained container can provide real terminal evidence on retry.
+		return evidence, false, fmt.Errorf("terminal worker resource evidence context expired: %w", err)
+	}
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
 	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return evidence, false, fmt.Errorf("copy terminal worker resource evidence after finalization context expired: %w", errors.Join(err, contextErr))
+		}
 		if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
 			return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
 		}
@@ -762,6 +771,9 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 		} else {
 			evidence = parsed
 		}
+	}
+	if err := ctx.Err(); err != nil && evidence.Source == resourceEvidenceSourceHost {
+		return evidence, false, fmt.Errorf("terminal worker fallback evidence context expired before persistence: %w", err)
 	}
 	recorded, err := r.opts.Artifacts.WriteResourceEvidence(ctx, metadata, evidence)
 	if err != nil {

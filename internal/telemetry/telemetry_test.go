@@ -135,6 +135,9 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	if got := intHistogramSum(t, metrics["ci_runner.worker.io.write"]); got != 5500000000 {
 		t.Errorf("I/O write histogram sum = %d, want 5500000000", got)
 	}
+	if got := intSumValue(t, metrics["ci_runner.worker.memory.oom.events"], "ci_runner.pool.id", "org"); got != 0 {
+		t.Errorf("OOM events = %d, want 0 without retry duplication", got)
+	}
 	assertLowCardinality(t, collected)
 
 	gotSpans := spans.GetSpans()
