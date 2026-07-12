@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,16 +14,25 @@ import (
 )
 
 type testHandler struct {
-	mu        sync.Mutex
-	committed string
-	aborted   string
+	mu                   sync.Mutex
+	committed            string
+	aborted              string
+	lastRequest          Request
+	omitRestartRequestID bool
 }
 
 func (h *testHandler) Handle(_ context.Context, request Request) Response {
-	return Response{OK: true, Status: &Status{
+	h.mu.Lock()
+	h.lastRequest = request
+	h.mu.Unlock()
+	status := &Status{
 		Phase: model.PhaseDisabled, ProcessID: 123, Version: "test", ActiveJobCount: 0,
 		ShuttingDown: request.Operation == OperationShutdown,
-	}}
+	}
+	if request.Operation == OperationShutdown && request.Shutdown.RestartViaTaskScheduler && !h.omitRestartRequestID {
+		status.RestartRequestID = request.RequestID
+	}
+	return Response{OK: true, Status: status}
 }
 
 func (h *testHandler) CommitShutdown(requestID string) {
@@ -51,25 +61,54 @@ func TestTransportStatusAndTwoPhaseShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := client.Shutdown(context.Background(), "test restart", Status{}, true)
+	expected := Status{ProcessID: 123, Version: "test"}
+	status, err := client.Shutdown(context.Background(), "test restart", expected, true)
 	if err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if !status.ShuttingDown || status.ActiveJobCount != 0 {
 		t.Fatalf("unexpected status: %#v", status)
 	}
+	if status.RestartRequestID == "" {
+		t.Fatal("restart acceptance omitted its authenticated request ID")
+	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		handler.mu.Lock()
 		committed := handler.committed
+		request := handler.lastRequest
 		handler.mu.Unlock()
 		if committed != "" {
+			if request.Shutdown == nil || request.Shutdown.ExpectedProcessID != expected.ProcessID || request.Shutdown.ExpectedVersion != expected.Version {
+				t.Fatalf("shutdown identity preflight = %#v, want pid=%d version=%q", request.Shutdown, expected.ProcessID, expected.Version)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("shutdown was not committed after response")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestTransportRejectsRestartAcceptanceWithoutRequestID(t *testing.T) {
+	serverConnection, clientConnection := net.Pipe()
+	handler := &testHandler{omitRestartRequestID: true}
+	server, err := NewServer(&singleConnectionListener{connection: serverConnection}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer server.Close()
+	go func() { _ = server.Serve(ctx) }()
+	client, err := NewClient(func(context.Context) (net.Conn, error) { return clientConnection, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Shutdown(context.Background(), "test restart", Status{ProcessID: 123, Version: "test"}, true)
+	if err == nil || !strings.Contains(err.Error(), "authenticated request ID") {
+		t.Fatalf("Shutdown error = %v, want missing authenticated request ID", err)
 	}
 }
 
@@ -100,7 +139,7 @@ func TestTransportAbortsShutdownReservationWhenAcceptanceCannotFlush(t *testing.
 	t.Parallel()
 	handler := &testHandler{}
 	server := &Server{handler: handler}
-	connection := &failingWriteConnection{Reader: bytes.NewReader([]byte(`{"schemaVersion":1,"requestId":"restart-1","op":"shutdown","shutdown":{"reason":"test"}}` + "\n"))}
+	connection := &failingWriteConnection{Reader: bytes.NewReader([]byte(`{"schemaVersion":1,"requestId":"restart-1","op":"shutdown","shutdown":{"reason":"test","expectedProcessId":123,"expectedVersion":"test"}}` + "\n"))}
 	server.serveConnection(context.Background(), connection)
 	handler.mu.Lock()
 	defer handler.mu.Unlock()

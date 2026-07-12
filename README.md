@@ -86,6 +86,8 @@ ci-runner host game [--wait|--detach]
 ci-runner host doctor [--json] [--include-elevated]
 ci-runner host logs [--follow|--job ID|--cleanup]
 ci-runner host force-stop
+ci-runner host controller restart
+ci-runner host controller stop-for-update
 ci-runner secret import --file PATH
 ```
 
@@ -110,9 +112,30 @@ the verifier can open an Administrator UAC prompt; use it only in an interactive
 session where that prompt is expected.
 
 The windowless `ci-runner-controller.exe` runs from a current-user logon task
-because Docker Desktop is user-session software. Task Scheduler only restarts
-the controller. Battery, resource admission, drain, Docker Desktop, and WSL
-policy remain in the shared Go state machine.
+because Docker Desktop is user-session software. A controller restart first
+uses the authenticated control plane to bind the shutdown reservation to the
+preflight PID, version, and job counts, then advertises zero capacity and lets
+every assigned or active job finish. Only after every pool has two confirmed
+zero-capacity observations, no active worker remains, and the message sessions,
+worker runtime, and control server close successfully does the controller write
+an ACL-hardened, atomic completion receipt bound to the authenticated request
+ID, old PID, and exact version and emit its dedicated restart exit code. The CLI
+waits on that exact process handle and requires both the exit code and matching
+durable receipt before it can touch Task Scheduler.
+
+The CLI then asks Task Scheduler to run the canonical `ci-runner-fleet` task
+at most four times with exponential backoff. Those bounded retries close the
+`MultipleInstances=IgnoreNew` race while Task Scheduler finishes the prior
+instance. Success still requires the authenticated control plane to report a
+different PID at the exact expected version. An unavailable initial control
+plane, an ordinary controller failure, or a missing or mismatched receipt never
+authorizes a task start.
+
+The CLI invokes the existing task through a direct hidden `schtasks.exe /Run`
+child process. It does not launch the controller directly, open another console
+window, invoke a shell, request elevation or UAC, or terminate the draining
+controller. Battery, resource admission, drain, Docker Desktop, and WSL policy
+remain in the shared Go state machine.
 
 ## Configuration and ownership
 
@@ -139,6 +162,7 @@ Mutable local state is separate:
   state\desired.json       # user-owned mode and temporary capacity override
   state\observed.json      # controller heartbeat, pools, workers, and problems
   state\jobs.json          # exact job-to-artifact correlation
+  state\restart-completed.json # last authenticated restart completion receipt
   secrets\                 # current-user DPAPI-protected App keys
   logs\controller\         # structured JSON Lines controller events
   logs\workers\            # externally captured runner stdout/stderr

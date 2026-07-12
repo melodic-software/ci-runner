@@ -55,6 +55,10 @@ type ControllerControl interface {
 	Shutdown(context.Context, string, control.Status, bool) (control.Status, error)
 }
 
+type RestartReceiptReader interface {
+	LoadRestartReceipt(context.Context) (model.RestartReceipt, error)
+}
+
 type DoctorInspection struct {
 	CheckDocker     bool
 	RequireDocker   bool
@@ -66,18 +70,19 @@ type DoctorInspector interface {
 }
 
 type Dependencies struct {
-	Config       config.Config
-	Store        state.Store
-	Gaming       host.GamingHost
-	Secrets      SecretImporter
-	ForceStop    ForceStopper
-	Logs         LogReader
-	Control      ControllerControl
-	Doctor       DoctorInspector
-	Processes    host.ProcessObserver
-	Tasks        host.ScheduledTaskStarter
-	Now          func() time.Time
-	PollInterval time.Duration
+	Config          config.Config
+	Store           state.Store
+	Gaming          host.GamingHost
+	Secrets         SecretImporter
+	ForceStop       ForceStopper
+	Logs            LogReader
+	Control         ControllerControl
+	Doctor          DoctorInspector
+	Processes       host.ProcessObserver
+	Tasks           host.ScheduledTaskStarter
+	RestartReceipts RestartReceiptReader
+	Now             func() time.Time
+	PollInterval    time.Duration
 }
 
 type Application struct {

@@ -716,7 +716,9 @@ func TestControlStatusAndCommittedShutdownInterruptLongPoll(t *testing.T) {
 
 	request := control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "shutdown-while-polling", Operation: control.OperationShutdown,
-		Shutdown: &control.ShutdownRequest{Reason: "test", ExpectedActiveJobCount: 0},
+		Shutdown: &control.ShutdownRequest{
+			Reason: "test", ExpectedProcessID: 1234, ExpectedVersion: "test-version", ExpectedActiveJobCount: 0,
+		},
 	}
 	if response := handler.Handle(context.Background(), request); !response.OK {
 		t.Fatalf("shutdown response = %#v", response)

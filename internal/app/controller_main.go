@@ -16,12 +16,22 @@ import (
 	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/jobindex"
+	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	"github.com/melodic-software/ci-runner/internal/secret"
 	statefs "github.com/melodic-software/ci-runner/internal/state/fs"
 )
 
+// ControllerRestartExitCode is emitted only after the authenticated restart
+// drain and durable receipt commit both succeed. The CLI requires this exact
+// code in addition to the receipt before it may start the scheduled task.
+const ControllerRestartExitCode uint32 = 75
+
 var ErrControllerRestartRequested = errors.New("controller restart requested after graceful drain")
+
+type restartReceiptWriter interface {
+	SaveRestartReceipt(context.Context, model.RestartReceipt) error
+}
 
 // RunControllerMain composes the native Windows controller. It returns nil
 // only after a clean transient drain has closed the message sessions and Docker
@@ -129,7 +139,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		return fail("control-server-error", err)
 	}
 	logEvent("controller-started", fmt.Sprintf("version=%s host=%s worker=%s", buildinfo.Version, cfg.Host.ID, manifest.WorkerReference()))
-	err = runControllerLoop(ctx, cfg, reconciler, handler, server, logs)
+	err = runControllerLoop(ctx, cfg, reconciler, handler, server, logs, store, uint32(os.Getpid()), buildinfo.Version)
 	if err != nil {
 		return fail("controller-stopped-with-error", err)
 	}
@@ -157,23 +167,24 @@ func runControllerLoop(
 	handler *controller.ControlHandler,
 	server *control.Server,
 	logs controller.LogSink,
+	restartReceipts restartReceiptWriter,
+	processID uint32,
+	version string,
 ) error {
 	serverContext, stopServer := context.WithCancel(context.Background())
 	defer stopServer()
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(serverContext) }()
 
-	shutdown := func(reason string, awaitServer, restart bool) error {
-		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "controller-draining", Message: reason})
+	shutdown := func(signal controller.ShutdownSignal, awaitServer bool) error {
+		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "controller-draining", Message: signal.Reason})
 		shutdownErr := reconciler.Shutdown(context.Background())
-		stopServer()
+		// Close before canceling so this caller wins Server.Close's sync.Once and
+		// retains any listener/connection close error in the restart proof.
 		closeErr := server.Close()
+		stopServer()
 		if !awaitServer {
-			result := errors.Join(shutdownErr, closeErr)
-			if restart {
-				result = errors.Join(result, ErrControllerRestartRequested)
-			}
-			return result
+			return completeControllerShutdown(context.Background(), errors.Join(shutdownErr, closeErr), signal, restartReceipts, processID, version)
 		}
 		var result error
 		select {
@@ -182,10 +193,7 @@ func runControllerLoop(
 		case <-time.After(cfg.Controller.ShutdownPollInterval.Duration):
 			result = errors.Join(shutdownErr, closeErr, errors.New("control server did not stop after listener close"))
 		}
-		if restart {
-			result = errors.Join(result, ErrControllerRestartRequested)
-		}
-		return result
+		return completeControllerShutdown(context.Background(), result, signal, restartReceipts, processID, version)
 	}
 
 	for {
@@ -199,18 +207,18 @@ func runControllerLoop(
 		case signal := <-handler.ShutdownRequests():
 			cancelStep()
 			<-stepDone
-			return shutdown(signal.Reason, true, signal.Restart)
+			return shutdown(signal, true)
 		case <-ctx.Done():
 			cancelStep()
 			<-stepDone
-			return shutdown("process interrupt", true, false)
+			return shutdown(controller.ShutdownSignal{Reason: "process interrupt"}, true)
 		case serveErr := <-serverErrors:
 			cancelStep()
 			<-stepDone
 			if serveErr == nil {
 				serveErr = errors.New("control server exited unexpectedly")
 			}
-			return errors.Join(serveErr, shutdown("control server exited unexpectedly", false, false))
+			return errors.Join(serveErr, shutdown(controller.ShutdownSignal{Reason: "control server exited unexpectedly"}, false))
 		case stepErr := <-stepDone:
 			cancelStep()
 			if stepErr != nil {
@@ -224,12 +232,12 @@ func runControllerLoop(
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return shutdown(signal.Reason, true, signal.Restart)
+			return shutdown(signal, true)
 		case <-ctx.Done():
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return shutdown("process interrupt", true, false)
+			return shutdown(controller.ShutdownSignal{Reason: "process interrupt"}, true)
 		case serveErr := <-serverErrors:
 			if !timer.Stop() {
 				<-timer.C
@@ -237,8 +245,39 @@ func runControllerLoop(
 			if serveErr == nil {
 				serveErr = errors.New("control server exited unexpectedly")
 			}
-			return errors.Join(serveErr, shutdown("control server exited unexpectedly", false, false))
+			return errors.Join(serveErr, shutdown(controller.ShutdownSignal{Reason: "control server exited unexpectedly"}, false))
 		case <-timer.C:
 		}
 	}
+}
+
+// completeControllerShutdown commits the durable half of task-restart
+// authorization. Any drain, runtime-close, listener-close, or receipt-write
+// failure returns without the restart sentinel, so main emits an ordinary exit
+// code and the CLI fails closed even if a partial receipt became visible.
+func completeControllerShutdown(
+	ctx context.Context,
+	shutdownErr error,
+	signal controller.ShutdownSignal,
+	restartReceipts restartReceiptWriter,
+	processID uint32,
+	version string,
+) error {
+	if shutdownErr != nil || !signal.Restart {
+		return shutdownErr
+	}
+	if restartReceipts == nil || signal.RequestID == "" || processID == 0 || version == "" {
+		return errors.New("restart completion receipt dependencies are invalid")
+	}
+	receipt := model.RestartReceipt{
+		SchemaVersion: 1,
+		RequestID:     signal.RequestID,
+		ProcessID:     processID,
+		Version:       version,
+		CompletedAt:   time.Now().UTC(),
+	}
+	if err := restartReceipts.SaveRestartReceipt(ctx, receipt); err != nil {
+		return fmt.Errorf("persist restart completion receipt: %w", err)
+	}
+	return ErrControllerRestartRequested
 }

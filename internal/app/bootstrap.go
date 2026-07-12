@@ -122,9 +122,10 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		Doctor: NewLocalDoctorInspector(cfg, acl, bitLocker, secretStore, func(ctx context.Context) (string, string, error) {
 			return dockerruntime.ProbeLocal(ctx, buildinfo.Version)
 		}),
-		Control:   controlClient,
-		Processes: host.WindowsProcessObserver{},
-		Tasks:     host.ScheduledTaskCLI{},
+		Control:         controlClient,
+		Processes:       host.WindowsProcessObserver{},
+		Tasks:           host.ScheduledTaskCLI{},
+		RestartReceipts: store,
 	}, in, out, errOut)
 	if err != nil {
 		fmt.Fprintf(errOut, "initialize application: %v\n", err)

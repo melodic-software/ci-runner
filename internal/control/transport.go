@@ -196,6 +196,8 @@ func (c *Client) Shutdown(ctx context.Context, reason string, expected Status, r
 		Operation:     OperationShutdown,
 		Shutdown: &ShutdownRequest{
 			Reason:                    reason,
+			ExpectedProcessID:         expected.ProcessID,
+			ExpectedVersion:           expected.Version,
 			ExpectedAssignedJobCount:  expected.AssignedJobCount,
 			ExpectedActiveJobCount:    expected.ActiveJobCount,
 			ExpectedActiveWorkerCount: expected.ActiveWorkerCount,
@@ -207,6 +209,9 @@ func (c *Client) Shutdown(ctx context.Context, reason string, expected Status, r
 	}
 	if response.Status == nil {
 		return Status{}, errors.New("controller shutdown response is missing status")
+	}
+	if restart && response.Status.RestartRequestID != requestID {
+		return Status{}, errors.New("controller restart response is missing the authenticated request ID")
 	}
 	return *response.Status, nil
 }
