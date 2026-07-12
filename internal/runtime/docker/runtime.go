@@ -561,10 +561,15 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	finalization := telemetry.WorkerFinalization{ResourceTier: telemetryMetadata.ResourceTier}
 	defer func() {
 		finalization.Err = watch.err
+		if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(watch.err, shutdownErr) {
+			finalization.ControllerShutdown = true
+		}
 		finalization.Duration = time.Since(telemetryStartedAt)
 		r.opts.Telemetry.WorkerFinalized(context.Background(), telemetryMetadata.PoolID, finalization)
-	}()
-	defer func() {
+
+		// The watch becoming done is an externally observable lifecycle boundary.
+		// Publish telemetry first so callers cannot observe completion before the
+		// corresponding finalization signal exists.
 		r.mu.Lock()
 		delete(r.watches, id)
 		close(watch.done)
@@ -637,15 +642,21 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		}
 	case <-finalizeCtx.Done():
 		err := errors.New("worker log stream did not close before finalization timeout")
+		if shutdownErr := r.ctx.Err(); shutdownErr != nil {
+			err = fmt.Errorf("worker log stream canceled by controller shutdown: %w", shutdownErr)
+		}
 		r.opts.OnError(err)
 		watch.err = errors.Join(watch.err, err)
 		cancelLogs()
 		// Do not delete the watch while its log writer is still active. Keeping
 		// the watch registered prevents List from starting concurrent retries
 		// against the same artifact path.
-		if logErr := <-logDone; logErr != nil && !errors.Is(logErr, context.Canceled) {
-			r.opts.OnError(logErr)
-			watch.err = errors.Join(watch.err, logErr)
+		if logErr := <-logDone; logErr != nil {
+			shutdownErr := r.ctx.Err()
+			if shutdownErr == nil || !errorCausedOnlyBy(logErr, shutdownErr) {
+				r.opts.OnError(logErr)
+				watch.err = errors.Join(watch.err, logErr)
+			}
 		}
 	}
 	if err := r.captureDiagnostics(finalizeCtx, id); err != nil {
@@ -735,6 +746,9 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 	evidence := fallbackResourceEvidence("unavailable", "docker-copy-unavailable")
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
 	if err != nil {
+		if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
+			return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
+		}
 		r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
 	} else {
 		content, extractErr := readSingleRegularArchive(result.Content, maximumResourceEvidenceBytes)
@@ -802,6 +816,39 @@ func wrapIfError(operation string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+// errorCausedOnlyBy recognizes wrapping and errors.Join while refusing to
+// hide any unrelated artifact/runtime failure that happened alongside a
+// controller shutdown.
+func errorCausedOnlyBy(err, cause error) bool {
+	if err == nil || cause == nil {
+		return false
+	}
+	if err == cause {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		found := false
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			found = true
+			if !errorCausedOnlyBy(child, cause) {
+				return false
+			}
+		}
+		return found
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return errorCausedOnlyBy(wrapped.Unwrap(), cause)
+	}
+	return errors.Is(err, cause)
 }
 
 func waitForWatch(ctx context.Context, watch *containerWatch) error {

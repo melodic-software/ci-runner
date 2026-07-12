@@ -159,6 +159,94 @@ func TestRuntimeEmitsBoundedWorkerLifecycleTelemetry(t *testing.T) {
 	}
 }
 
+func TestWatchCompletionFollowsFinalizationTelemetry(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	recorder := newBlockingFinalizationTelemetry()
+	options := testOptions(&memoryArtifacts{})
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", ResourceTier: "default",
+		JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits:    config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest(worker.ID)
+	engine.signalExit(worker.ID)
+	waitForSignal(t, recorder.entered, "finalization telemetry was not invoked")
+	select {
+	case <-watch.done:
+		t.Fatal("watch became done before finalization telemetry completed")
+	default:
+	}
+	close(recorder.release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 1 {
+		t.Fatalf("finalization telemetry count = %d, want 1", len(finalizations))
+	}
+}
+
+func TestControllerShutdownClassificationAcrossPostExitPhases(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		phase       string
+		wantOutcome telemetry.WorkerFinalizationOutcome
+	}{
+		{phase: "log", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "diagnostics-copy", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "diagnostics-persist", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "evidence-copy", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "evidence-persist", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "index", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "removal", wantOutcome: telemetry.WorkerFinalizationCanceled},
+		{phase: "index-with-artifact-failure", wantOutcome: telemetry.WorkerFinalizationRuntimeError},
+	} {
+		test := test
+		t.Run(test.phase, func(t *testing.T) {
+			t.Parallel()
+			baseEngine := newFakeEngine()
+			baseEngine.addContainer("shutdown-worker", "completed", "exited")
+			entered := make(chan struct{})
+			engine := &shutdownPhaseEngine{Engine: baseEngine, phase: test.phase, entered: entered}
+			artifacts := &shutdownPhaseArtifacts{ArtifactSink: &memoryArtifacts{}, phase: test.phase, entered: entered}
+			recorder := &recordingTelemetry{}
+			options := testOptions(artifacts)
+			options.Telemetry = recorder
+			runtime, err := New(engine, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Close()
+			if _, err := runtime.List(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			watch := runtime.watchForTest("shutdown-worker")
+			baseEngine.signalExit("shutdown-worker")
+			waitForSignal(t, entered, "finalization did not reach shutdown phase")
+			runtime.cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = waitForWatch(ctx, watch)
+			_, finalizations := recorder.snapshot()
+			if len(finalizations) != 1 || telemetry.ClassifyWorkerFinalization(finalizations[0].value) != test.wantOutcome {
+				t.Fatalf("phase %s finalization = %#v, want %s", test.phase, finalizations, test.wantOutcome)
+			}
+		})
+	}
+}
+
 func TestResourceEvidenceCopyFailurePersistsFallbackWithoutBlockingDiagnostics(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -993,6 +1081,15 @@ func containsCall(calls []string, expected string) bool {
 	return false
 }
 
+func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal(message)
+	}
+}
+
 type fakePull struct{}
 
 func (*fakePull) Read([]byte) (int, error)   { return 0, io.EOF }
@@ -1028,6 +1125,111 @@ type recordingTelemetry struct {
 	starts        []recordedWorkerStart
 	finalizations []recordedWorkerFinalization
 }
+
+type blockingFinalizationTelemetry struct {
+	*recordingTelemetry
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingFinalizationTelemetry() *blockingFinalizationTelemetry {
+	return &blockingFinalizationTelemetry{
+		recordingTelemetry: &recordingTelemetry{}, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+}
+
+func (r *blockingFinalizationTelemetry) WorkerFinalized(ctx context.Context, poolID string, value telemetry.WorkerFinalization) {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	r.recordingTelemetry.WorkerFinalized(ctx, poolID, value)
+}
+
+type shutdownPhaseEngine struct {
+	Engine
+	phase   string
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (e *shutdownPhaseEngine) signalEntered() { e.once.Do(func() { close(e.entered) }) }
+
+func (e *shutdownPhaseEngine) ContainerLogs(ctx context.Context, id string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	if e.phase != "log" {
+		return e.Engine.ContainerLogs(ctx, id, options)
+	}
+	e.signalEntered()
+	return &contextBlockingReadCloser{ctx: ctx}, nil
+}
+
+func (e *shutdownPhaseEngine) CopyFromContainer(ctx context.Context, id string, options client.CopyFromContainerOptions) (client.CopyFromContainerResult, error) {
+	blocked := e.phase == "diagnostics-copy" && options.SourcePath == defaultDiagPath ||
+		e.phase == "evidence-copy" && options.SourcePath == defaultResourceEvidencePath
+	if !blocked {
+		return e.Engine.CopyFromContainer(ctx, id, options)
+	}
+	e.signalEntered()
+	<-ctx.Done()
+	return client.CopyFromContainerResult{}, ctx.Err()
+}
+
+func (e *shutdownPhaseEngine) ContainerRemove(ctx context.Context, id string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+	if e.phase != "removal" {
+		return e.Engine.ContainerRemove(ctx, id, options)
+	}
+	e.signalEntered()
+	<-ctx.Done()
+	return client.ContainerRemoveResult{}, ctx.Err()
+}
+
+type shutdownPhaseArtifacts struct {
+	ArtifactSink
+	phase   string
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *shutdownPhaseArtifacts) signalEntered() { s.once.Do(func() { close(s.entered) }) }
+
+func (s *shutdownPhaseArtifacts) WriteDiagnostics(ctx context.Context, metadata ArtifactMetadata, source io.Reader) error {
+	if s.phase != "diagnostics-persist" {
+		return s.ArtifactSink.WriteDiagnostics(ctx, metadata, source)
+	}
+	s.signalEntered()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *shutdownPhaseArtifacts) WriteResourceEvidence(ctx context.Context, metadata ArtifactMetadata, evidence ResourceEvidence) (bool, error) {
+	if s.phase != "evidence-persist" {
+		return s.ArtifactSink.WriteResourceEvidence(ctx, metadata, evidence)
+	}
+	s.signalEntered()
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func (s *shutdownPhaseArtifacts) Finalize(ctx context.Context, metadata ArtifactMetadata) error {
+	if s.phase != "index" && s.phase != "index-with-artifact-failure" {
+		return s.ArtifactSink.Finalize(ctx, metadata)
+	}
+	s.signalEntered()
+	<-ctx.Done()
+	if s.phase == "index-with-artifact-failure" {
+		return errors.Join(ctx.Err(), errors.New("durable index failed"))
+	}
+	return ctx.Err()
+}
+
+type contextBlockingReadCloser struct {
+	ctx context.Context
+}
+
+func (r *contextBlockingReadCloser) Read([]byte) (int, error) {
+	<-r.ctx.Done()
+	return 0, r.ctx.Err()
+}
+func (*contextBlockingReadCloser) Close() error { return nil }
 
 func (r *recordingTelemetry) BeginReconcile(ctx context.Context) (context.Context, func(telemetry.ReconcileSnapshot, error)) {
 	return ctx, func(telemetry.ReconcileSnapshot, error) {}

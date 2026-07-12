@@ -43,10 +43,12 @@ type Reconciler struct {
 	deps    Dependencies
 
 	// stepMu serializes side effects without blocking local control-plane status
-	// requests. stateMu protects only short-lived in-memory state and must never
-	// be held across an adapter call or listener poll.
-	stepMu  sync.Mutex
-	stateMu sync.Mutex
+	// requests. stateMu protects only short-lived control state; capacityMu
+	// protects only the pending-capacity transition map. Neither may be held
+	// across an adapter call or listener poll.
+	stepMu     sync.Mutex
+	stateMu    sync.Mutex
+	capacityMu sync.Mutex
 
 	backoff           BackoffPolicy
 	watchInterval     time.Duration
@@ -54,6 +56,7 @@ type Reconciler struct {
 	drainCapacity     map[string]int
 	sequence          uint64
 	shuttingDown      bool
+	pendingCapacity   map[string]int
 }
 
 type ReconcileResult struct {
@@ -90,8 +93,9 @@ func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Recon
 			Multiplier: cfg.GitHub.Retry.Multiplier, JitterRatio: cfg.GitHub.Retry.JitterRatio,
 			MaxAttempts: cfg.GitHub.Retry.MaxAttempts, Jitter: cryptoJitter,
 		},
-		watchInterval: watchInterval,
-		drainCapacity: make(map[string]int),
+		watchInterval:   watchInterval,
+		drainCapacity:   make(map[string]int),
+		pendingCapacity: make(map[string]int),
 	}, nil
 }
 
@@ -430,6 +434,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	power = cadenceResult.observed.Power
 	previous.ResourceGate = cadenceResult.observed.ResourceGate
 	previous.PowerGate = cadenceResult.observed.PowerGate
+	cadencePools := make(map[string]model.PoolObservation, len(cadenceResult.observed.Pools))
+	for _, pool := range cadenceResult.observed.Pools {
+		cadencePools[pool.ID] = pool
+	}
 	now = r.deps.Clock.Now().UTC()
 	close(pollResults)
 	for result := range pollResults {
@@ -744,14 +752,14 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
 		pool := findPool(pools, target.ID)
-		priorPool := previousPools[target.ID]
+		priorPool := cadencePools[target.ID]
 		actualCapacity := priorPool.MaxCapacity
 		if capacityAcknowledged[target.ID] {
 			actualCapacity = acknowledgedCapacity[target.ID]
 		}
-		updatedAt := poolAcknowledgementTransitionAt(
-			priorPool, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
-			actualCapacity, capacityAcknowledged[target.ID], now,
+		updatedAt := r.poolAcknowledgementTransitionAt(
+			target.ID, priorPool, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
+			actualCapacity, provisional.AdvertisedCapacity[target.ID], capacityAcknowledged[target.ID], now,
 		)
 		observedPools = append(observedPools, model.PoolObservation{
 			ID: target.ID, ScaleSetID: pool.Identity.ScaleSetID, ListenerID: pool.Identity.ListenerID,

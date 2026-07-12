@@ -56,9 +56,9 @@ func (r *Reconciler) pollCheckpoint(
 		if acknowledged && prior.MaxCapacity == 0 {
 			confirmations = prior.ZeroCapacityConfirmations
 		}
-		updatedAt := poolAcknowledgementTransitionAt(
-			prior, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
-			prior.MaxCapacity, acknowledged, now,
+		updatedAt := r.poolAcknowledgementTransitionAt(
+			target.ID, prior, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
+			prior.MaxCapacity, plan.AdvertisedCapacity[target.ID], acknowledged, now,
 		)
 		observedPools = append(observedPools, model.PoolObservation{
 			ID: target.ID, ScaleSetID: pool.Identity.ScaleSetID, ListenerID: pool.Identity.ListenerID,
@@ -96,6 +96,24 @@ func poolAcknowledgementTransitionAt(prior model.PoolObservation, scaleSetID int
 		return now
 	}
 	return prior.UpdatedAt
+}
+
+func (r *Reconciler) poolAcknowledgementTransitionAt(targetID string, prior model.PoolObservation, scaleSetID int64, listenerID string, capacity, pendingCapacity int, acknowledged bool, now time.Time) time.Time {
+	transitionAt := poolAcknowledgementTransitionAt(prior, scaleSetID, listenerID, capacity, acknowledged, now)
+	r.capacityMu.Lock()
+	defer r.capacityMu.Unlock()
+	if r.pendingCapacity == nil {
+		r.pendingCapacity = make(map[string]int)
+	}
+	if acknowledged {
+		delete(r.pendingCapacity, targetID)
+		return transitionAt
+	}
+	if previous, found := r.pendingCapacity[targetID]; found && previous != pendingCapacity {
+		transitionAt = now
+	}
+	r.pendingCapacity[targetID] = pendingCapacity
+	return transitionAt
 }
 
 func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.CancelCauseFunc, state pollCadenceState) pollCadenceResult {
