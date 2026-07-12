@@ -237,6 +237,7 @@ func BuildPlan(input PlanInput) Plan {
 
 	capacityDebt := busyWorkers > hostLimit
 	quiescing := false
+	advertisable := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		desired := plan.DesiredWorkers[target.ID]
 		active := 0
@@ -272,6 +273,38 @@ func BuildPlan(input PlanInput) Plan {
 			}
 		} else if !capacityDebt {
 			plan.AdvertisedCapacity[target.ID] = desired
+			advertisable[target.ID] = true
+		}
+	}
+
+	// GitHub's scale-set listener capacity is the maximum number of assigned
+	// jobs the host can service, not the number of workers that should exist
+	// before assignment. ARC advertises maxRunners to the listener and computes
+	// its actual worker count separately as minRunners+assigned. Preserve that
+	// split here: desired workers remain assigned+warm-idle, while additional
+	// host- and memory-bounded slots are advertised without prestarting them.
+	// A gate, capacity debt, or per-pool quiesce still leaves capacity at zero.
+	if !capacityDebt {
+		serviceSlots := hostLimit - activeWorkers
+		for _, decision := range plan.Start {
+			serviceSlots -= decision.Count
+		}
+		if serviceSlots < 0 {
+			serviceSlots = 0
+		}
+		for _, target := range targets {
+			if !advertisable[target.ID] || serviceSlots == 0 {
+				continue
+			}
+			additional := minInt(target.MaxCapacity-plan.AdvertisedCapacity[target.ID], serviceSlots)
+			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
+			additional = minInt(additional, affordableWorkerCount(memoryRemaining, workerMemory))
+			if additional <= 0 {
+				continue
+			}
+			plan.AdvertisedCapacity[target.ID] += additional
+			serviceSlots -= additional
+			memoryRemaining -= uint64(additional) * uint64(workerMemory)
 		}
 	}
 	if len(plan.Problems) > 0 {

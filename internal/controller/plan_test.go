@@ -26,6 +26,52 @@ func TestDesiredFormulaAndStartCount(t *testing.T) {
 	}
 }
 
+func TestIdlePoolAdvertisesFullServiceCapacityWithoutPrestartingBacklogWorkers(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 1 || totalStarts(plan.Start) != 1 {
+		t.Fatalf("desired=%d starts=%#v, want only one warm worker", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want resource-bounded target maximum 3", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestScaleToZeroPoolAdvertisesServiceCapacityWithoutPrestartingWorkers(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 0 || len(plan.Start) != 0 {
+		t.Fatalf("desired=%d starts=%#v, want scale-to-zero inventory", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want jobs admitted up to target maximum 3", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestAdvertisedServiceCapacityRemainsMemoryBounded(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 6
+	input.Config.GitHub.Targets[0].MaxCapacity = 6
+	input.Resources.AvailableMemoryBytes = 40 << 30 // 24 GiB above the floor funds three 8-GiB workers total.
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 1 || totalStarts(plan.Start) != 1 {
+		t.Fatalf("desired=%d starts=%#v, want only one warm worker", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want exactly three memory-backed slots", plan.AdvertisedCapacity["org"])
+	}
+}
+
 func TestGlobalCapacityUsesPriorityAcrossPools(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
@@ -122,6 +168,9 @@ func TestACOnlySuspendsImmediatelyAndResumesAfterStableWindow(t *testing.T) {
 	if plan.Phase != model.PhasePowerSuspended {
 		t.Fatalf("phase = %s", plan.Phase)
 	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("power-suspended capacity = %d, want fail-closed zero", plan.AdvertisedCapacity["org"])
+	}
 	assertRemoved(t, plan.Remove, "idle")
 	assertNotRemoved(t, plan.Remove, "busy")
 
@@ -159,6 +208,9 @@ func TestCPUBlockAndResumeHysteresis(t *testing.T) {
 	plan = BuildPlan(input)
 	if plan.Phase != model.PhaseResourceConstrained || !plan.ResourceGate.Blocked || plan.ResourceGate.Reason != model.ResourceGateReasonCPU {
 		t.Fatalf("CPU did not block after observation window: %#v", plan.ResourceGate)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("resource-constrained capacity = %d, want fail-closed zero", plan.AdvertisedCapacity["org"])
 	}
 
 	input.Resources.CPUUtilizationPercent = 60

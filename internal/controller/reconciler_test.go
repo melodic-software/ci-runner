@@ -17,7 +17,7 @@ import (
 	statepkg "github.com/melodic-software/ci-runner/internal/state"
 )
 
-func TestReconcilerCreatesOneWarmEphemeralWorker(t *testing.T) {
+func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	result, err := harness.controller.Step(context.Background())
@@ -30,15 +30,15 @@ func TestReconcilerCreatesOneWarmEphemeralWorker(t *testing.T) {
 	if result.Observed.Phase != model.PhaseReady {
 		t.Fatalf("phase = %s; problems=%#v", result.Observed.Phase, result.Observed.Problems)
 	}
-	if len(result.Observed.Pools) != 1 || result.Observed.Pools[0].MaxCapacity != 1 || result.Observed.Pools[0].DesiredWorkers != 1 {
+	if len(result.Observed.Pools) != 1 || result.Observed.Pools[0].MaxCapacity != 3 || result.Observed.Pools[0].DesiredWorkers != 1 {
 		t.Fatalf("pool = %#v", result.Observed.Pools)
 	}
 	if len(result.Observed.Workers) != 1 || result.Observed.Workers[0].State != model.WorkerIdle {
 		t.Fatalf("workers = %#v", result.Observed.Workers)
 	}
 	for _, call := range harness.scaleSets.SnapshotCalls() {
-		if call.Operation == "statistics" && call.MaxCapacity != 1 {
-			t.Fatalf("first listener poll maxCapacity = %d, want warm capacity 1", call.MaxCapacity)
+		if call.Operation == "statistics" && call.MaxCapacity != 3 {
+			t.Fatalf("first listener poll maxCapacity = %d, want service capacity 3", call.MaxCapacity)
 		}
 	}
 }
@@ -320,7 +320,7 @@ func TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.Observed.Pools[0].MaxCapacity != 1 || third.Observed.Phase != model.PhaseReady {
+	if third.Observed.Pools[0].MaxCapacity != 3 || third.Observed.Phase != model.PhaseReady {
 		t.Fatalf("restored pool = %#v", third.Observed)
 	}
 	removed := 0
@@ -761,8 +761,8 @@ func TestDesiredChangeCancelsLongPollAndImmediatelyAdvertisesZero(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("desired-state change did not interrupt and replace the long poll")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[1 0]" {
-		t.Fatalf("advertised capacities = %v, want [1 0]", got)
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 0]" {
+		t.Fatalf("advertised capacities = %v, want [3 0]", got)
 	}
 }
 
@@ -850,8 +850,8 @@ func TestPowerChangeCancelsLongPollAndImmediatelyAdvertisesZero(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("power change did not interrupt and replace the long poll")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[1 0]" {
-		t.Fatalf("advertised capacities = %v, want [1 0]", got)
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 0]" {
+		t.Fatalf("advertised capacities = %v, want [3 0]", got)
 	}
 }
 
@@ -886,7 +886,7 @@ func TestDesiredFlipAfterAcquireServicesAssignedJobWhileCapacityStaysZero(t *tes
 	if harness.runtime.startCount() != 1 || len(result.Observed.Workers) != 1 {
 		t.Fatalf("acquired job was stranded after desired flip: starts=%d observed=%#v", harness.runtime.startCount(), result.Observed)
 	}
-	if !result.Observed.Pools[0].CapacityAcknowledged || result.Observed.Pools[0].MaxCapacity != 0 || result.Observed.Pools[0].DrainServiceCapacity != 1 {
+	if !result.Observed.Pools[0].CapacityAcknowledged || result.Observed.Pools[0].MaxCapacity != 0 || result.Observed.Pools[0].DrainServiceCapacity != 3 {
 		t.Fatalf("drain reopened capacity or lost service obligation: %#v", result.Observed.Pools[0])
 	}
 }

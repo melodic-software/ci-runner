@@ -50,8 +50,8 @@ func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("resource recovery remained trapped behind the listener long poll")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 1]" {
-		t.Fatalf("advertised capacities = %v, want [0 1]", got)
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
+		t.Fatalf("advertised capacities = %v, want [0 3]", got)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestPowerRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stable-AC recovery remained trapped behind the listener long poll")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 1]" {
-		t.Fatalf("advertised capacities = %v, want [0 1]", got)
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
+		t.Fatalf("advertised capacities = %v, want [0 3]", got)
 	}
 }
 
@@ -100,7 +100,7 @@ func TestInvalidResourceObservationCancelsNonzeroPollAndPreservesRacingAssignmen
 	now := harness.clock.Now()
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
-		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 1, CapacityAcknowledged: true}},
+		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +127,8 @@ func TestInvalidResourceObservationCancelsNonzeroPollAndPreservesRacingAssignmen
 	case <-time.After(time.Second):
 		t.Fatal("invalid resource observation did not cancel nonzero listener capacity")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[1 0]" {
-		t.Fatalf("advertised capacities = %v, want [1 0]", got)
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 0]" {
+		t.Fatalf("advertised capacities = %v, want [3 0]", got)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	now := harness.clock.Now()
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now.Add(-time.Minute),
-		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 1, CapacityAcknowledged: true}},
+		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,10 +163,10 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
 		return observed.HeartbeatAt.Equal(harness.clock.Now())
 	}, "heartbeat was not checkpointed on the reconcile cadence")
-	if len(checkpoint.Pools) != 1 || !checkpoint.Pools[0].CapacityAcknowledged || checkpoint.Pools[0].MaxCapacity != 1 {
+	if len(checkpoint.Pools) != 1 || !checkpoint.Pools[0].CapacityAcknowledged || checkpoint.Pools[0].MaxCapacity != 3 {
 		t.Fatalf("stable acknowledged capacity was corrupted by heartbeat checkpoint: %#v", checkpoint.Pools)
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[1]" {
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3]" {
 		t.Fatalf("stable long poll was restarted: capacities=%v", got)
 	}
 	cancel()
