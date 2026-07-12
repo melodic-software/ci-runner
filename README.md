@@ -166,7 +166,7 @@ Mutable local state is separate:
   secrets\                 # current-user DPAPI-protected App keys
   logs\controller\         # structured JSON Lines controller events
   logs\workers\            # externally captured runner stdout/stderr
-  diagnostics\             # copied runner _diag archives
+  diagnostics\             # copied runner _diag and terminal cgroup evidence
 ```
 
 Permanent capacity and threshold changes are YAML changes, never source-code
@@ -179,6 +179,15 @@ cleanup cadence are strict host configuration. Startup retention runs only
 after every managed active or exited container has been adopted. The explicit
 `host logs --cleanup` command first inventories the fixed local Docker endpoint
 and refuses to run if that safety inventory is unavailable.
+
+Optional OpenTelemetry export uses standard `OTEL_*` environment variables and
+is disabled without explicit configuration. It emits controller reconcile
+spans and low-cardinality fleet, capacity, worker, job, host-pressure, gate, and
+lifecycle metrics. Exporter failures are locally logged and cannot change
+capacity, drain workers, cancel jobs, or stop the controller. Runner names,
+container IDs, job IDs, credentials, and arbitrary error text never become
+metric attributes. See [OpenTelemetry observability](docs/observability.md) for
+the exact enablement, metric, cancellation, and failure-isolation contracts.
 
 Default worker parity is 2 CPU, 8 GiB memory, no additional swap, 4096 PIDs,
 and no devices. Admission also honors configurable host memory/CPU thresholds,
@@ -339,5 +348,6 @@ needed, then rerun affected workflows hosted.
 
 - [Worker image and isolation contract](docs/worker-image.md)
 - [Queue-monitor behavior and scheduler limits](docs/queue-monitor.md)
+- [OpenTelemetry observability](docs/observability.md)
 - [Immutable releases, freshness, and rollback](docs/releases.md)
 - [Deferred capabilities and non-workaround boundaries](docs/roadmap.md)

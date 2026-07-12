@@ -17,6 +17,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/model"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -24,21 +25,23 @@ import (
 )
 
 const (
-	managedLabel        = "com.melodic-software.ci-runner.managed"
-	hostLabel           = "com.melodic-software.ci-runner.host"
-	poolLabel           = "com.melodic-software.ci-runner.pool"
-	workerNameLabel     = "com.melodic-software.ci-runner.name"
-	runnerIDLabel       = "com.melodic-software.ci-runner.github-runner-id"
-	startedAtLabel      = "com.melodic-software.ci-runner.started-at"
-	controllerLabel     = "com.melodic-software.ci-runner.controller-version"
-	composeProjectLabel = "com.docker.compose.project"
-	composeServiceLabel = "com.docker.compose.service"
-	composeNumberLabel  = "com.docker.compose.container-number"
-	composeOneoffLabel  = "com.docker.compose.oneoff"
-	composeServiceName  = "worker"
-	defaultStatePath    = "/home/runner/_runner_state/state"
-	defaultDiagPath     = "/home/runner/_diag"
-	maximumStateBytes   = 32
+	managedLabel                = "com.melodic-software.ci-runner.managed"
+	hostLabel                   = "com.melodic-software.ci-runner.host"
+	poolLabel                   = "com.melodic-software.ci-runner.pool"
+	workerNameLabel             = "com.melodic-software.ci-runner.name"
+	resourceTierLabel           = "com.melodic-software.ci-runner.resource-tier"
+	runnerIDLabel               = "com.melodic-software.ci-runner.github-runner-id"
+	startedAtLabel              = "com.melodic-software.ci-runner.started-at"
+	controllerLabel             = "com.melodic-software.ci-runner.controller-version"
+	composeProjectLabel         = "com.docker.compose.project"
+	composeServiceLabel         = "com.docker.compose.service"
+	composeNumberLabel          = "com.docker.compose.container-number"
+	composeOneoffLabel          = "com.docker.compose.oneoff"
+	composeServiceName          = "worker"
+	defaultStatePath            = "/home/runner/_runner_state/state"
+	defaultDiagPath             = "/home/runner/_diag"
+	defaultResourceEvidencePath = "/home/runner/_runner_state/cgroup-terminal.json"
+	maximumStateBytes           = 32
 )
 
 var digestPinnedImage = regexp.MustCompile(`^[^\s@]+(?::[^\s@]+)?@sha256:[0-9a-f]{64}$`)
@@ -68,12 +71,14 @@ type Options struct {
 	Image                  string
 	StatePath              string
 	DiagnosticPath         string
+	ResourceEvidencePath   string
 	DockerLogMaxSizeBytes  uint64
 	DockerLogMaxFiles      int
 	IdleConfirmationWindow time.Duration
 	FinalizationTimeout    time.Duration
 	Artifacts              ArtifactSink
 	OnError                func(error)
+	Telemetry              telemetry.Recorder
 }
 
 func (o *Options) defaults() {
@@ -83,8 +88,14 @@ func (o *Options) defaults() {
 	if o.DiagnosticPath == "" {
 		o.DiagnosticPath = defaultDiagPath
 	}
+	if o.ResourceEvidencePath == "" {
+		o.ResourceEvidencePath = defaultResourceEvidencePath
+	}
 	if o.OnError == nil {
 		o.OnError = func(error) {}
+	}
+	if o.Telemetry == nil {
+		o.Telemetry = telemetry.Noop()
 	}
 }
 
@@ -95,8 +106,8 @@ func (o Options) validate() error {
 	if !digestPinnedImage.MatchString(o.Image) {
 		return errors.New("Docker worker image must be pinned to an exact sha256 manifest digest")
 	}
-	if !strings.HasPrefix(o.StatePath, "/") || !strings.HasPrefix(o.DiagnosticPath, "/") {
-		return errors.New("worker state and diagnostic paths must be absolute Linux paths")
+	if !strings.HasPrefix(o.StatePath, "/") || !strings.HasPrefix(o.DiagnosticPath, "/") || !strings.HasPrefix(o.ResourceEvidencePath, "/") {
+		return errors.New("worker state, diagnostic, and resource-evidence paths must be absolute Linux paths")
 	}
 	if o.DockerLogMaxSizeBytes == 0 || o.DockerLogMaxFiles <= 0 {
 		return errors.New("Docker local log size and file count must be positive")
@@ -259,7 +270,14 @@ func (r *Runtime) List(ctx context.Context) ([]model.Worker, error) {
 	return workers, nil
 }
 
-func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerRequest) (model.Worker, error) {
+func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerRequest) (worker model.Worker, resultErr error) {
+	telemetryStartedAt := time.Now()
+	if request.ResourceTier == "" {
+		request.ResourceTier = "default"
+	}
+	defer func() {
+		r.opts.Telemetry.WorkerStarted(ctx, request.PoolID, request.ResourceTier, time.Since(telemetryStartedAt), telemetry.ClassifyWorkerStart(resultErr, controller.RunnerStartMayBeActive(resultErr)))
+	}()
 	if err := validateLimits(request); err != nil {
 		return model.Worker{}, safeWorkerStartError(err)
 	}
@@ -293,7 +311,7 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 			},
 			Labels: map[string]string{
 				managedLabel: "true", hostLabel: r.opts.HostID, poolLabel: request.PoolID,
-				workerNameLabel: request.Name, runnerIDLabel: strconv.FormatInt(runnerID, 10), startedAtLabel: startedAt.Format(time.RFC3339Nano), controllerLabel: r.opts.ControllerVersion,
+				workerNameLabel: request.Name, resourceTierLabel: request.ResourceTier, runnerIDLabel: strconv.FormatInt(runnerID, 10), startedAtLabel: startedAt.Format(time.RFC3339Nano), controllerLabel: r.opts.ControllerVersion,
 				composeProjectLabel: "ci-runner-" + r.opts.HostID, composeServiceLabel: composeServiceName,
 				composeNumberLabel: strconv.FormatInt(runnerID, 10), composeOneoffLabel: "False",
 			},
@@ -538,6 +556,14 @@ func (r *Runtime) ensureWatch(id string, existing *client.ContainerWaitResult) *
 
 func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *containerWatch) {
 	defer r.wg.Done()
+	telemetryStartedAt := time.Now()
+	telemetryMetadata := r.metadata(r.ctx, id)
+	finalization := telemetry.WorkerFinalization{ResourceTier: telemetryMetadata.ResourceTier}
+	defer func() {
+		finalization.Err = watch.err
+		finalization.Duration = time.Since(telemetryStartedAt)
+		r.opts.Telemetry.WorkerFinalized(context.Background(), telemetryMetadata.PoolID, finalization)
+	}()
 	defer func() {
 		r.mu.Lock()
 		delete(r.watches, id)
@@ -561,8 +587,10 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		case <-r.ctx.Done():
 			watch.err = r.ctx.Err()
 			return
-		case _, ok := <-resultChannel:
+		case result, ok := <-resultChannel:
 			if ok {
+				finalization.ExitCode = result.StatusCode
+				finalization.ExitObserved = true
 				resultChannel = nil
 				errorChannel = nil
 			} else {
@@ -614,6 +642,25 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		watch.err = errors.Join(watch.err, err)
 	}
 	metadata := r.metadata(finalizeCtx, id)
+	evidence, evidenceErr := r.captureResourceEvidence(finalizeCtx, id, metadata)
+	if evidenceErr != nil {
+		r.opts.OnError(evidenceErr)
+		watch.err = errors.Join(watch.err, evidenceErr)
+	}
+	finalization.ResourceTier = metadata.ResourceTier
+	finalization.ResourceEvidence = &telemetry.WorkerResourceEvidence{
+		Status: evidence.Status, Missing: append([]string(nil), evidence.Missing...),
+		MemoryPeakBytes:          evidence.Memory.PeakBytes,
+		MemorySwapPeakBytes:      evidence.Memory.SwapPeakBytes,
+		OOMEvents:                evidence.Memory.OOMEvents,
+		OOMKillEvents:            evidence.Memory.OOMKillEvents,
+		CPUPeriods:               evidence.CPU.Periods,
+		CPUThrottledPeriods:      evidence.CPU.ThrottledPeriods,
+		CPUThrottledMicroseconds: evidence.CPU.ThrottledMicroseconds,
+		PIDsPeak:                 evidence.PIDs.Peak,
+		IOReadBytes:              evidence.IO.ReadBytes,
+		IOWriteBytes:             evidence.IO.WriteBytes,
+	}
 	if watch.err == nil {
 		if err := r.opts.Artifacts.Finalize(finalizeCtx, metadata); err != nil {
 			err = fmt.Errorf("finalize worker artifacts: %w", err)
@@ -672,6 +719,52 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) error {
 	return nil
 }
 
+func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata) (ResourceEvidence, error) {
+	evidence := fallbackResourceEvidence("unavailable", "docker-copy-unavailable")
+	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
+	if err != nil {
+		r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
+	} else {
+		content, extractErr := readSingleRegularArchive(result.Content, maximumResourceEvidenceBytes)
+		closeErr := result.Content.Close()
+		if err := errors.Join(extractErr, closeErr); err != nil {
+			r.opts.OnError(fmt.Errorf("extract terminal worker resource evidence; preserving bounded fallback: %w", err))
+			evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
+		} else if parsed, parseErr := ParseResourceEvidence(strings.NewReader(string(content))); parseErr != nil {
+			r.opts.OnError(fmt.Errorf("validate terminal worker resource evidence; preserving bounded fallback: %w", parseErr))
+			evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
+		} else {
+			evidence = parsed
+		}
+	}
+	if err := r.opts.Artifacts.WriteResourceEvidence(ctx, metadata, evidence); err != nil {
+		return evidence, fmt.Errorf("persist terminal worker resource evidence: %w", err)
+	}
+	return evidence, nil
+}
+
+func readSingleRegularArchive(source io.Reader, maximum int64) ([]byte, error) {
+	tarReader := tar.NewReader(io.LimitReader(source, maximum+64*1024))
+	header, err := tarReader.Next()
+	if err != nil {
+		return nil, err
+	}
+	if header.Typeflag != tar.TypeReg || header.Size < 1 || header.Size > maximum {
+		return nil, errors.New("resource evidence archive must contain one bounded regular file")
+	}
+	content, err := io.ReadAll(io.LimitReader(tarReader, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) != header.Size {
+		return nil, errors.New("resource evidence archive length does not match its header")
+	}
+	if _, err := tarReader.Next(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("resource evidence archive must contain exactly one file")
+	}
+	return content, nil
+}
+
 func (r *Runtime) metadata(ctx context.Context, id string) ArtifactMetadata {
 	metadata := ArtifactMetadata{ContainerID: id}
 	inspect, err := r.engine.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
@@ -682,7 +775,11 @@ func (r *Runtime) metadata(ctx context.Context, id string) ArtifactMetadata {
 }
 
 func metadataFromLabels(id string, labels map[string]string) ArtifactMetadata {
-	metadata := ArtifactMetadata{ContainerID: id, WorkerName: labels[workerNameLabel], PoolID: labels[poolLabel]}
+	resourceTier := labels[resourceTierLabel]
+	if resourceTier == "" {
+		resourceTier = "unknown"
+	}
+	metadata := ArtifactMetadata{ContainerID: id, WorkerName: labels[workerNameLabel], PoolID: labels[poolLabel], ResourceTier: resourceTier}
 	metadata.StartedAt, _ = time.Parse(time.RFC3339Nano, labels[startedAtLabel])
 	return metadata
 }
@@ -707,6 +804,9 @@ func validateLimits(request controller.StartWorkerRequest) error {
 	limits := request.Limits
 	if request.PoolID == "" || request.Name == "" {
 		return errors.New("worker pool and name are required")
+	}
+	if request.ResourceTier != "default" && request.ResourceTier != "target_override" && request.ResourceTier != "unknown" {
+		return errors.New("worker resource tier must be default, target_override, or unknown")
 	}
 	if limits.CPUs <= 0 || limits.Memory == 0 || limits.MemorySwap < limits.Memory || limits.PIDs <= 0 {
 		return errors.New("worker CPU, memory, total memory+swap, and PID limits are invalid")

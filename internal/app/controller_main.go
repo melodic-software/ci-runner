@@ -20,6 +20,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	"github.com/melodic-software/ci-runner/internal/secret"
 	statefs "github.com/melodic-software/ci-runner/internal/state/fs"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
 )
 
 // ControllerRestartExitCode is emitted only after the authenticated restart
@@ -75,6 +76,24 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		}
 		return err
 	}
+	telemetryProvider, telemetryProblems := telemetry.NewFromEnv(ctx, telemetry.Options{
+		HostID: cfg.Host.ID, Version: buildinfo.Version,
+		OnError: func(exportErr error) {
+			if exportErr != nil {
+				logEvent("telemetry-export-error", exportErr.Error())
+			}
+		},
+	})
+	for _, telemetryErr := range telemetryProblems {
+		logEvent("telemetry-configuration-error", telemetryErr.Error())
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := telemetryProvider.Shutdown(shutdownContext); shutdownErr != nil {
+			logEvent("telemetry-shutdown-error", shutdownErr.Error())
+		}
+	}()
 
 	manifest, err := LoadCompatibilityManifest(cfg.Release.CompatibilityManifest, buildinfo.Version)
 	if err != nil {
@@ -96,12 +115,13 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 	scaleSets, err := scaleset.NewOfficialClient(scaleset.OfficialOptions{
 		HostID: cfg.Host.ID, Version: buildinfo.Version, CommitSHA: manifest.Source.SHA,
 		RequestTimeout: cfg.GitHub.RequestTimeout.Duration, Secrets: secretStore,
-		Events: jobindex.EventSink{Store: jobs},
+		Events:   jobindex.EventSink{Store: jobs},
+		Observer: telemetryProvider,
 	})
 	if err != nil {
 		return fail("scale-set-client-error", err)
 	}
-	workers, err := newWorkerRuntime(cfg, manifest, acl, jobs, func(runtimeErr error) {
+	workers, err := newWorkerRuntime(cfg, manifest, acl, jobs, telemetryProvider, func(runtimeErr error) {
 		if runtimeErr != nil {
 			logEvent("worker-runtime-error", runtimeErr.Error())
 		}
@@ -120,6 +140,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		Jobs:      jobs,
 		Clock:     clock.Real{},
 		Logs:      logs,
+		Telemetry: telemetryProvider,
 	})
 	if err != nil {
 		_ = workers.Close()

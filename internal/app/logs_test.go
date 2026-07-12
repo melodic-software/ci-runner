@@ -20,16 +20,20 @@ func TestJobLogsUsesExactDurableIndexAndToleratesMissingArtifactFile(t *testing.
 	root := t.TempDir()
 	neighbor := filepath.Join(root, "job-123.log")
 	diagnostic := filepath.Join(root, "job-12-diag.tar.gz")
+	resources := filepath.Join(root, "job-12-resources.json")
 	if err := os.WriteFile(neighbor, []byte("wrong"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(diagnostic, []byte("right"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(resources, []byte(`{"schemaVersion":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	logs := FileLogs{WorkerLogDirectory: root, DiagnosticDirectory: root, Jobs: staticJobStore{records: map[string]jobindex.Record{
 		"12": {
 			PoolID: "org", RunnerName: "runner-12", JobID: "12",
-			LogPath: filepath.Join(root, "already-removed.log"), DiagnosticPath: diagnostic,
+			LogPath: filepath.Join(root, "already-removed.log"), DiagnosticPath: diagnostic, ResourcePath: resources,
 		},
 		"123": {PoolID: "org", RunnerName: "runner-123", JobID: "123", LogPath: neighbor},
 	}}}
@@ -37,8 +41,9 @@ func TestJobLogsUsesExactDurableIndexAndToleratesMissingArtifactFile(t *testing.
 	if err := logs.Write(context.Background(), &output, false, "12"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(output.String()); got != diagnostic {
-		t.Fatalf("job 12 output = %q, want exact indexed path %q", got, diagnostic)
+	want := diagnostic + "\n" + resources
+	if got := strings.TrimSpace(output.String()); got != want {
+		t.Fatalf("job 12 output = %q, want exact indexed paths %q", got, want)
 	}
 }
 

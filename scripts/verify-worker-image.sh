@@ -83,6 +83,7 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   for hook in \
     /usr/local/bin/ci-runner-entrypoint \
     /usr/local/libexec/ci-runner-set-state \
+    /usr/local/libexec/ci-runner-capture-cgroup \
     /usr/local/libexec/ci-runner-job-started.sh \
     /usr/local/libexec/ci-runner-job-completed.sh; do
     test "$(stat --format="%U:%G:%a" "$hook")" = "root:root:555"
@@ -99,6 +100,27 @@ states="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash
   cat /home/runner/_runner_state/state
 ')"
 [[ "$states" == 'idle busy completed' ]]
+
+resource_evidence="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
+  /usr/local/libexec/ci-runner-job-completed.sh
+  cat /home/runner/_runner_state/cgroup-terminal.json
+')"
+jq --exit-status '
+  .schemaVersion == 1 and
+  .source == "cgroup-v2" and
+  (.status == "complete" or .status == "partial" or .status == "unavailable") and
+  (.missing | type == "array") and
+  (.memory.peakBytes | type == "number") and
+  (.memory.swapPeakBytes | type == "number") and
+  (.memory.oomEvents | type == "number") and
+  (.memory.oomKillEvents | type == "number") and
+  (.cpu.periods | type == "number") and
+  (.cpu.throttledPeriods | type == "number") and
+  (.cpu.throttledMicroseconds | type == "number") and
+  (.pids.peak | type == "number") and
+  (.io.readBytes | type == "number") and
+  (.io.writeBytes | type == "number")
+' <<<"$resource_evidence" >/dev/null
 
 if docker run --rm "$image" /bin/true; then
   echo 'worker accepted a start without controller-provided JIT input' >&2

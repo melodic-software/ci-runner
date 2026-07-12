@@ -36,6 +36,18 @@ func (DiscardJobEventSink) JobCompleted(context.Context, string, string, string,
 	return nil
 }
 
+type JobEventObserver interface {
+	// ObserveJobCompleted is best-effort telemetry after lifecycle validation
+	// and durable persistence. It must not influence message acknowledgement.
+	ObserveJobStarted(context.Context, string, time.Duration)
+	ObserveJobCompleted(context.Context, string, string, bool)
+}
+
+type DiscardJobEventObserver struct{}
+
+func (DiscardJobEventObserver) ObserveJobStarted(context.Context, string, time.Duration)  {}
+func (DiscardJobEventObserver) ObserveJobCompleted(context.Context, string, string, bool) {}
+
 // OfficialOptions contains only controller identity and transport policy.
 // Credentials are fetched by SecretID from SecretStore and remain in memory.
 type OfficialOptions struct {
@@ -45,6 +57,7 @@ type OfficialOptions struct {
 	RequestTimeout time.Duration
 	Secrets        SecretStore
 	Events         JobEventSink
+	Observer       JobEventObserver
 	Factory        officialFactory
 }
 
@@ -74,6 +87,9 @@ func NewOfficialClient(options OfficialOptions) (*OfficialClient, error) {
 	}
 	if options.Events == nil {
 		options.Events = DiscardJobEventSink{}
+	}
+	if options.Observer == nil {
+		options.Observer = DiscardJobEventObserver{}
 	}
 	if options.Factory == nil {
 		options.Factory = &defaultOfficialFactory{options: options}
@@ -241,6 +257,17 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 		if err := c.opts.Events.JobCompleted(ctx, target.definition.TargetID, completed.RunnerName, completed.JobID, completed.Result); err != nil {
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-completed event", Err: err}
 		}
+	}
+	jobStartObservedAt := time.Now().UTC()
+	for _, started := range message.JobStartedMessages {
+		visibilityLag := time.Duration(0)
+		if !started.RunnerAssignTime.IsZero() && jobStartObservedAt.After(started.RunnerAssignTime) {
+			visibilityLag = jobStartObservedAt.Sub(started.RunnerAssignTime)
+		}
+		c.opts.Observer.ObserveJobStarted(ctx, target.definition.TargetID, visibilityLag)
+	}
+	for _, completed := range message.JobCompletedMessages {
+		c.opts.Observer.ObserveJobCompleted(ctx, target.definition.TargetID, completed.Result, completed.RunnerID > 0)
 	}
 	// Update the in-memory acceleration map immediately after the durable sink.
 	// DeleteMessage is irreversible: if a later AcquireJobs call fails, this

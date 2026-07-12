@@ -21,10 +21,11 @@ type JobLookup interface {
 }
 
 type StartWorkerRequest struct {
-	PoolID    string
-	Name      string
-	JITConfig scaleset.JITConfig
-	Limits    config.Worker
+	PoolID       string
+	Name         string
+	ResourceTier string
+	JITConfig    scaleset.JITConfig
+	Limits       config.Worker
 }
 
 type WorkerStartError struct {

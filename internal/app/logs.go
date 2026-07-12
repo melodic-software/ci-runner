@@ -156,6 +156,7 @@ func (f FileLogs) writeJobArtifacts(ctx context.Context, destination io.Writer, 
 	}{
 		{root: f.WorkerLogDirectory, path: record.LogPath},
 		{root: f.DiagnosticDirectory, path: record.DiagnosticPath},
+		{root: f.DiagnosticDirectory, path: record.ResourcePath},
 	}
 	written := 0
 	for _, artifact := range paths {

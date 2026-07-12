@@ -43,6 +43,25 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 	}
 }
 
+func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	harness.clock.Advance(11 * time.Second)
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckpointAge != 11*time.Second {
+		t.Fatalf("checkpoint age = %s, want 11s", result.CheckpointAge)
+	}
+	if snapshot := telemetrySnapshot(result); snapshot.CheckpointAge != 11*time.Second || !snapshot.Valid {
+		t.Fatalf("telemetry snapshot = %#v", snapshot)
+	}
+}
+
 func TestReconcilerStartsWorkerWithTargetEffectiveLimits(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
