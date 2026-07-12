@@ -10,7 +10,14 @@ A strict SemVer Git tag on a commit reachable from `main` runs the hosted
 `Release` workflow. An active tag ruleset permits only organization owners to
 create matching `v*` tags and blocks every other actor from creating, updating,
 or deleting them. Build-metadata suffixes are rejected because OCI tag syntax
-cannot preserve `+`. A read-only job first reruns module verification, vet,
+cannot preserve `+`. GitHub applies skip-check directives to tag-push events
+before a workflow run exists. A commit selected for release must therefore not
+contain `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`,
+or a `skip-checks: true` trailer. Verify the exact target commit message before
+creating its tag. If a protected tag is accidentally suppressed, the tag stays
+reserved and immutable; publish the next patch version from a fresh reviewed
+commit instead of moving or deleting the tag. `v0.1.6` is reserved by this rule
+and has no release assets. A read-only job first reruns module verification, vet,
 tests, race tests, vulnerability scanning, queue-monitor tests, Actionlint with
 ShellCheck, Zizmor, Windows compilation, official-source dependency freshness,
 and a local worker-image contract build against that exact tag. Only the

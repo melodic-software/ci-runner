@@ -9,6 +9,19 @@ $ErrorActionPreference = 'Stop'
 $dependencies = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'release\dependencies.json') | ConvertFrom-Json
 $dockerfile = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Dockerfile')
 $freshnessMonitor = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'scripts\Test-DependencyFreshness.ps1')
+$releaseDocumentation = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'docs\releases.md')
+$normalizedReleaseDocumentation = [regex]::Replace($releaseDocumentation, '\s+', ' ').Trim()
+
+foreach ($fragment in @(
+        'GitHub applies skip-check directives to tag-push events before a workflow run exists.',
+        'A commit selected for release must therefore not contain `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`, or a `skip-checks: true` trailer.',
+        'Verify the exact target commit message before creating its tag.',
+        'If a protected tag is accidentally suppressed, the tag stays reserved and immutable; publish the next patch version from a fresh reviewed commit instead of moving or deleting the tag.',
+        '`v0.1.6` is reserved by this rule and has no release assets.')) {
+    if (-not $normalizedReleaseDocumentation.Contains($fragment)) {
+        throw "Release documentation is missing the immutable suppressed-tag contract: $fragment"
+    }
+}
 
 # Freshness and immutability are separate checks. Version drift must age from
 # the first unadopted release/commit, while the artifacts and release tags for
