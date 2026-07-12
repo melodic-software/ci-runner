@@ -223,10 +223,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	watchContext, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
-	go func() {
+	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
 		defer close(watchDone)
-		r.watchSafetyInputs(watchContext, desired, power, cancel, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.isShuttingDown())
-	}()
+		r.watchSafetyInputs(watchContext, watchedDesired, watchedPower, cancel, forcedZero)
+	}(desired, power, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.isShuttingDown())
 	defer func() {
 		stopWatch()
 		<-watchDone
