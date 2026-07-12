@@ -223,10 +223,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	watchContext, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
-	go func() {
+	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
 		defer close(watchDone)
-		r.watchSafetyInputs(watchContext, desired, power, cancel, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.isShuttingDown())
-	}()
+		r.watchSafetyInputs(watchContext, watchedDesired, watchedPower, cancel, forcedZero)
+	}(desired, power, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.isShuttingDown())
 	defer func() {
 		stopWatch()
 		<-watchDone
@@ -331,6 +331,26 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
 	})
+	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, provisional, r.deps.Clock.Now().UTC(), operationProblems)
+	var (
+		stopPollWatch context.CancelFunc
+		pollWatchDone chan pollCadenceResult
+	)
+	if containsReadyPool(pools) {
+		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
+		pollWatchContext, stop := context.WithCancel(ctx)
+		stopPollWatch = stop
+		pollWatchDone = make(chan pollCadenceResult, 1)
+		cadenceState := pollCadenceState{
+			desired: desired, observed: checkpoint, pools: pools, workers: workers, desktop: desktop,
+			advertised: provisional.AdvertisedCapacity, operationProblems: operationProblems,
+			forcedZero:    recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
+			checkpointErr: checkpointErr,
+		}
+		go func() {
+			pollWatchDone <- r.watchPollCadence(pollWatchContext, cancel, cadenceState)
+		}()
+	}
 	type pollResult struct {
 		index      int
 		stats      scaleset.Statistics
@@ -358,6 +378,16 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}()
 	}
 	polls.Wait()
+	cadenceResult := pollCadenceResult{observed: checkpoint}
+	if stopPollWatch != nil {
+		stopPollWatch()
+		cadenceResult = <-pollWatchDone
+	}
+	resources = cadenceResult.observed.Resources
+	power = cadenceResult.observed.Power
+	previous.ResourceGate = cadenceResult.observed.ResourceGate
+	previous.PowerGate = cadenceResult.observed.PowerGate
+	now = r.deps.Clock.Now().UTC()
 	close(pollResults)
 	for result := range pollResults {
 		pool := &pools[result.index]
@@ -389,6 +419,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	if cause := context.Cause(ctx); cause != nil {
 		return ReconcileResult{}, cause
+	}
+	if cadenceResult.checkpointErr != nil {
+		record("reconcile-checkpoint-error", "controller heartbeat checkpoint failed during the listener poll", "", true, cadenceResult.checkpointErr)
 	}
 
 	// Refresh after capacity was advertised. This is important during drain:
