@@ -43,6 +43,69 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 	}
 }
 
+func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	harness.clock.Advance(11 * time.Second)
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CheckpointAge != 11*time.Second || !result.CheckpointAgeValid {
+		t.Fatalf("checkpoint age = %s, want 11s", result.CheckpointAge)
+	}
+	if snapshot := telemetrySnapshot(result); snapshot.CheckpointAge != 11*time.Second || !snapshot.CheckpointAgeValid || !snapshot.Valid {
+		t.Fatalf("telemetry snapshot = %#v", snapshot)
+	}
+}
+
+func TestTelemetrySnapshotPreservesPowerGateWhenOperationFailureDegradesObservedPhase(t *testing.T) {
+	t.Parallel()
+	result := ReconcileResult{
+		Observed: model.ObservedState{SchemaVersion: 1, Phase: model.PhaseDegraded},
+		Plan:     Plan{Phase: model.PhasePowerSuspended},
+	}
+	snapshot := telemetrySnapshot(result)
+	if !snapshot.PowerGateBlocked {
+		t.Fatalf("power gate blocked = false for degraded observed phase with power-suspended plan: %#v", snapshot)
+	}
+}
+
+func TestReconcilerOmitsCheckpointAgeWithoutValidPriorCheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		configure func(*testing.T, *harness)
+	}{
+		{name: "missing"},
+		{name: "future", configure: func(t *testing.T, h *harness) {
+			future := h.clock.Now().Add(time.Minute)
+			if err := h.store.SaveObserved(context.Background(), model.ObservedState{SchemaVersion: 1, HeartbeatAt: future}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			harness := newHarness(t, model.ModeEnabled)
+			if test.configure != nil {
+				test.configure(t, harness)
+			}
+			result, err := harness.controller.Step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.CheckpointAgeValid || telemetrySnapshot(result).CheckpointAgeValid {
+				t.Fatalf("invalid prior checkpoint reported as fresh: %#v", result)
+			}
+		})
+	}
+}
+
 func TestReconcilerStartsWorkerWithTargetEffectiveLimits(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -1112,6 +1175,9 @@ func TestCorruptObservedStateQuarantinesAndAdvertisesZeroWithoutLifecycleMutatio
 	}
 	if !foundZero || len(result.Observed.Pools) != 1 || !result.Observed.Pools[0].CapacityAcknowledged || result.Observed.Pools[0].MaxCapacity != 0 {
 		t.Fatalf("corrupt recovery did not prove zero capacity: result=%#v calls=%#v", result, harness.scaleSets.SnapshotCalls())
+	}
+	if result.CheckpointAgeValid {
+		t.Fatal("quarantined corrupt checkpoint reported a freshness age")
 	}
 	if harness.runtime.startCount() != 0 || len(result.Plan.Start) != 0 || len(result.Plan.Remove) != 0 {
 		t.Fatalf("corrupt recovery performed lifecycle mutation: %#v", result.Plan)

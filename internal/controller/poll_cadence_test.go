@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -177,10 +178,103 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	}
 }
 
+func TestPoolAcknowledgementTransitionTimestampDoesNotResetWhilePending(t *testing.T) {
+	t.Parallel()
+	started := time.Unix(100, 0).UTC()
+	now := started.Add(30 * time.Second)
+	prior := model.PoolObservation{
+		ScaleSetID: 1, ListenerID: "listener", MaxCapacity: 8,
+		CapacityAcknowledged: false, UpdatedAt: started,
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 8, false, now); !got.Equal(started) {
+		t.Fatalf("pending transition timestamp reset to %s", got)
+	}
+	reconciler := &Reconciler{pendingCapacity: map[string]int{"org": 8}}
+	if got := reconciler.poolAcknowledgementTransitionAt("org", prior, 1, "listener", 8, 8, false, now); !got.Equal(started) {
+		t.Fatalf("same pending capacity reset transition timestamp to %s", got)
+	}
+	if got := reconciler.poolAcknowledgementTransitionAt("org", prior, 1, "listener", 8, 6, false, now); !got.Equal(now) {
+		t.Fatalf("changed pending capacity retained stale transition timestamp %s", got)
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 6, false, now); !got.Equal(now) {
+		t.Fatalf("capacity transition timestamp = %s, want %s", got, now)
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 8, true, now); !got.Equal(now) {
+		t.Fatalf("acknowledgement transition timestamp = %s, want %s", got, now)
+	}
+}
+
+func TestFailedLongPollPreservesCadenceAcknowledgementTransitionAge(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	started := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: started,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 8,
+			CapacityAcknowledged: true, UpdatedAt: started.Add(-time.Minute),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+	harness.controller.deps.State = notifying
+	blocking := newBlockingPollFailure(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	type outcome struct {
+		result ReconcileResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := harness.controller.Step(context.Background())
+		done <- outcome{result: result, err: err}
+	}()
+	waitForSignal(t, blocking.entered, "listener poll did not begin")
+	checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+		return len(observed.Pools) == 1 && !observed.Pools[0].CapacityAcknowledged
+	}, "pending acknowledgement transition was not checkpointed")
+	transitionAt := checkpoint.Pools[0].UpdatedAt
+	if !transitionAt.Equal(started) {
+		t.Fatalf("transition started at %s, want %s", transitionAt, started)
+	}
+	harness.clock.Advance(30 * time.Second)
+	close(blocking.release)
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatal("failed listener poll returned no error")
+		}
+		if len(got.result.Observed.Pools) != 1 || !got.result.Observed.Pools[0].UpdatedAt.Equal(transitionAt) {
+			t.Fatalf("failed poll reset transition age: %#v", got.result.Observed.Pools)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed listener poll did not finish")
+	}
+}
+
 type mutableResources struct {
 	mu       sync.Mutex
 	snapshot model.ResourceSnapshot
 	err      error
+}
+
+type blockingPollFailure struct {
+	scaleset.Client
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPollFailure(client scaleset.Client) *blockingPollFailure {
+	return &blockingPollFailure{Client: client, entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s *blockingPollFailure) Statistics(context.Context, scaleset.Identity, int) (scaleset.Statistics, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return scaleset.Statistics{}, errors.New("listener poll failed")
 }
 
 func (m *mutableResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {

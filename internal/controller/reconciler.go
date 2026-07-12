@@ -14,6 +14,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	statepkg "github.com/melodic-software/ci-runner/internal/state"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
 )
 
 var ErrUnsafeObservedState = errors.New("observed state could not be loaded; refusing to reconcile persistent scale-set identities")
@@ -33,6 +34,7 @@ type Dependencies struct {
 	Jobs      JobLookup
 	Clock     Clock
 	Logs      LogSink
+	Telemetry telemetry.Recorder
 }
 
 type Reconciler struct {
@@ -41,10 +43,12 @@ type Reconciler struct {
 	deps    Dependencies
 
 	// stepMu serializes side effects without blocking local control-plane status
-	// requests. stateMu protects only short-lived in-memory state and must never
-	// be held across an adapter call or listener poll.
-	stepMu  sync.Mutex
-	stateMu sync.Mutex
+	// requests. stateMu protects only short-lived control state; capacityMu
+	// protects only the pending-capacity transition map. Neither may be held
+	// across an adapter call or listener poll.
+	stepMu     sync.Mutex
+	stateMu    sync.Mutex
+	capacityMu sync.Mutex
 
 	backoff           BackoffPolicy
 	watchInterval     time.Duration
@@ -52,11 +56,14 @@ type Reconciler struct {
 	drainCapacity     map[string]int
 	sequence          uint64
 	shuttingDown      bool
+	pendingCapacity   map[string]int
 }
 
 type ReconcileResult struct {
-	Observed model.ObservedState
-	Plan     Plan
+	Observed           model.ObservedState
+	Plan               Plan
+	CheckpointAge      time.Duration
+	CheckpointAgeValid bool
 }
 
 func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Reconciler, error) {
@@ -68,6 +75,9 @@ func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Recon
 	}
 	if deps.Logs == nil {
 		deps.Logs = DiscardLogSink{}
+	}
+	if deps.Telemetry == nil {
+		deps.Telemetry = telemetry.Noop()
 	}
 	if version == "" {
 		version = buildinfo.Version
@@ -83,8 +93,9 @@ func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Recon
 			Multiplier: cfg.GitHub.Retry.Multiplier, JitterRatio: cfg.GitHub.Retry.JitterRatio,
 			MaxAttempts: cfg.GitHub.Retry.MaxAttempts, Jitter: cryptoJitter,
 		},
-		watchInterval: watchInterval,
-		drainCapacity: make(map[string]int),
+		watchInterval:   watchInterval,
+		drainCapacity:   make(map[string]int),
+		pendingCapacity: make(map[string]int),
 	}, nil
 }
 
@@ -110,9 +121,11 @@ func (r *Reconciler) setWatchIntervalForTest(interval time.Duration) error {
 
 // Step performs one serialized reconciliation. Polling scale-set statistics
 // (and therefore advertising capacity) happens before any idle worker removal.
-func (r *Reconciler) Step(ctx context.Context) (ReconcileResult, error) {
+func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultErr error) {
 	r.stepMu.Lock()
 	defer r.stepMu.Unlock()
+	ctx, finishTelemetry := r.deps.Telemetry.BeginReconcile(ctx)
+	defer func() { finishTelemetry(telemetrySnapshot(result), resultErr) }()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -146,6 +159,35 @@ func (r *Reconciler) Step(ctx context.Context) (ReconcileResult, error) {
 	}
 }
 
+func telemetrySnapshot(result ReconcileResult) telemetry.ReconcileSnapshot {
+	observed := result.Observed
+	snapshot := telemetry.ReconcileSnapshot{
+		Valid: observed.SchemaVersion > 0, Phase: string(observed.Phase),
+		CPUPercent:           observed.Resources.CPUUtilizationPercent,
+		AvailableMemoryBytes: observed.Resources.AvailableMemoryBytes,
+		ResourceGateBlocked:  observed.ResourceGate.Blocked,
+		PowerGateBlocked:     result.Plan.Phase == model.PhasePowerSuspended,
+		CheckpointAge:        result.CheckpointAge,
+		CheckpointAgeValid:   result.CheckpointAgeValid,
+		Pools:                make([]telemetry.ReconcilePool, 0, len(observed.Pools)),
+		Workers:              make([]telemetry.ReconcileWorker, 0, len(observed.Workers)),
+	}
+	for _, pool := range observed.Pools {
+		acknowledgementAgeValid := !pool.UpdatedAt.IsZero() && !observed.HeartbeatAt.Before(pool.UpdatedAt)
+		snapshot.Pools = append(snapshot.Pools, telemetry.ReconcilePool{
+			ID: pool.ID, Advertised: pool.MaxCapacity,
+			Assigned: pool.TotalAssignedJobs, Desired: pool.DesiredWorkers,
+			CapacityAcknowledged:           pool.CapacityAcknowledged,
+			AcknowledgementPendingAge:      observed.HeartbeatAt.Sub(pool.UpdatedAt),
+			AcknowledgementPendingAgeValid: acknowledgementAgeValid,
+		})
+	}
+	for _, worker := range observed.Workers {
+		snapshot.Workers = append(snapshot.Workers, telemetry.ReconcileWorker{PoolID: worker.PoolID, State: string(worker.State)})
+	}
+	return snapshot
+}
+
 func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (ReconcileResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReconcileResult{}, err
@@ -176,6 +218,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 
 	previous, err := r.deps.State.LoadObserved(ctx)
+	checkpointAge := time.Duration(0)
+	checkpointAgeValid := err == nil && !previous.HeartbeatAt.IsZero() && !previous.HeartbeatAt.After(now)
+	if checkpointAgeValid {
+		checkpointAge = now.Sub(previous.HeartbeatAt)
+	}
 	recoveryOnly := false
 	var observedLoadErr error
 	if err != nil && !errors.Is(err, statepkg.ErrNotFound) {
@@ -387,6 +434,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	power = cadenceResult.observed.Power
 	previous.ResourceGate = cadenceResult.observed.ResourceGate
 	previous.PowerGate = cadenceResult.observed.PowerGate
+	cadencePools := make(map[string]model.PoolObservation, len(cadenceResult.observed.Pools))
+	for _, pool := range cadenceResult.observed.Pools {
+		cadencePools[pool.ID] = pool
+	}
 	now = r.deps.Clock.Now().UTC()
 	close(pollResults)
 	for result := range pollResults {
@@ -586,9 +637,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				break
 			}
 			name := r.nextRunnerName(decision.PoolID, now)
+			resourceTier := r.resourceTier(decision.PoolID)
+			registrationStartedAt := time.Now()
 			jit, jitErr := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
 				return r.deps.ScaleSets.CreateJITConfig(callCtx, identity, name)
 			})
+			r.deps.Telemetry.WorkerRegistered(ctx, decision.PoolID, resourceTier, time.Since(registrationStartedAt), telemetry.ClassifyWorkerStart(jitErr, false))
 			if jitErr != nil {
 				record("jit-config-error", safeScaleSetMessage("create JIT configuration", jitErr), decision.PoolID, scaleset.Retryable(jitErr), jitErr)
 				break
@@ -617,7 +671,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				break
 			}
 			_, startErr := r.deps.Workers.Start(ctx, StartWorkerRequest{
-				PoolID: decision.PoolID, Name: name, JITConfig: jit, Limits: limits,
+				PoolID: decision.PoolID, Name: name, ResourceTier: resourceTier, JITConfig: jit, Limits: limits,
 			})
 			if startErr != nil {
 				// Start is intentionally not retried: it may have created a running
@@ -698,16 +752,21 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
 		pool := findPool(pools, target.ID)
-		actualCapacity := previousPools[target.ID].MaxCapacity
+		priorPool := cadencePools[target.ID]
+		actualCapacity := priorPool.MaxCapacity
 		if capacityAcknowledged[target.ID] {
 			actualCapacity = acknowledgedCapacity[target.ID]
 		}
+		updatedAt := r.poolAcknowledgementTransitionAt(
+			target.ID, priorPool, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
+			actualCapacity, provisional.AdvertisedCapacity[target.ID], capacityAcknowledged[target.ID], now,
+		)
 		observedPools = append(observedPools, model.PoolObservation{
 			ID: target.ID, ScaleSetID: pool.Identity.ScaleSetID, ListenerID: pool.Identity.ListenerID,
 			TotalAssignedJobs: pool.TotalAssignedJobs, MaxCapacity: actualCapacity, CapacityAcknowledged: capacityAcknowledged[target.ID],
 			ZeroCapacityConfirmations: zeroConfirmations[target.ID],
 			DrainServiceCapacity:      pool.DrainServiceCapacity,
-			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: now,
+			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: updatedAt,
 		})
 	}
 	problems := append([]model.Problem(nil), postPlan.Problems...)
@@ -736,7 +795,22 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if saveErr := r.deps.State.SaveObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
-	return ReconcileResult{Observed: observed, Plan: postPlan}, errors.Join(operationErrors...)
+	return ReconcileResult{
+		Observed: observed, Plan: postPlan,
+		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
+	}, errors.Join(operationErrors...)
+}
+
+func (r *Reconciler) resourceTier(poolID string) string {
+	for _, target := range r.config.GitHub.Targets {
+		if target.ID == poolID {
+			if target.Resources.Worker != nil {
+				return "target_override"
+			}
+			return "default"
+		}
+	}
+	return "unknown"
 }
 
 func (r *Reconciler) ensure(ctx context.Context, target config.Target, previous *scaleset.Identity) (scaleset.Identity, error) {

@@ -70,7 +70,14 @@ func TestOfficialEnsureConvergesUpdateAndDoesNotDeleteOnClose(t *testing.T) {
 func TestOfficialStatisticsReportsCapacityAcknowledgesAcquiresAndTracksJobs(t *testing.T) {
 	t.Parallel()
 	api := newFakeOfficialAPI()
-	client := newOfficialForTest(t, &fakeOfficialFactory{api: api})
+	observer := &recordingJobEventObserver{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +86,9 @@ func TestOfficialStatisticsReportsCapacityAcknowledgesAcquiresAndTracksJobs(t *t
 		MessageID:            9,
 		Statistics:           &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 3},
 		JobAvailableMessages: []*actionsscale.JobAvailable{{JobMessageBase: actionsscale.JobMessageBase{RunnerRequestID: 101}}},
-		JobStartedMessages:   []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		JobStartedMessages: []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{
+			JobID: "job-1", RunnerAssignTime: time.Now().Add(-time.Second),
+		}}},
 	})
 	stats, err := client.Statistics(context.Background(), identity, 3)
 	if err != nil {
@@ -93,6 +102,9 @@ func TestOfficialStatisticsReportsCapacityAcknowledgesAcquiresAndTracksJobs(t *t
 	}
 	if jobID, ok := client.ActiveJob("org", "runner-1"); !ok || jobID != "job-1" {
 		t.Fatalf("active job = %q %v", jobID, ok)
+	}
+	if len(observer.starts) != 1 || observer.starts[0] < 900*time.Millisecond || observer.starts[0] > 5*time.Second {
+		t.Fatalf("job-start visibility observations = %v", observer.starts)
 	}
 
 	api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
@@ -112,9 +124,10 @@ func TestOfficialUnassignedCanceledCompletionAcknowledgesAndLaterCapacityRecover
 	t.Parallel()
 	api := newFakeOfficialAPI()
 	events := &recordingJobEventSink{}
+	observer := &recordingJobEventObserver{}
 	client, err := NewOfficialClient(OfficialOptions{
 		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
-		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events, Observer: observer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +155,9 @@ func TestOfficialUnassignedCanceledCompletionAcknowledgesAndLaterCapacityRecover
 	}
 	if len(events.completions) != 0 {
 		t.Fatalf("unassigned completion was written to runner index: %#v", events.completions)
+	}
+	if len(observer.completions) != 1 || observer.completions[0].poolID != "org" || observer.completions[0].result != "Canceled" || observer.completions[0].assigned {
+		t.Fatalf("unassigned cancellation observation = %#v", observer.completions)
 	}
 	second, err := client.Statistics(context.Background(), identity, 1)
 	if err != nil || second.TotalAssignedJobs != 1 {
@@ -364,9 +380,10 @@ func TestOfficialPersistencePrecedesDeleteAndDeleteFailureNeverAcquires(t *testi
 	deleteErr := errors.New("delete failed")
 	api.session.deleteErr = deleteErr
 	events := &recordingJobEventSink{}
+	observer := &recordingJobEventObserver{}
 	client, err := NewOfficialClient(OfficialOptions{
 		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
-		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events, Observer: observer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -379,6 +396,10 @@ func TestOfficialPersistencePrecedesDeleteAndDeleteFailureNeverAcquires(t *testi
 		MessageID: 12, Statistics: &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 1},
 		JobAvailableMessages: []*actionsscale.JobAvailable{{JobMessageBase: actionsscale.JobMessageBase{RunnerRequestID: 101}}},
 		JobStartedMessages:   []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		JobCompletedMessages: []*actionsscale.JobCompleted{
+			{RunnerID: 42, RunnerName: "runner-2", Result: "Succeeded", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-2"}},
+			{Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-3"}},
+		},
 	}
 	api.session.messages = append(api.session.messages, message)
 	if _, err := client.Statistics(context.Background(), identity, 1); !errors.Is(err, deleteErr) {
@@ -387,13 +408,19 @@ func TestOfficialPersistencePrecedesDeleteAndDeleteFailureNeverAcquires(t *testi
 	if got := api.session.callOrder(); fmt.Sprint(got) != "[get delete]" {
 		t.Fatalf("delete failure call order = %v", got)
 	}
+	if len(observer.starts) != 0 || len(observer.completions) != 0 {
+		t.Fatalf("failed acknowledgement emitted additive telemetry: starts=%v completions=%#v", observer.starts, observer.completions)
+	}
 	api.session.deleteErr = nil
 	api.session.messages = append(api.session.messages, message)
 	if _, err := client.Statistics(context.Background(), identity, 1); err != nil {
 		t.Fatal(err)
 	}
-	if events.started != 2 {
-		t.Fatalf("redelivered lifecycle persistence calls = %d, want two idempotent upserts", events.started)
+	if events.started != 2 || len(events.completions) != 2 {
+		t.Fatalf("redelivered lifecycle persistence calls = starts:%d completions:%d, want two idempotent upserts each", events.started, len(events.completions))
+	}
+	if len(observer.starts) != 1 || len(observer.completions) != 2 || !observer.completions[0].assigned || observer.completions[1].assigned || observer.completions[1].result != "Canceled" {
+		t.Fatalf("redelivered lifecycle telemetry = starts:%v completions:%#v, want exactly one acknowledged batch", observer.starts, observer.completions)
 	}
 	if got := api.session.callOrder(); fmt.Sprint(got) != "[get delete get delete acquire]" {
 		t.Fatalf("redelivery call order = %v", got)
@@ -404,7 +431,14 @@ func TestOfficialAcquireFailureRetainsPersistedActiveJobState(t *testing.T) {
 	t.Parallel()
 	api := newFakeOfficialAPI()
 	api.session.acquireErr = errors.New("acquire failed after irreversible delete")
-	client := newOfficialForTest(t, &fakeOfficialFactory{api: api})
+	observer := &recordingJobEventObserver{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -419,6 +453,9 @@ func TestOfficialAcquireFailureRetainsPersistedActiveJobState(t *testing.T) {
 	}
 	if jobID, active := client.ActiveJob("org", "runner-1"); !active || jobID != "job-1" {
 		t.Fatalf("active job after acquire failure = %q %t", jobID, active)
+	}
+	if len(observer.starts) != 1 {
+		t.Fatalf("acknowledged message lost telemetry after acquire failure: %v", observer.starts)
 	}
 }
 
@@ -563,6 +600,24 @@ type recordedCompletion struct {
 type recordingJobEventSink struct {
 	started     int
 	completions []recordedCompletion
+}
+
+type observedJobCompletion struct {
+	poolID   string
+	result   string
+	assigned bool
+}
+
+type recordingJobEventObserver struct {
+	completions []observedJobCompletion
+	starts      []time.Duration
+}
+
+func (o *recordingJobEventObserver) ObserveJobStarted(_ context.Context, _ string, visibilityLag time.Duration) {
+	o.starts = append(o.starts, visibilityLag)
+}
+func (o *recordingJobEventObserver) ObserveJobCompleted(_ context.Context, poolID, result string, assigned bool) {
+	o.completions = append(o.completions, observedJobCompletion{poolID: poolID, result: result, assigned: assigned})
 }
 
 func (s *recordingJobEventSink) JobStarted(context.Context, string, string, string) error {

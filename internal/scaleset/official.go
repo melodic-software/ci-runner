@@ -36,6 +36,19 @@ func (DiscardJobEventSink) JobCompleted(context.Context, string, string, string,
 	return nil
 }
 
+type JobEventObserver interface {
+	// Observations are best-effort telemetry after lifecycle validation,
+	// durable persistence, and successful message acknowledgement. They must
+	// not influence job acquisition.
+	ObserveJobStarted(context.Context, string, time.Duration)
+	ObserveJobCompleted(context.Context, string, string, bool)
+}
+
+type DiscardJobEventObserver struct{}
+
+func (DiscardJobEventObserver) ObserveJobStarted(context.Context, string, time.Duration)  {}
+func (DiscardJobEventObserver) ObserveJobCompleted(context.Context, string, string, bool) {}
+
 // OfficialOptions contains only controller identity and transport policy.
 // Credentials are fetched by SecretID from SecretStore and remain in memory.
 type OfficialOptions struct {
@@ -45,6 +58,7 @@ type OfficialOptions struct {
 	RequestTimeout time.Duration
 	Secrets        SecretStore
 	Events         JobEventSink
+	Observer       JobEventObserver
 	Factory        officialFactory
 }
 
@@ -74,6 +88,9 @@ func NewOfficialClient(options OfficialOptions) (*OfficialClient, error) {
 	}
 	if options.Events == nil {
 		options.Events = DiscardJobEventSink{}
+	}
+	if options.Observer == nil {
+		options.Observer = DiscardJobEventObserver{}
 	}
 	if options.Factory == nil {
 		options.Factory = &defaultOfficialFactory{options: options}
@@ -257,6 +274,21 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	// acknowledgement fails, no acquisition occurs and redelivery is idempotent.
 	if err := target.session.DeleteMessage(context.WithoutCancel(ctx), message.MessageID); err != nil {
 		return Statistics{}, translateOfficialError("acknowledge message", err)
+	}
+	// Additive telemetry follows the irreversible acknowledgement. Durable
+	// lifecycle writes above remain intentionally idempotent on redelivery, but
+	// observing before DeleteMessage would double-count an acknowledgement
+	// failure and replay.
+	jobStartObservedAt := time.Now().UTC()
+	for _, started := range message.JobStartedMessages {
+		visibilityLag := time.Duration(0)
+		if !started.RunnerAssignTime.IsZero() && jobStartObservedAt.After(started.RunnerAssignTime) {
+			visibilityLag = jobStartObservedAt.Sub(started.RunnerAssignTime)
+		}
+		c.opts.Observer.ObserveJobStarted(ctx, target.definition.TargetID, visibilityLag)
+	}
+	for _, completed := range message.JobCompletedMessages {
+		c.opts.Observer.ObserveJobCompleted(ctx, target.definition.TargetID, completed.Result, completed.RunnerID > 0)
 	}
 	if len(message.JobAvailableMessages) > 0 {
 		requestIDs := make([]int64, 0, len(message.JobAvailableMessages))

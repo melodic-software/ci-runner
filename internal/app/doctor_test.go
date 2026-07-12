@@ -208,6 +208,44 @@ func TestObservedFreshnessLimitUsesConfiguredRequestsRetriesAndTargets(t *testin
 	}
 }
 
+func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		transition time.Time
+		wantCode   int
+		wantMarker string
+	}{
+		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "past-grace", transition: now.Add(-81 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			store := state.NewMemoryStore()
+			_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+			observed := healthyDoctorObserved(now, model.PhaseReady)
+			observed.Pools[0].CapacityAcknowledged = false
+			observed.Pools[0].UpdatedAt = test.transition
+			_ = store.SaveObserved(context.Background(), observed)
+			application, out, _ := newTestApplication(t, "", store, nil)
+			application.dependencies.Config = doctorTestConfig()
+			application.dependencies.Now = func() time.Time { return now }
+			application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseReady, Version: "1.2.3"}}
+			application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+			application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+			if code := application.Run(context.Background(), []string{"host", "doctor"}); code != test.wantCode {
+				t.Fatalf("doctor exit code = %d, want %d\n%s", code, test.wantCode, out.String())
+			}
+			if !strings.Contains(out.String(), test.wantMarker) {
+				t.Fatalf("doctor output missing %q:\n%s", test.wantMarker, out.String())
+			}
+		})
+	}
+}
+
 func doctorTestConfig() config.Config {
 	return config.Config{
 		Controller: config.Controller{

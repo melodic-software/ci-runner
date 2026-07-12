@@ -306,13 +306,121 @@ func TestArtifactSinkHardensAndVerifiesEveryPublishedPath(t *testing.T) {
 	if err := sink.WriteDiagnostics(context.Background(), metadata, strings.NewReader("diagnostics")); err != nil {
 		t.Fatal(err)
 	}
+	evidence, err := ParseResourceEvidence(strings.NewReader(completeResourceEvidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newlyPersisted, err := sink.WriteResourceEvidence(context.Background(), metadata, evidence); err != nil || !newlyPersisted {
+		t.Fatalf("resource evidence newlyPersisted=%t error=%v", newlyPersisted, err)
+	}
 	record, err := store.FindByRunner(context.Background(), metadata.PoolID, metadata.WorkerName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(root, "logs"), filepath.Join(root, "diag"), record.LogPath, record.DiagnosticPath} {
+	resourcePath, err := jobindex.ResourceEvidencePath(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(root, "logs"), filepath.Join(root, "diag"), record.LogPath, record.DiagnosticPath, resourcePath} {
 		if !acl.wasHardened(path) || !acl.wasVerified(path) {
 			t.Fatalf("path %q ACL calls: hardened=%t verified=%t", path, acl.wasHardened(path), acl.wasVerified(path))
+		}
+	}
+}
+
+func TestResourceEvidenceIsDurableAndRequiredBeforeFinalization(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	metadata := testArtifactMetadata("container-resources", "runner-resources")
+	writer, err := sink.OpenLog(context.Background(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WriteDiagnostics(context.Background(), metadata, strings.NewReader("diagnostics")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Finalize(context.Background(), metadata); err == nil {
+		t.Fatal("worker finalized without terminal resource evidence")
+	}
+	evidence, err := ParseResourceEvidence(strings.NewReader(completeResourceEvidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newlyPersisted, err := sink.WriteResourceEvidence(context.Background(), metadata, evidence)
+	if err != nil || !newlyPersisted {
+		t.Fatalf("resource evidence newlyPersisted=%t error=%v", newlyPersisted, err)
+	}
+	if newlyPersisted, err = sink.WriteResourceEvidence(context.Background(), metadata, evidence); err != nil || newlyPersisted {
+		t.Fatalf("resource evidence retry newlyPersisted=%t error=%v", newlyPersisted, err)
+	}
+	if err := sink.Finalize(context.Background(), metadata); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.FindByRunner(context.Background(), metadata.PoolID, metadata.WorkerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourcePath, err := jobindex.ResourceEvidencePath(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(resourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseResourceEvidence(bytes.NewReader(content))
+	if err != nil || parsed.Memory.PeakBytes != evidence.Memory.PeakBytes || record.Open || record.FinalizedAt.IsZero() {
+		t.Fatalf("record=%#v evidence=%#v error=%v", record, parsed, err)
+	}
+}
+
+func TestCleanupDerivesAndRemovesResourceSidecarWithoutIndexField(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	policy := defaultArtifactPolicy()
+	policy.Retention = time.Nanosecond
+	sink := newArtifactSinkForTest(t, root, store, policy)
+	metadata := testArtifactMetadata("container-clean-resources", "runner-clean-resources")
+	writer, err := sink.OpenLog(context.Background(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WriteDiagnostics(context.Background(), metadata, strings.NewReader("diagnostics")); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := ParseResourceEvidence(strings.NewReader(completeResourceEvidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newlyPersisted, err := sink.WriteResourceEvidence(context.Background(), metadata, evidence); err != nil || !newlyPersisted {
+		t.Fatalf("resource evidence newlyPersisted=%t error=%v", newlyPersisted, err)
+	}
+	if err := sink.Finalize(context.Background(), metadata); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.FindByRunner(context.Background(), metadata.PoolID, metadata.WorkerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourcePath, err := jobindex.ResourceEvidencePath(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.CleanupNow(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{record.LogPath, record.DiagnosticPath, resourcePath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cleaned artifact %q stat error = %v", path, err)
 		}
 	}
 }

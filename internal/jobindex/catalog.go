@@ -156,6 +156,21 @@ func Validate(catalog Catalog) error {
 	return nil
 }
 
+// ResourceEvidencePath derives the terminal resource sidecar path without
+// extending the schemaVersion 1 job record. Older controllers use strict JSON
+// decoding, so adding an indexed field would make their rollback fail closed.
+func ResourceEvidencePath(record Record) (string, error) {
+	if record.DiagnosticPath == "" {
+		return "", nil
+	}
+	const diagnosticSuffix = "-diag.tar.gz"
+	if !filepath.IsAbs(record.DiagnosticPath) || !strings.HasSuffix(record.DiagnosticPath, diagnosticSuffix) {
+		return "", errors.New("worker diagnostic path cannot identify its resource sidecar")
+	}
+	base := strings.TrimSuffix(filepath.Clean(record.DiagnosticPath), diagnosticSuffix)
+	return base + "-resources.json", nil
+}
+
 func Sort(catalog *Catalog) {
 	sort.Slice(catalog.Records, func(i, j int) bool {
 		if catalog.Records[i].PoolID == catalog.Records[j].PoolID {

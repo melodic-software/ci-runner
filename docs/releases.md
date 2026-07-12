@@ -132,6 +132,7 @@ GitHub progressively deploys runner versions. A release PR therefore must also
 confirm the version offered in the organization runner setup UI/API before
 promotion. A passing drift check is necessary but is not promotion approval.
 
-Optional OTLP export remains a roadmap item. JSON Lines controller logs and the
-compatibility manifest are structured so an exporter can be added without
-changing lifecycle policy.
+Optional OTLP export is disabled by default and follows the same release,
+compatibility, and rollback policy as the controller. Enabling telemetry does
+not change worker admission, draining, artifact durability, or promotion
+approval requirements.

@@ -150,12 +150,17 @@ func (f FileLogs) writeJobArtifacts(ctx context.Context, destination io.Writer, 
 	if err != nil {
 		return err
 	}
+	resourcePath, err := jobindex.ResourceEvidencePath(record)
+	if err != nil {
+		return err
+	}
 	paths := []struct {
 		root string
 		path string
 	}{
 		{root: f.WorkerLogDirectory, path: record.LogPath},
 		{root: f.DiagnosticDirectory, path: record.DiagnosticPath},
+		{root: f.DiagnosticDirectory, path: resourcePath},
 	}
 	written := 0
 	for _, artifact := range paths {

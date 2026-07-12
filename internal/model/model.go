@@ -102,10 +102,13 @@ type PoolObservation struct {
 	// that advertised zero and reported zero assigned jobs. Automatic idle
 	// retirement requires two confirmations so a stale pre-drain statistic can
 	// never authorize SIGTERM.
-	ZeroCapacityConfirmations int       `json:"zeroCapacityConfirmations"`
-	DrainServiceCapacity      int       `json:"drainServiceCapacity,omitempty"`
-	DesiredWorkers            int       `json:"desiredWorkers"`
-	UpdatedAt                 time.Time `json:"updatedAt"`
+	ZeroCapacityConfirmations int `json:"zeroCapacityConfirmations"`
+	DrainServiceCapacity      int `json:"drainServiceCapacity,omitempty"`
+	DesiredWorkers            int `json:"desiredWorkers"`
+	// UpdatedAt is the most recent listener identity, capacity, or
+	// acknowledgement-state transition. HeartbeatAt carries checkpoint
+	// liveness, so an unacknowledged transition can retain a stable age.
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // ResourceSnapshot is an instantaneous host observation. Total and available

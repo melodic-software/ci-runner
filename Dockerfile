@@ -47,6 +47,7 @@ RUN apt-get update \
 COPY --chmod=0555 worker/set-state.sh /usr/local/libexec/ci-runner-set-state
 COPY --chmod=0555 worker/job-started.sh /usr/local/libexec/ci-runner-job-started.sh
 COPY --chmod=0555 worker/job-completed.sh /usr/local/libexec/ci-runner-job-completed.sh
+COPY --chmod=0555 worker/capture-cgroup.sh /usr/local/libexec/ci-runner-capture-cgroup
 COPY --chmod=0555 worker/entrypoint.sh /usr/local/bin/ci-runner-entrypoint
 
 # actions/setup-dotnet otherwise selects /usr/share/dotnet on Linux. Keep SDK,

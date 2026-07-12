@@ -9,6 +9,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/jobindex"
 	dockerruntime "github.com/melodic-software/ci-runner/internal/runtime/docker"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
 )
 
 type runtimeAccessController interface {
@@ -21,6 +22,7 @@ func newWorkerRuntime(
 	manifest CompatibilityManifest,
 	acl runtimeAccessController,
 	jobs jobindex.Store,
+	telemetryRecorder telemetry.Recorder,
 	onError func(error),
 ) (*dockerruntime.Runtime, error) {
 	artifacts, err := newWorkerArtifactSink(cfg, acl, jobs)
@@ -32,7 +34,7 @@ func newWorkerRuntime(
 		DockerLogMaxSizeBytes: uint64(cfg.Logs.Docker.MaxSize), DockerLogMaxFiles: cfg.Logs.Docker.MaxFiles,
 		IdleConfirmationWindow: cfg.Drain.IdleConfirmationWindow.Duration,
 		FinalizationTimeout:    cfg.Logs.WorkerFinalizationTimeout.Duration,
-		Artifacts:              artifacts, OnError: onError,
+		Artifacts:              artifacts, OnError: onError, Telemetry: telemetryRecorder,
 	})
 }
 

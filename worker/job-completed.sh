@@ -2,3 +2,4 @@
 set -Eeuo pipefail
 
 /usr/local/libexec/ci-runner-set-state completed
+/usr/local/libexec/ci-runner-capture-cgroup
