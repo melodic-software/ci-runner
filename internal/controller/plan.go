@@ -192,14 +192,24 @@ func BuildPlan(input PlanInput) Plan {
 		remaining = 0
 		plan.Problems = append(plan.Problems, problem(input.Now, "capacity-below-busy-count", "configured host capacity is below the current busy-worker count; active work is preserved and no new work is admitted", "", false))
 	}
+	busyByPool := make(map[string]int, len(targets))
+	nonbusyByPool := make(map[string]int, len(targets))
+	countedNonbusy := make(map[string]int, len(targets))
 	for _, target := range targets {
 		for _, worker := range workersByPool[target.ID] {
-			if worker.State == model.WorkerBusy {
+			switch worker.State {
+			case model.WorkerBusy:
 				plan.DesiredWorkers[target.ID]++
+				busyByPool[target.ID]++
+			case model.WorkerStarting, model.WorkerIdle:
+				nonbusyByPool[target.ID]++
 			}
 		}
 	}
 
+	ready := make(map[string]bool, len(targets))
+	assignmentReservations := make(map[string]int, len(targets))
+	assignmentOverCap := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		pool, exists := poolByID[target.ID]
 		if !exists || !pool.Ready {
@@ -211,20 +221,24 @@ func BuildPlan(input PlanInput) Plan {
 			assigned = 0
 			plan.Problems = append(plan.Problems, problem(input.Now, "invalid-assigned-job-count", "GitHub reported a negative TotalAssignedJobs value", target.ID, true))
 		}
-		rawDesired := minInt(target.MaxCapacity, assigned+target.WarmIdle)
-		busy := plan.DesiredWorkers[target.ID]
-		if rawDesired < busy {
-			rawDesired = busy
+		ready[target.ID] = true
+		assignmentReservations[target.ID] = minInt(assigned, target.MaxCapacity)
+		if assigned > target.MaxCapacity {
+			assignmentOverCap[target.ID] = true
+			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-count-exceeds-pool-cap", "GitHub reported more assigned jobs than the configured pool maximum; excess assignments are not reserved and listener capacity is held at zero", target.ID, true))
 		}
-		need := rawDesired - busy
-		nonbusy := 0
-		for _, worker := range workersByPool[target.ID] {
-			if worker.State == model.WorkerStarting || worker.State == model.WorkerIdle {
-				nonbusy++
-			}
+	}
+
+	allocate := func(target config.Target, requested int) {
+		current := plan.DesiredWorkers[target.ID]
+		if requested <= current {
+			return
 		}
-		existing := minInt(need, minInt(nonbusy, remaining))
-		plan.DesiredWorkers[target.ID] = busy + existing
+		need := requested - current
+		availableExisting := nonbusyByPool[target.ID] - countedNonbusy[target.ID]
+		existing := minInt(need, minInt(availableExisting, remaining))
+		plan.DesiredWorkers[target.ID] += existing
+		countedNonbusy[target.ID] += existing
 		remaining -= existing
 
 		prospective := minInt(need-existing, remaining)
@@ -235,8 +249,36 @@ func BuildPlan(input PlanInput) Plan {
 		memoryRemaining -= uint64(starts) * uint64(workerMemory)
 	}
 
+	// Reserve every authoritative assignment before allocating a single warm
+	// idle worker. Capacity is advertised across independent scale-set
+	// listeners, so a high-priority pool's idle preference must never consume a
+	// slot already assigned to another ready pool.
+	for _, target := range targets {
+		if !ready[target.ID] {
+			continue
+		}
+		assigned := maxInt(assignmentReservations[target.ID], busyByPool[target.ID])
+		allocate(target, assigned)
+		if plan.DesiredWorkers[target.ID] < assigned {
+			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds currently serviceable host capacity", target.ID, true))
+		}
+	}
+
+	// Priority applies only to optional warm-idle inventory after all assigned
+	// work has been reserved.
+	for _, target := range targets {
+		if !ready[target.ID] {
+			continue
+		}
+		assigned := assignmentReservations[target.ID]
+		requested := minInt(target.MaxCapacity, assigned+target.WarmIdle)
+		requested = maxInt(requested, maxInt(assigned, busyByPool[target.ID]))
+		allocate(target, requested)
+	}
+
 	capacityDebt := busyWorkers > hostLimit
 	quiescing := false
+	advertisable := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		desired := plan.DesiredWorkers[target.ID]
 		active := 0
@@ -270,8 +312,40 @@ func BuildPlan(input PlanInput) Plan {
 				plan.Remove = append(plan.Remove, worker)
 				excess--
 			}
-		} else if !capacityDebt {
+		} else if !capacityDebt && ready[target.ID] && !assignmentOverCap[target.ID] {
 			plan.AdvertisedCapacity[target.ID] = desired
+			advertisable[target.ID] = true
+		}
+	}
+
+	// GitHub's scale-set listener capacity is the maximum number of assigned
+	// jobs the host can service, not the number of workers that should exist
+	// before assignment. ARC advertises maxRunners to the listener and computes
+	// its actual worker count separately as minRunners+assigned. Preserve that
+	// split here: desired workers remain assigned+warm-idle, while additional
+	// host- and memory-bounded slots are advertised without prestarting them.
+	// A gate, capacity debt, or per-pool quiesce still leaves capacity at zero.
+	if !capacityDebt {
+		serviceSlots := hostLimit - activeWorkers
+		for _, decision := range plan.Start {
+			serviceSlots -= decision.Count
+		}
+		if serviceSlots < 0 {
+			serviceSlots = 0
+		}
+		for _, target := range targets {
+			if !advertisable[target.ID] || serviceSlots == 0 {
+				continue
+			}
+			additional := minInt(target.MaxCapacity-plan.AdvertisedCapacity[target.ID], serviceSlots)
+			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
+			additional = minInt(additional, affordableWorkerCount(memoryRemaining, workerMemory))
+			if additional <= 0 {
+				continue
+			}
+			plan.AdvertisedCapacity[target.ID] += additional
+			serviceSlots -= additional
+			memoryRemaining -= uint64(additional) * uint64(workerMemory)
 		}
 	}
 	if len(plan.Problems) > 0 {

@@ -26,25 +26,183 @@ func TestDesiredFormulaAndStartCount(t *testing.T) {
 	}
 }
 
-func TestGlobalCapacityUsesPriorityAcrossPools(t *testing.T) {
+func TestIdlePoolAdvertisesFullServiceCapacityWithoutPrestartingBacklogWorkers(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 1 || totalStarts(plan.Start) != 1 {
+		t.Fatalf("desired=%d starts=%#v, want only one warm worker", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want resource-bounded target maximum 3", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestScaleToZeroPoolAdvertisesServiceCapacityWithoutPrestartingWorkers(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 0 || len(plan.Start) != 0 {
+		t.Fatalf("desired=%d starts=%#v, want scale-to-zero inventory", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want jobs admitted up to target maximum 3", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestAdvertisedServiceCapacityRemainsMemoryBounded(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 6
+	input.Config.GitHub.Targets[0].MaxCapacity = 6
+	input.Resources.AvailableMemoryBytes = 40 << 30 // 24 GiB above the floor funds three 8-GiB workers total.
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 1 || totalStarts(plan.Start) != 1 {
+		t.Fatalf("desired=%d starts=%#v, want only one warm worker", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 3 {
+		t.Fatalf("advertised capacity=%d, want exactly three memory-backed slots", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestGlobalCapacityReservesAssignmentsAcrossPoolsBeforeWarmIdle(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
 	input.Config.Resources.MaximumConcurrentWorkers = 2
 	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
 		config.Target{ID: "personal", MaxCapacity: 2, WarmIdle: 1, Priority: 10},
 	)
-	input.Pools[0].TotalAssignedJobs = 1 // org wants two including its warm worker
+	input.Pools[0].TotalAssignedJobs = 1
 	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, Ready: true})
 	plan := BuildPlan(input)
-	if got := plan.DesiredWorkers["org"]; got != 2 {
-		t.Fatalf("org desired = %d, want 2", got)
+	if got := plan.DesiredWorkers["org"]; got != 1 {
+		t.Fatalf("org desired = %d, want its assigned worker without optional warm idle", got)
 	}
-	if got := plan.DesiredWorkers["personal"]; got != 0 {
-		t.Fatalf("personal desired = %d, want 0 after higher-priority allocation", got)
+	if got := plan.DesiredWorkers["personal"]; got != 1 {
+		t.Fatalf("personal desired = %d, want its assignment reserved before priority", got)
 	}
 	if totalStarts(plan.Start) != 2 {
 		t.Fatalf("starts = %#v", plan.Start)
 	}
+}
+
+func TestAdvertisedMultiPoolCombinationRemainsGloballyServiceable(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 3, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", Ready: true})
+
+	idle := BuildPlan(input)
+	if idle.DesiredWorkers["org"] != 1 || idle.DesiredWorkers["personal"] != 1 ||
+		idle.AdvertisedCapacity["org"] != 2 || idle.AdvertisedCapacity["personal"] != 1 {
+		t.Fatalf("idle allocation = desired %#v capacity %#v, want warm 1/1 and advertised 2/1", idle.DesiredWorkers, idle.AdvertisedCapacity)
+	}
+
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[1].TotalAssignedJobs = 1
+	assigned := BuildPlan(input)
+	if assigned.DesiredWorkers["org"] != 2 || assigned.DesiredWorkers["personal"] != 1 {
+		t.Fatalf("assigned desired = %#v, want every advertised obligation serviceable", assigned.DesiredWorkers)
+	}
+	if assigned.AdvertisedCapacity["org"] != 2 || assigned.AdvertisedCapacity["personal"] != 1 || totalStarts(assigned.Start) != 3 {
+		t.Fatalf("assigned plan = starts %#v capacity %#v", assigned.Start, assigned.AdvertisedCapacity)
+	}
+
+	input.Pools[0].TotalAssignedJobs = 1
+	input.Pools[1].TotalAssignedJobs = 2
+	reversed := BuildPlan(input)
+	if reversed.DesiredWorkers["org"] != 1 || reversed.DesiredWorkers["personal"] != 2 || totalStarts(reversed.Start) != 3 {
+		t.Fatalf("reversed assigned plan = desired %#v starts %#v", reversed.DesiredWorkers, reversed.Start)
+	}
+}
+
+func TestMultiPoolAssignmentsRemainReservedWhileResourceGateAdvertisesZero(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 3, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[0].DrainServiceCapacity = 2
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, DrainServiceCapacity: 1, Ready: true})
+	input.Resources = model.ResourceSnapshot{}
+
+	plan := BuildPlan(input)
+	if plan.AdvertisedCapacity["org"] != 0 || plan.AdvertisedCapacity["personal"] != 0 {
+		t.Fatalf("resource gate reopened capacity: %#v", plan.AdvertisedCapacity)
+	}
+	if plan.DesiredWorkers["org"] != 2 || plan.DesiredWorkers["personal"] != 1 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("resource gate stranded assignments: desired %#v starts %#v", plan.DesiredWorkers, plan.Start)
+	}
+}
+
+func TestAssignmentReservationNeverExceedsPoolMaximum(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Pools[0].TotalAssignedJobs = 5
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 3 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("over-cap assignment reservation = desired %d starts %#v, want pool maximum 3", plan.DesiredWorkers["org"], plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("over-cap assignment reopened listener capacity: %#v", plan.AdvertisedCapacity)
+	}
+	if plan.Phase != model.PhaseDegraded || !hasProblem(plan.Problems, "assigned-job-count-exceeds-pool-cap", "org") {
+		t.Fatalf("over-cap assignment was not explicit and degraded: phase=%s problems=%#v", plan.Phase, plan.Problems)
+	}
+}
+
+func TestOverCapPoolCannotConsumeAnotherPoolsAssignmentReservation(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].MaxCapacity = 2
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "personal", MaxCapacity: 2, WarmIdle: 1, Priority: 10},
+	)
+	input.Pools[0].TotalAssignedJobs = 5
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", TotalAssignedJobs: 1, Ready: true})
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 2 || plan.DesiredWorkers["personal"] != 1 || totalStarts(plan.Start) != 3 {
+		t.Fatalf("cross-pool over-cap reservation = desired %#v starts %#v, want capped 2 plus assigned 1", plan.DesiredWorkers, plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 || plan.AdvertisedCapacity["personal"] != 1 {
+		t.Fatalf("cross-pool over-cap capacities = %#v, want offending pool zero and healthy pool one", plan.AdvertisedCapacity)
+	}
+	if !hasProblem(plan.Problems, "assigned-job-count-exceeds-pool-cap", "org") {
+		t.Fatalf("cross-pool excess assignment problem missing: %#v", plan.Problems)
+	}
+}
+
+func TestBusyWorkersAbovePoolMaximumArePreservedWithoutAdditionalStarts(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].MaxCapacity = 2
+	input.Pools[0].TotalAssignedJobs = 4
+	input.Workers = []model.Worker{
+		{ID: "busy-1", PoolID: "org", State: model.WorkerBusy},
+		{ID: "busy-2", PoolID: "org", State: model.WorkerBusy},
+		{ID: "busy-3", PoolID: "org", State: model.WorkerBusy},
+	}
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 3 || len(plan.Start) != 0 || plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("busy over-cap preservation = desired %d starts %#v capacity %d", plan.DesiredWorkers["org"], plan.Start, plan.AdvertisedCapacity["org"])
+	}
+	assertNotRemoved(t, plan.Remove, "busy-1", "busy-2", "busy-3")
 }
 
 func TestDisabledDrainNeverRemovesBusyWorker(t *testing.T) {
@@ -122,6 +280,9 @@ func TestACOnlySuspendsImmediatelyAndResumesAfterStableWindow(t *testing.T) {
 	if plan.Phase != model.PhasePowerSuspended {
 		t.Fatalf("phase = %s", plan.Phase)
 	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("power-suspended capacity = %d, want fail-closed zero", plan.AdvertisedCapacity["org"])
+	}
 	assertRemoved(t, plan.Remove, "idle")
 	assertNotRemoved(t, plan.Remove, "busy")
 
@@ -159,6 +320,9 @@ func TestCPUBlockAndResumeHysteresis(t *testing.T) {
 	plan = BuildPlan(input)
 	if plan.Phase != model.PhaseResourceConstrained || !plan.ResourceGate.Blocked || plan.ResourceGate.Reason != model.ResourceGateReasonCPU {
 		t.Fatalf("CPU did not block after observation window: %#v", plan.ResourceGate)
+	}
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("resource-constrained capacity = %d, want fail-closed zero", plan.AdvertisedCapacity["org"])
 	}
 
 	input.Resources.CPUUtilizationPercent = 60
@@ -527,6 +691,39 @@ func TestUnavailablePoolFailsClosedLocally(t *testing.T) {
 	assertRemoved(t, plan.Remove, "idle")
 }
 
+func TestUnavailableEmptyPoolNeverReceivesSpareCapacity(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Pools = nil
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 0 || plan.DesiredWorkers["org"] != 0 || len(plan.Start) != 0 {
+		t.Fatalf("unavailable empty pool admitted spare capacity: %#v", plan)
+	}
+	if len(plan.Problems) == 0 || plan.Problems[0].Code != "pool-unavailable" {
+		t.Fatalf("unavailable pool problem = %#v", plan.Problems)
+	}
+}
+
+func TestSpareCapacityIsAllocatedOnlyToReadyPools(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "unavailable", MaxCapacity: 3, WarmIdle: 1, Priority: -1},
+	)
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "unavailable", Ready: false})
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 3 || plan.DesiredWorkers["org"] != 1 {
+		t.Fatalf("ready pool lost service capacity: desired %#v capacity %#v", plan.DesiredWorkers, plan.AdvertisedCapacity)
+	}
+	if plan.AdvertisedCapacity["unavailable"] != 0 || plan.DesiredWorkers["unavailable"] != 0 {
+		t.Fatalf("unavailable higher-priority pool received capacity: desired %#v capacity %#v", plan.DesiredWorkers, plan.AdvertisedCapacity)
+	}
+}
+
 func TestOrphanedBusyWorkerIsReportedAndPreserved(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
@@ -573,6 +770,15 @@ func totalStarts(decisions []StartDecision) int {
 		total += decision.Count
 	}
 	return total
+}
+
+func hasProblem(problems []model.Problem, code, poolID string) bool {
+	for _, item := range problems {
+		if item.Code == code && item.PoolID == poolID {
+			return true
+		}
+	}
+	return false
 }
 
 func assertRemoved(t *testing.T, workers []model.Worker, ids ...string) {
