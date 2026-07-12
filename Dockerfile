@@ -36,6 +36,11 @@ RUN apt-get update \
  && chmod 0755 /opt/microsoft/powershell/7/pwsh \
  && ln --symbolic /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh \
  && git lfs install --system \
+ && install --directory --owner=runner --group=runner --mode=0755 \
+      /home/runner/.dotnet \
+      /home/runner/.dotnet/tools \
+      /home/runner/.nuget \
+      /home/runner/.nuget/packages \
  && rm --force /tmp/powershell.tar.gz \
  && rm --recursive --force /var/lib/apt/lists/*
 
@@ -44,7 +49,13 @@ COPY --chmod=0555 worker/job-started.sh /usr/local/libexec/ci-runner-job-started
 COPY --chmod=0555 worker/job-completed.sh /usr/local/libexec/ci-runner-job-completed.sh
 COPY --chmod=0555 worker/entrypoint.sh /usr/local/bin/ci-runner-entrypoint
 
-ENV ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1 \
+# actions/setup-dotnet otherwise selects /usr/share/dotnet on Linux. Keep SDK,
+# global-tool, and NuGet writes inside the disposable non-root runner home.
+ENV DOTNET_INSTALL_DIR=/home/runner/.dotnet \
+    DOTNET_ROOT=/home/runner/.dotnet \
+    NUGET_PACKAGES=/home/runner/.nuget/packages \
+    PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:${PATH} \
+    ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1 \
     ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh \
     ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh \
     ImageOS=ubuntu24

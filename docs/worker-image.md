@@ -34,6 +34,9 @@ Authoritative references:
 - [Runner Scale Set Client Docker example](https://github.com/actions/scaleset/tree/v0.4.0/examples/dockerscaleset)
 - [GitHub pre-job and post-job hooks](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)
 - [GitHub runner releases](https://github.com/actions/runner/releases)
+- [`setup-dotnet` v5.4.0 rootless installation guidance](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/README.md#environment-variables)
+- [`setup-dotnet` v5.4.0 install-directory implementation](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/src/installer.ts#L329-L359)
+- [.NET install-script environment contract](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script#set-environment-variables)
 - [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/f45762e93bedc498afdc31c756e725cc04ee4dee/images/ubuntu/Ubuntu2404-Readme.md)
 - [PowerShell releases](https://github.com/PowerShell/PowerShell/releases)
 - [Docker image pinning guidance](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
@@ -51,7 +54,43 @@ The derived layer contains only:
 
 .NET, Node.js, Python, and other versioned toolchains are deliberately absent.
 Workflows install them with their official setup actions exactly as hosted jobs
-do. This prevents a second, silently drifting toolcache contract.
+do. The image provides writable installation locations, not a second, silently
+drifting toolchain or toolcache.
+
+## Rootless .NET setup contract
+
+The current official `actions/setup-dotnet` Linux default is
+`/usr/share/dotnet`. Its own documentation warns that this default can be
+unwritable on self-hosted Linux runners and directs operators to set
+`DOTNET_INSTALL_DIR` to a user-writable path. The action passes that environment
+variable to its bundled install script, adds the resolved directory to the job
+`PATH`, and exports the same directory as `DOTNET_ROOT` after installation.
+
+The image therefore establishes these paths before any workflow step runs:
+
+- `DOTNET_INSTALL_DIR=/home/runner/.dotnet` makes every native-architecture
+  `setup-dotnet` SDK/runtime installation rootless;
+- `DOTNET_ROOT=/home/runner/.dotnet` gives apphosts and manually installed .NET
+  the same runtime root even outside the setup action;
+- `/home/runner/.dotnet` and `/home/runner/.dotnet/tools` lead `PATH`, covering
+  both the SDK host and `dotnet tool install --global` output; and
+- `NUGET_PACKAGES=/home/runner/.nuget/packages` makes restore/cache behavior
+  explicit instead of relying on home-directory inference.
+
+Those directories are created in the immutable layer as `runner:runner` with
+mode `0755`. They live only in the disposable worker writable layer. A workflow
+may still override these variables for a deliberate per-job layout, but the
+default can never redirect an unprivileged install or restore to
+`/usr/share/dotnet`.
+
+The image intentionally does not set `RUNNER_TOOL_CACHE`,
+`RUNNER_TOOLSDIRECTORY`, or `AGENT_TOOLSDIRECTORY`. The pinned official runner
+[resolves its tool cache from the configured work directory and creates it when
+the job starts](https://github.com/actions/runner/blob/7d737449ef346f6524f75688d0c9c95fa10ba10a/src/Runner.Worker/JobRunner.cs#L174-L176),
+while [`setup-dotnet` installs through `DOTNET_INSTALL_DIR`](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/src/installer.ts#L329-L359).
+Keeping those runner variables dynamic avoids coupling the image to a work
+folder chosen by the one-job JIT configuration; the non-root runner process owns
+the disposable work tree it creates.
 
 ## Mandatory runtime invariants
 
@@ -103,11 +142,12 @@ never removes or interrupts the container, consistent with GitHub's warning that
 a post-job hook is not an autoscaler teardown mechanism.
 
 `scripts/verify-worker-image.sh` verifies the immutable image metadata, approved
-tool surface, exact runner version, non-root identity, absence of baked JIT or
-credential variables, required stdin handoff, passwordless sudo, and the exact
-`idle → busy → completed` hook sequence. Runtime isolation is verified in
-the controller adapter tests and live canary because it is a container-create
-contract rather than an image property.
+tool surface, exact runner version, non-root identity, rootless .NET/NuGet
+environment and directory ownership, absence of runner toolcache overrides,
+absence of baked JIT or credential variables, required stdin handoff,
+passwordless sudo, and the exact `idle → busy → completed` hook sequence.
+Runtime isolation is verified in the controller adapter tests and live canary
+because it is a container-create contract rather than an image property.
 
 `completed` means workflow steps have finished; GitHub runs the completed hook
 before its final job protocol finishes. The controller must still wait for
