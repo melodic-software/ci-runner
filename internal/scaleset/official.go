@@ -37,8 +37,9 @@ func (DiscardJobEventSink) JobCompleted(context.Context, string, string, string,
 }
 
 type JobEventObserver interface {
-	// ObserveJobCompleted is best-effort telemetry after lifecycle validation
-	// and durable persistence. It must not influence message acknowledgement.
+	// Observations are best-effort telemetry after lifecycle validation,
+	// durable persistence, and successful message acknowledgement. They must
+	// not influence job acquisition.
 	ObserveJobStarted(context.Context, string, time.Duration)
 	ObserveJobCompleted(context.Context, string, string, bool)
 }
@@ -258,17 +259,6 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-completed event", Err: err}
 		}
 	}
-	jobStartObservedAt := time.Now().UTC()
-	for _, started := range message.JobStartedMessages {
-		visibilityLag := time.Duration(0)
-		if !started.RunnerAssignTime.IsZero() && jobStartObservedAt.After(started.RunnerAssignTime) {
-			visibilityLag = jobStartObservedAt.Sub(started.RunnerAssignTime)
-		}
-		c.opts.Observer.ObserveJobStarted(ctx, target.definition.TargetID, visibilityLag)
-	}
-	for _, completed := range message.JobCompletedMessages {
-		c.opts.Observer.ObserveJobCompleted(ctx, target.definition.TargetID, completed.Result, completed.RunnerID > 0)
-	}
 	// Update the in-memory acceleration map immediately after the durable sink.
 	// DeleteMessage is irreversible: if a later AcquireJobs call fails, this
 	// message will not replay and delaying these updates would forget lifecycle
@@ -284,6 +274,21 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	// acknowledgement fails, no acquisition occurs and redelivery is idempotent.
 	if err := target.session.DeleteMessage(context.WithoutCancel(ctx), message.MessageID); err != nil {
 		return Statistics{}, translateOfficialError("acknowledge message", err)
+	}
+	// Additive telemetry follows the irreversible acknowledgement. Durable
+	// lifecycle writes above remain intentionally idempotent on redelivery, but
+	// observing before DeleteMessage would double-count an acknowledgement
+	// failure and replay.
+	jobStartObservedAt := time.Now().UTC()
+	for _, started := range message.JobStartedMessages {
+		visibilityLag := time.Duration(0)
+		if !started.RunnerAssignTime.IsZero() && jobStartObservedAt.After(started.RunnerAssignTime) {
+			visibilityLag = jobStartObservedAt.Sub(started.RunnerAssignTime)
+		}
+		c.opts.Observer.ObserveJobStarted(ctx, target.definition.TargetID, visibilityLag)
+	}
+	for _, completed := range message.JobCompletedMessages {
+		c.opts.Observer.ObserveJobCompleted(ctx, target.definition.TargetID, completed.Result, completed.RunnerID > 0)
 	}
 	if len(message.JobAvailableMessages) > 0 {
 		requestIDs := make([]int64, 0, len(message.JobAvailableMessages))
