@@ -184,18 +184,10 @@ func BuildPlan(input PlanInput) Plan {
 		return plan
 	}
 
-	// Derive how many additional full worker envelopes can fit while preserving
-	// the configured physical-memory floor. This bounds a multi-worker plan; a
-	// one-worker boolean gate would otherwise admit several containers from the
-	// same stale snapshot.
-	resourceLimit := activeWorkers + availableWorkerSlots(input.Resources, input.Config.Resources)
-	if resourceLimit < hostLimit {
-		hostLimit = resourceLimit
-	}
-
 	// Busy workers are immutable reservations. They consume global capacity
 	// before any target receives assigned-job or warm-idle capacity.
 	remaining := hostLimit - busyWorkers
+	memoryRemaining := availableMemoryHeadroom(input.Resources, input.Config.Resources)
 	if remaining < 0 {
 		remaining = 0
 		plan.Problems = append(plan.Problems, problem(input.Now, "capacity-below-busy-count", "configured host capacity is below the current busy-worker count; active work is preserved and no new work is admitted", "", false))
@@ -225,9 +217,22 @@ func BuildPlan(input PlanInput) Plan {
 			rawDesired = busy
 		}
 		need := rawDesired - busy
-		granted := minInt(need, remaining)
-		plan.DesiredWorkers[target.ID] = busy + granted
-		remaining -= granted
+		nonbusy := 0
+		for _, worker := range workersByPool[target.ID] {
+			if worker.State == model.WorkerStarting || worker.State == model.WorkerIdle {
+				nonbusy++
+			}
+		}
+		existing := minInt(need, minInt(nonbusy, remaining))
+		plan.DesiredWorkers[target.ID] = busy + existing
+		remaining -= existing
+
+		prospective := minInt(need-existing, remaining)
+		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
+		starts := minInt(prospective, affordableWorkerCount(memoryRemaining, workerMemory))
+		plan.DesiredWorkers[target.ID] += starts
+		remaining -= starts
+		memoryRemaining -= uint64(starts) * uint64(workerMemory)
 	}
 
 	capacityDebt := busyWorkers > hostLimit
@@ -310,6 +315,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	if remaining < 0 {
 		remaining = 0
 	}
+	memoryRemaining := availableMemoryHeadroom(input.Resources, input.Config.Resources)
 	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
 	sort.SliceStable(targets, func(i, j int) bool {
 		if targets[i].Priority == targets[j].Priority {
@@ -330,10 +336,13 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 			}
 		}
 		serviceable := minInt(uncovered, minInt(pool.DrainServiceCapacity, target.MaxCapacity))
+		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		start := minInt(maxInt(0, serviceable-nonbusy), remaining)
+		start = minInt(start, affordableWorkerCount(memoryRemaining, workerMemory))
 		if start > 0 {
 			plan.Start = append(plan.Start, StartDecision{PoolID: target.ID, Count: start})
 			remaining -= start
+			memoryRemaining -= uint64(start) * uint64(workerMemory)
 			if !input.Desktop.DesktopRunning || !input.Desktop.EngineReachable {
 				plan.StartDesktop = true
 			}
@@ -388,19 +397,23 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 	state := previous
 	if snapshot.TotalMemoryBytes == 0 || snapshot.AvailableMemoryBytes > snapshot.TotalMemoryBytes || math.IsNaN(snapshot.CPUUtilizationPercent) || math.IsInf(snapshot.CPUUtilizationPercent, 0) || snapshot.CPUUtilizationPercent < 0 || snapshot.CPUUtilizationPercent > 100 {
 		state.Blocked = true
+		state.Reason = model.ResourceGateReasonInvalidObservation
 		state.HighCPUSince = nil
 		state.HealthySince = nil
 		return state, false, "resource monitor returned an out-of-range CPU or physical-memory observation"
 	}
-	memoryHealthy := availableWorkerSlots(snapshot, policy) > 0
-
-	if !state.Blocked {
+	if state.Blocked && state.Reason == "" {
+		state.HighCPUSince = nil
 		state.HealthySince = nil
-		if !memoryHealthy {
-			state.Blocked = true
-			state.HighCPUSince = nil
-			return state, false, ""
+		if snapshot.CPUUtilizationPercent <= policy.CPUResumePercent {
+			return model.ResourceGateState{}, true, ""
 		}
+		state.Reason = model.ResourceGateReasonCPU
+		return state, false, ""
+	}
+	if !state.Blocked {
+		state.Reason = ""
+		state.HealthySince = nil
 		if snapshot.CPUUtilizationPercent >= policy.CPUBlockPercent {
 			if state.HighCPUSince == nil || now.Before(*state.HighCPUSince) {
 				value := now
@@ -408,6 +421,7 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 			}
 			if now.Sub(*state.HighCPUSince) >= policy.CPUObservationWindow.Duration {
 				state.Blocked = true
+				state.Reason = model.ResourceGateReasonCPU
 				state.HealthySince = nil
 				return state, false, ""
 			}
@@ -418,15 +432,13 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 	}
 
 	state.HighCPUSince = nil
-	if memoryHealthy && snapshot.CPUUtilizationPercent <= policy.CPUResumePercent {
+	if snapshot.CPUUtilizationPercent <= policy.CPUResumePercent {
 		if state.HealthySince == nil || now.Before(*state.HealthySince) {
 			value := now
 			state.HealthySince = &value
 		}
 		if now.Sub(*state.HealthySince) >= policy.CPUHysteresisWindow.Duration {
-			state.Blocked = false
-			state.HealthySince = nil
-			return state, true, ""
+			return model.ResourceGateState{}, true, ""
 		}
 	} else {
 		state.HealthySince = nil
@@ -434,16 +446,23 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 	return state, false, ""
 }
 
-func availableWorkerSlots(snapshot model.ResourceSnapshot, policy config.Resources) int {
-	workerMemory := uint64(policy.Worker.Memory)
-	if snapshot.TotalMemoryBytes == 0 || workerMemory == 0 || snapshot.AvailableMemoryBytes > snapshot.TotalMemoryBytes {
+func availableMemoryHeadroom(snapshot model.ResourceSnapshot, policy config.Resources) uint64 {
+	if snapshot.TotalMemoryBytes == 0 || snapshot.AvailableMemoryBytes > snapshot.TotalMemoryBytes {
 		return 0
 	}
 	reserved := uint64(math.Ceil(float64(snapshot.TotalMemoryBytes) * policy.MinimumAvailableMemoryPct / 100))
 	if snapshot.AvailableMemoryBytes <= reserved {
 		return 0
 	}
-	slots := (snapshot.AvailableMemoryBytes - reserved) / workerMemory
+	return snapshot.AvailableMemoryBytes - reserved
+}
+
+func affordableWorkerCount(memoryAvailable uint64, workerMemory config.ByteSize) int {
+	memoryBytes := uint64(workerMemory)
+	if memoryBytes == 0 {
+		return 0
+	}
+	slots := memoryAvailable / memoryBytes
 	maxInt := uint64(^uint(0) >> 1)
 	if slots > maxInt {
 		return int(maxInt)

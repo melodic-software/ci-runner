@@ -528,11 +528,15 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
-	reservedStarts := 0
-startLoop:
+	var reservedMemory uint64
 	for _, decision := range plan.Start {
 		identity, ok := identities[decision.PoolID]
 		if !ok {
+			continue
+		}
+		limits, configured := r.config.WorkerForTarget(decision.PoolID)
+		if !configured {
+			record("worker-profile-missing", "planned worker target has no configured resource profile", decision.PoolID, false, nil)
 			continue
 		}
 		for count := 0; count < decision.Count; count++ {
@@ -540,13 +544,13 @@ startLoop:
 				operationErrors = append(operationErrors, err)
 				break
 			}
-			allowed, safetyChanged, admissionErr := r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedStarts)
+			allowed, safetyChanged, admissionErr := r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedMemory)
 			if admissionErr != nil || safetyChanged {
 				cancel(errReconcileInputsChanged)
 				return ReconcileResult{}, errReconcileInputsChanged
 			}
 			if !allowed {
-				break startLoop
+				break
 			}
 			name := r.nextRunnerName(decision.PoolID, now)
 			jit, jitErr := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
@@ -559,7 +563,7 @@ startLoop:
 			// JIT creation is a network operation. Re-read every safety and
 			// admission input again immediately before the irreversible container
 			// start so a stale pre-JIT snapshot cannot admit work.
-			allowed, safetyChanged, admissionErr = r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedStarts)
+			allowed, safetyChanged, admissionErr = r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedMemory)
 			if admissionErr != nil || safetyChanged {
 				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
 				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
@@ -577,10 +581,10 @@ startLoop:
 				if cleanupErr != nil {
 					record("unused-jit-runner-cleanup-error", safeScaleSetMessage("deregister unused JIT runner", cleanupErr), decision.PoolID, scaleset.Retryable(cleanupErr), cleanupErr)
 				}
-				break startLoop
+				break
 			}
 			_, startErr := r.deps.Workers.Start(ctx, StartWorkerRequest{
-				PoolID: decision.PoolID, Name: name, JITConfig: jit, Limits: r.config.Resources.Worker,
+				PoolID: decision.PoolID, Name: name, JITConfig: jit, Limits: limits,
 			})
 			if startErr != nil {
 				// Start is intentionally not retried: it may have created a running
@@ -596,7 +600,7 @@ startLoop:
 				}
 				break
 			}
-			reservedStarts++
+			reservedMemory = saturatingAddUint64(reservedMemory, uint64(limits.Memory))
 		}
 	}
 
@@ -844,7 +848,7 @@ func (r *Reconciler) freshStartAllowed(
 	baselinePower model.PowerSnapshot,
 	baselineResources model.ResourceSnapshot,
 	baselineDesktop model.DesktopStatus,
-	reservedStarts int,
+	reservedMemory uint64,
 ) (allowed bool, safetyChanged bool, err error) {
 	desired, err := r.deps.State.LoadDesired(ctx)
 	if errors.Is(err, statepkg.ErrNotFound) {
@@ -887,21 +891,10 @@ func (r *Reconciler) freshStartAllowed(
 	}
 	workers = enriched
 
-	// A host monitor may not reflect the full envelope of a container that was
-	// just started. Reserve that envelope explicitly for the rest of this Step;
-	// this is what prevents a single stale snapshot from admitting N workers.
-	workerMemory := uint64(r.config.Resources.Worker.Memory)
-	var reservation uint64
-	if workerMemory > 0 && uint64(reservedStarts) > ^uint64(0)/workerMemory {
-		reservation = ^uint64(0)
-	} else {
-		reservation = uint64(reservedStarts) * workerMemory
-	}
-	if reservation >= resources.AvailableMemoryBytes {
-		resources.AvailableMemoryBytes = 0
-	} else {
-		resources.AvailableMemoryBytes -= reservation
-	}
+	// A host monitor may not reflect containers started earlier in this Step.
+	// Reserve the exact sum of their target profiles against every fresh
+	// observation so a stale snapshot cannot over-admit mixed worker sizes.
+	resources.AvailableMemoryBytes = availableAfterMemoryReservation(resources.AvailableMemoryBytes, reservedMemory)
 
 	now := r.deps.Clock.Now().UTC()
 	plan := BuildPlan(PlanInput{
@@ -914,7 +907,21 @@ func (r *Reconciler) freshStartAllowed(
 		}
 	}
 	changed := resources != baselineResources || desktop != baselineDesktop
-	return false, changed && reservedStarts == 0, nil
+	return false, changed && reservedMemory == 0, nil
+}
+
+func saturatingAddUint64(left, right uint64) uint64 {
+	if ^uint64(0)-left < right {
+		return ^uint64(0)
+	}
+	return left + right
+}
+
+func availableAfterMemoryReservation(available, reserved uint64) uint64 {
+	if reserved >= available {
+		return 0
+	}
+	return available - reserved
 }
 
 func sameAdmissionIntent(left, right model.DesiredState) bool {

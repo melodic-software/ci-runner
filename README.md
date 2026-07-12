@@ -120,7 +120,9 @@ The checked-in, nonsecret host YAML is owned by
 [`kyle-sexton/provisioning`](https://github.com/kyle-sexton/provisioning) and is
 installed as `%LOCALAPPDATA%\ci-runner\config.yaml`. The strict parser rejects
 unknown properties, unsupported schemas, invalid units, duplicate targets,
-unsafe paths, and inconsistent thresholds.
+unsafe paths, inconsistent thresholds, and explicit null or blank target worker
+resource sections and fields. YAML merge keys (`<<`) are rejected everywhere so
+inheritance cannot bypass those checks.
 
 Provisioning verifies ownership boundaries through the product rather than
 parsing YAML itself. `config validate --json` returns the normalized
@@ -158,6 +160,46 @@ Default worker parity is 2 CPU, 8 GiB memory, no additional swap, 4096 PIDs,
 and no devices. Admission also honors configurable host memory/CPU thresholds,
 hysteresis, global worker limits, and laptop AC-only policy. Active workers are
 never killed to reclaim resources.
+
+Targets may optionally override individual fields from the global
+`resources.worker` profile. Every omitted field inherits the global value; the
+effective profile must still satisfy the same CPU, memory, total memory-plus-swap,
+and PID validation. For example, this relevant excerpt keeps the ordinary pool
+at 2 CPU/8 GiB while giving a CodeQL pool a larger profile:
+
+```yaml
+resources:
+  maximumConcurrentWorkers: 5
+  worker:
+    cpus: 2
+    memory: 8GiB
+    memorySwap: 8GiB
+    pids: 4096
+github:
+  targets:
+    - id: ordinary
+      # The remaining required target identity and capacity fields are omitted.
+    - id: codeql
+      resources:
+        worker:
+          cpus: 4
+          memory: 24GiB
+          memorySwap: 24GiB
+          pids: 8192
+```
+
+Host admission computes the byte headroom above the physical-memory floor and
+allocates prospective starts in target-priority order, charging each start's
+effective memory profile. A larger target that does not fit is skipped so a
+smaller eligible target can still run. Successful mixed-profile starts are also
+reserved by their exact memory limits against fresh-but-potentially-stale host
+observations for the rest of that reconciliation step. The reservation sum
+saturates fail-closed, and `maximumConcurrentWorkers` remains the host-wide
+ceiling. Insufficient memory headroom caps only prospective starts; it does not
+activate the global resource gate or retire healthy existing capacity. Invalid
+resource observations and sustained high CPU remain global gates. Target
+profiles change only Docker CPU, memory, memory-plus-swap, and PID limits. They
+cannot add the Docker socket, privileged mode, devices, or host mounts.
 
 ## Credential boundary
 
