@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	maximumMessageSize                        = 64 << 10
-	legacyShutdownControllerVersion           = "v0.1.7"
+	maximumMessageSize = 64 << 10
+	// Release builds embed the tag without its leading "v".
+	legacyShutdownControllerVersion           = "0.1.7"
 	legacyShutdownIdentityFieldRejectionError = `decode control request: json: unknown field "expectedProcessId"`
 )
 

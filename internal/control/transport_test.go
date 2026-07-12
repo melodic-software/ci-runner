@@ -131,7 +131,7 @@ func TestStopForUpdateFallsBackToV017ShutdownShape(t *testing.T) {
 	}
 
 	expected := Status{
-		ProcessID: 123, Version: "v0.1.7", AssignedJobCount: 3,
+		ProcessID: 123, Version: legacyShutdownControllerVersion, AssignedJobCount: 3,
 		ActiveJobCount: 2, ActiveWorkerCount: 4,
 	}
 	attempts := 0
@@ -211,7 +211,10 @@ func TestShutdownNeverFallsBackOutsideExactV017StopHandshake(t *testing.T) {
 			message: legacyShutdownIdentityFieldRejectionError,
 		},
 		"wrong controller version": {
-			version: "v0.1.6", code: "invalid-request", message: legacyShutdownIdentityFieldRejectionError,
+			version: "0.1.6", code: "invalid-request", message: legacyShutdownIdentityFieldRejectionError,
+		},
+		"tag-prefixed controller version": {
+			version: "v0.1.7", code: "invalid-request", message: legacyShutdownIdentityFieldRejectionError,
 		},
 		"message prefix": {
 			version: legacyShutdownControllerVersion, code: "invalid-request",
