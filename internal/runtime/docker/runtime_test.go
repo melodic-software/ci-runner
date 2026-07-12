@@ -66,6 +66,17 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	if created.Config.Labels[runnerIDLabel] != "99" {
 		t.Fatalf("GitHub runner ID label = %q", created.Config.Labels[runnerIDLabel])
 	}
+	wantComposeLabels := map[string]string{
+		composeProjectLabel: "ci-runner-melo-desk-001",
+		composeServiceLabel: composeServiceName,
+		composeNumberLabel:  "99",
+		composeOneoffLabel:  "False",
+	}
+	for label, want := range wantComposeLabels {
+		if got := created.Config.Labels[label]; got != want {
+			t.Errorf("Docker Desktop project label %q = %q, want %q", label, got, want)
+		}
+	}
 	for _, value := range created.Config.Env {
 		if strings.Contains(value, "PRIVATE_KEY") || strings.Contains(value, "INSTALLATION_TOKEN") || strings.Contains(value, "DOCKER_HOST") {
 			t.Fatalf("unexpected credential or host control in worker env: %q", value)
