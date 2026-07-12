@@ -21,9 +21,10 @@ and has no release assets. A read-only job first reruns module verification, vet
 tests, race tests, vulnerability scanning, queue-monitor tests, Actionlint with
 ShellCheck, Zizmor, Windows compilation, official-source dependency freshness,
 and a local worker-image contract build against that exact tag. Only the
-dependent publication job receives
-`contents:write`, `packages:write`, `attestations:write`, and `id-token:write`.
-It produces:
+dependent publication job receives the combined job-scoped `contents:write`,
+`packages:write`, `attestations:write`, `artifact-metadata:write`, and
+`id-token:write` grant; the final image-promotion job retains only
+`contents:read` and `packages:write`. It produces:
 
 - `ci-runner-vX.Y.Z-windows-amd64.zip`, containing the interactive CLI, the
   windowless Task Scheduler controller, and the compatibility schema;
@@ -37,6 +38,14 @@ It produces:
   source-SHA tags promoted under the workflow's write-once contract;
 - GitHub build-provenance attestations for every checksummed file and the OCI
   image; and BuildKit SBOM/provenance attestations attached to the image.
+
+Worker build provenance explicitly sets `create-storage-record:true` while
+pushing the attestation to the untagged OCI digest. Before uploading release
+evidence or publishing the GitHub release, the workflow requires the action's
+`storage-record-ids` output to contain at least one numeric GitHub storage-record
+ID. An absent or malformed output fails the publication job, so the separate tag
+promotion job cannot run. `artifact-metadata:write` exists only on the
+publication job that performs this check.
 
 The image base, GitHub Actions, analyzers, and publication actions are immutable
 pins. Same-line release comments allow Dependabot to recognize SHA-pinned
