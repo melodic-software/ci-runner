@@ -70,8 +70,10 @@ completed reconciliation; counters are monotonic process-lifetime events.
 | --- | --- | --- |
 | `ci_runner.controller.reconcile.duration` | Reconcile duration in seconds | `ci_runner.reconcile.result` |
 | `ci_runner.controller.reconcile.errors` | Unexpected reconcile failures | none |
-| `ci_runner.controller.observed.checkpoint.age` | Prior durable checkpoint age at reconcile start | none |
+| `ci_runner.controller.observed.checkpoint.age` | Prior durable checkpoint age at reconcile start; omitted when missing, corrupt, or future-dated | none |
 | `ci_runner.capacity.advertised` | Capacity acknowledged to GitHub | `ci_runner.pool.id` |
+| `ci_runner.capacity.acknowledged` | Latest target capacity is listener-acknowledged, `0` or `1` | `ci_runner.pool.id` |
+| `ci_runner.capacity.acknowledgement.pending.age` | Age of a pending capacity transition; omitted when acknowledged or unavailable | `ci_runner.pool.id` |
 | `ci_runner.capacity.assigned` | Authoritative assigned jobs | `ci_runner.pool.id` |
 | `ci_runner.capacity.desired` | Desired local workers | `ci_runner.pool.id` |
 | `ci_runner.workers` | Workers in each bounded state | `ci_runner.pool.id`, `ci_runner.worker.state` |
@@ -112,13 +114,22 @@ contain a runner name, container ID, job ID, exception message, or arbitrary
 error text.
 
 Terminal resource histograms are emitted only for fields actually captured.
-`partial`, `unavailable`, and `invalid` evidence is counted explicitly, so a
-missing cgroup or Docker archive API can never masquerade as a zero peak. Each
-validated or fallback JSON record is ACL-hardened and indexed in `jobs.json`
-beside the worker log and diagnostic archive before the container is eligible
-for removal. Resource metrics use only the configured pool, the bounded
+`partial`, `missing`, `unavailable`, and `invalid` evidence is counted
+explicitly, so a missing cgroup or Docker archive API can never masquerade as a
+zero peak. Each validated or fallback JSON record is an ACL-hardened sidecar
+whose path is derived from the legacy diagnostic archive before the container
+is eligible for removal. The schema-version-1 `jobs.json` shape remains
+readable by v0.1.9 during rollback. A retained worker retry recognizes the
+existing sidecar and does not emit terminal histograms or OOM counters twice.
+Resource metrics use only the configured pool, the bounded
 `default`/`target_override`/`unknown` tier, and bounded finalization/resource
 outcomes—never a device number, runner name, container ID, or job ID.
+
+If Docker reports that a worker disappeared between inventory and wait, the
+controller records bounded `unknown` finalization and `missing` resource
+evidence instead of `runtime_error` and `unavailable`. If the stopped container
+still exists, its inspected exit code supplies the lifecycle outcome even when
+the wait stream failed.
 
 ## Fast-job accounting freshness
 
@@ -130,7 +141,8 @@ back into the current inventory would make drain and cleanup invariants false,
 so the status model deliberately keeps its durable snapshot semantics.
 
 The telemetry surface makes that timing explicit. Checkpoint age reports how
-old the previous durable observation was when a reconcile began. Docker
+old the previous durable observation was when a reconcile began and is omitted
+when the checkpoint is absent, corrupt, or future-dated. Docker
 inventory and bounded worker-state gauges report the local point-in-time view.
 For each pool, assignment gap compares authoritative GitHub assignments with
 locally visible `busy` plus `starting` workers. A positive gap emits
@@ -138,6 +150,14 @@ locally visible `busy` plus `starting` workers. A positive gap emits
 `transientAccountingLag` classification to the reconcile span. It is timing
 evidence, not by itself a frozen-runner error. Combine it with checkpoint age,
 reconcile errors, lifecycle-event timestamps, and repeated gaps before alerting.
+
+Capacity acknowledgement has its own transition signal. While a listener is
+accepting a new resource-driven capacity, the pool transition timestamp remains
+stable instead of resetting on each heartbeat. `host doctor` treats that state
+as healthy for one configured listener request timeout plus two reconciliation
+intervals; a transition still pending after that bounded grace is unhealthy.
+This reuses the existing schema-version-1 pool `updatedAt` field and does not
+change the rollback-readable observed-state shape.
 
 JIT registration, Docker start, validated job start, and finalization record
 bounded counters and event timestamps. Registration/start/finalization also
@@ -170,11 +190,16 @@ CPU, and both admission gates. Useful alerts include:
 
 - assigned capacity remaining above desired capacity for multiple reconciles;
 - advertised capacity at zero while enabled and neither gate is active;
+- unacknowledged capacity persisting beyond one listener request timeout plus
+  two reconciliation intervals;
 - repeated reconcile errors or worker finalization runtime errors;
 - sustained resource-gate activation; and
 - desired workers that remain in `starting` without becoming `idle` or `busy`.
 
-Treat a single expected cancellation as lifecycle evidence, not an alert.
+Only explicit controller shutdown is classified as an expected worker
+cancellation. Artifact deadlines and persistence cancellations remain
+`runtime_error`. Treat a single expected cancellation as lifecycle evidence,
+not an alert.
 
 Authoritative configuration references:
 

@@ -44,7 +44,7 @@ type ArtifactPolicy struct {
 type ArtifactSink interface {
 	OpenLog(context.Context, ArtifactMetadata) (io.WriteCloser, error)
 	WriteDiagnostics(context.Context, ArtifactMetadata, io.Reader) error
-	WriteResourceEvidence(context.Context, ArtifactMetadata, ResourceEvidence) error
+	WriteResourceEvidence(context.Context, ArtifactMetadata, ResourceEvidence) (bool, error)
 	Finalize(context.Context, ArtifactMetadata) error
 	AdoptAndCleanup(context.Context, []ArtifactMetadata) error
 }
@@ -198,40 +198,36 @@ func (s *FileArtifactSink) WriteDiagnostics(ctx context.Context, metadata Artifa
 	return nil
 }
 
-func (s *FileArtifactSink) WriteResourceEvidence(ctx context.Context, metadata ArtifactMetadata, evidence ResourceEvidence) error {
+func (s *FileArtifactSink) WriteResourceEvidence(_ context.Context, metadata ArtifactMetadata, evidence ResourceEvidence) (bool, error) {
 	content, err := marshalResourceEvidence(evidence)
 	if err != nil {
-		return fmt.Errorf("validate worker resource evidence: %w", err)
+		return false, fmt.Errorf("validate worker resource evidence: %w", err)
 	}
 	finalPath := filepath.Join(s.diagnosticDirectory, artifactBaseName(metadata)+"-resources.json")
 	if info, statErr := os.Lstat(finalPath); statErr == nil {
 		if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumResourceEvidenceBytes {
-			return errors.New("existing worker resource evidence is not a bounded regular file")
+			return false, errors.New("existing worker resource evidence is not a bounded regular file")
 		}
 		if err := hardenAndVerify(s.acl, finalPath); err != nil {
-			return fmt.Errorf("secure existing worker resource evidence: %w", err)
+			return false, fmt.Errorf("secure existing worker resource evidence: %w", err)
 		}
 		existing, readErr := os.Open(finalPath)
 		if readErr != nil {
-			return fmt.Errorf("open existing worker resource evidence: %w", readErr)
+			return false, fmt.Errorf("open existing worker resource evidence: %w", readErr)
 		}
 		_, parseErr := ParseResourceEvidence(existing)
 		closeErr := existing.Close()
 		if err := errors.Join(parseErr, closeErr); err != nil {
-			return fmt.Errorf("verify existing worker resource evidence: %w", err)
+			return false, fmt.Errorf("verify existing worker resource evidence: %w", err)
 		}
-		_, err = s.jobs.Upsert(ctx, jobindex.Patch{
-			PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: metadata.ContainerID,
-			ArtifactStartedAt: metadata.StartedAt, ResourcePath: finalPath,
-		})
-		return err
+		return false, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect existing worker resource evidence: %w", statErr)
+		return false, fmt.Errorf("inspect existing worker resource evidence: %w", statErr)
 	}
 
 	temporary, err := os.CreateTemp(s.diagnosticDirectory, ".ci-runner-resources-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temporary worker resource evidence: %w", err)
+		return false, fmt.Errorf("create temporary worker resource evidence: %w", err)
 	}
 	temporaryName := temporary.Name()
 	succeeded := false
@@ -242,38 +238,33 @@ func (s *FileArtifactSink) WriteResourceEvidence(ctx context.Context, metadata A
 		}
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary worker resource evidence mode: %w", err)
+		return false, fmt.Errorf("secure temporary worker resource evidence mode: %w", err)
 	}
 	if err := hardenAndVerify(s.acl, temporaryName); err != nil {
-		return fmt.Errorf("secure temporary worker resource evidence: %w", err)
+		return false, fmt.Errorf("secure temporary worker resource evidence: %w", err)
 	}
 	if _, err := temporary.Write(content); err != nil {
-		return fmt.Errorf("write worker resource evidence: %w", err)
+		return false, fmt.Errorf("write worker resource evidence: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush worker resource evidence: %w", err)
+		return false, fmt.Errorf("flush worker resource evidence: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close worker resource evidence: %w", err)
+		return false, fmt.Errorf("close worker resource evidence: %w", err)
 	}
 	if err := statefs.ReplaceFileAtomic(temporaryName, finalPath); err != nil {
-		return fmt.Errorf("publish worker resource evidence: %w", err)
+		return false, fmt.Errorf("publish worker resource evidence: %w", err)
 	}
 	succeeded = true
 	if err := hardenAndVerify(s.acl, finalPath); err != nil {
 		_ = os.Remove(finalPath)
-		return fmt.Errorf("verify worker resource evidence: %w", err)
+		return false, fmt.Errorf("verify worker resource evidence: %w", err)
 	}
 	if err := statefs.SyncDirectory(s.diagnosticDirectory); err != nil {
-		return fmt.Errorf("flush worker resource evidence directory: %w", err)
+		_ = os.Remove(finalPath)
+		return false, fmt.Errorf("flush worker resource evidence directory: %w", err)
 	}
-	if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
-		PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: metadata.ContainerID,
-		ArtifactStartedAt: metadata.StartedAt, ResourcePath: finalPath,
-	}); err != nil {
-		return fmt.Errorf("index worker resource evidence: %w", err)
-	}
-	return nil
+	return true, nil
 }
 
 func (s *FileArtifactSink) Finalize(ctx context.Context, metadata ArtifactMetadata) error {
@@ -281,13 +272,17 @@ func (s *FileArtifactSink) Finalize(ctx context.Context, metadata ArtifactMetada
 	if err != nil {
 		return fmt.Errorf("load worker artifact index before finalization: %w", err)
 	}
-	if record.ContainerID != metadata.ContainerID || record.LogPath == "" || record.DiagnosticPath == "" || record.ResourcePath == "" {
+	resourcePath, resourcePathErr := jobindex.ResourceEvidencePath(record)
+	if resourcePathErr != nil {
+		return fmt.Errorf("derive worker resource evidence path: %w", resourcePathErr)
+	}
+	if record.ContainerID != metadata.ContainerID || record.LogPath == "" || record.DiagnosticPath == "" || resourcePath == "" {
 		return errors.New("worker artifacts are incomplete; container is retained for retry")
 	}
 	if err := errors.Join(
 		verifyFinalArtifact(s.acl, s.logDirectory, record.LogPath, true),
 		verifyFinalArtifact(s.acl, s.diagnosticDirectory, record.DiagnosticPath, false),
-		verifyFinalArtifact(s.acl, s.diagnosticDirectory, record.ResourcePath, false),
+		verifyFinalArtifact(s.acl, s.diagnosticDirectory, resourcePath, false),
 	); err != nil {
 		return fmt.Errorf("verify worker artifacts before finalization: %w", err)
 	}
@@ -397,8 +392,9 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 		return err
 	}
 	type candidate struct {
-		record jobindex.Record
-		size   uint64
+		record       jobindex.Record
+		resourcePath string
+		size         uint64
 	}
 	var candidates []candidate
 	var total uint64
@@ -410,12 +406,13 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 		}
 		logSize, logErr := artifactSizeWithin(s.logDirectory, record.LogPath)
 		diagnosticSize, diagnosticErr := artifactSizeWithin(s.diagnosticDirectory, record.DiagnosticPath)
-		resourceSize, resourceErr := artifactSizeWithin(s.diagnosticDirectory, record.ResourcePath)
-		if err := errors.Join(logErr, diagnosticErr, resourceErr); err != nil {
+		resourcePath, resourcePathErr := jobindex.ResourceEvidencePath(record)
+		resourceSize, resourceErr := artifactSizeWithin(s.diagnosticDirectory, resourcePath)
+		if err := errors.Join(logErr, diagnosticErr, resourcePathErr, resourceErr); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("validate artifact paths for %s/%s: %w", record.PoolID, record.RunnerName, err))
 			continue
 		}
-		for _, path := range []string{record.LogPath, record.DiagnosticPath, record.ResourcePath} {
+		for _, path := range []string{record.LogPath, record.DiagnosticPath, resourcePath} {
 			if path != "" {
 				referenced[canonicalPath(path)] = struct{}{}
 			}
@@ -424,7 +421,7 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 		total = saturatingAdd(total, size)
 		_, isAdopted := adopted[record.ContainerID]
 		if !record.Open && !isAdopted && !record.FinalizedAt.IsZero() {
-			candidates = append(candidates, candidate{record: record, size: size})
+			candidates = append(candidates, candidate{record: record, resourcePath: resourcePath, size: size})
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -441,7 +438,7 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 		removeErr := errors.Join(
 			removeIfPresentWithin(s.logDirectory, candidate.record.LogPath),
 			removeIfPresentWithin(s.diagnosticDirectory, candidate.record.DiagnosticPath),
-			removeIfPresentWithin(s.diagnosticDirectory, candidate.record.ResourcePath),
+			removeIfPresentWithin(s.diagnosticDirectory, candidate.resourcePath),
 		)
 		if removeErr != nil {
 			cleanupErrors = append(cleanupErrors, removeErr)

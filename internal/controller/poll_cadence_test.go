@@ -177,6 +177,25 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	}
 }
 
+func TestPoolAcknowledgementTransitionTimestampDoesNotResetWhilePending(t *testing.T) {
+	t.Parallel()
+	started := time.Unix(100, 0).UTC()
+	now := started.Add(30 * time.Second)
+	prior := model.PoolObservation{
+		ScaleSetID: 1, ListenerID: "listener", MaxCapacity: 8,
+		CapacityAcknowledged: false, UpdatedAt: started,
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 8, false, now); !got.Equal(started) {
+		t.Fatalf("pending transition timestamp reset to %s", got)
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 6, false, now); !got.Equal(now) {
+		t.Fatalf("capacity transition timestamp = %s, want %s", got, now)
+	}
+	if got := poolAcknowledgementTransitionAt(prior, 1, "listener", 8, true, now); !got.Equal(now) {
+		t.Fatalf("acknowledgement transition timestamp = %s, want %s", got, now)
+	}
+}
+
 type mutableResources struct {
 	mu       sync.Mutex
 	snapshot model.ResourceSnapshot

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-readonly cgroup_root=/sys/fs/cgroup
+readonly cgroup_root="${1:-/sys/fs/cgroup}"
 readonly state_directory=/home/runner/_runner_state
 readonly final_path="$state_directory/cgroup-terminal.json"
 
@@ -61,19 +61,35 @@ pids_peak="$REPLY"
 
 io_read_bytes=0
 io_write_bytes=0
+io_valid=0
 if [[ -r "$cgroup_root/io.stat" ]]; then
-  read -r io_read_bytes io_write_bytes < <(
+  read -r io_read_bytes io_write_bytes io_valid < <(
     awk '
       {
-        for (index = 2; index <= NF; index++) {
-          split($index, pair, "=")
-          if (pair[1] == "rbytes" && pair[2] ~ /^[0-9]+$/) read_bytes += pair[2]
-          if (pair[1] == "wbytes" && pair[2] ~ /^[0-9]+$/) write_bytes += pair[2]
+        line_read = 0
+        line_write = 0
+        for (field = 2; field <= NF; field++) {
+          if (split($field, pair, "=") != 2) invalid = 1
+          if (pair[1] == "rbytes" && pair[2] ~ /^[0-9]+$/) {
+            read_bytes += pair[2]
+            line_read = 1
+          }
+          if (pair[1] == "wbytes" && pair[2] ~ /^[0-9]+$/) {
+            write_bytes += pair[2]
+            line_write = 1
+          }
         }
+        if (line_read && line_write) valid = 1
+        else invalid = 1
       }
-      END { printf "%.0f %.0f\n", read_bytes, write_bytes }
+      END { printf "%.0f %.0f %d\n", read_bytes, write_bytes, (valid && !invalid) }
     ' "$cgroup_root/io.stat"
   )
+  if [[ "$io_valid" != 1 ]]; then
+    io_read_bytes=0
+    io_write_bytes=0
+    missing+=(io.stat)
+  fi
 else
   missing+=(io.stat)
 fi

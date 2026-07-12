@@ -32,8 +32,12 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	}
 	ctx, finish := recorder.BeginReconcile(context.Background())
 	snapshot := ReconcileSnapshot{
-		Valid: true, Phase: "ready", CPUPercent: 22.5, AvailableMemoryBytes: 24 << 30, CheckpointAge: 11 * time.Second,
-		Pools: []ReconcilePool{{ID: "org", Advertised: 6, Assigned: 3, Desired: 3}},
+		Valid: true, Phase: "ready", CPUPercent: 22.5, AvailableMemoryBytes: 24 << 30,
+		CheckpointAge: 11 * time.Second, CheckpointAgeValid: true,
+		Pools: []ReconcilePool{{
+			ID: "org", Advertised: 6, Assigned: 3, Desired: 3,
+			AcknowledgementPendingAge: 7 * time.Second, AcknowledgementPendingAgeValid: true,
+		}},
 		Workers: []ReconcileWorker{
 			{PoolID: "org", State: "busy"},
 			{PoolID: "org", State: "idle"},
@@ -45,11 +49,19 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	recorder.ObserveJobStarted(ctx, "org", 125*time.Millisecond)
 	recorder.WorkerFinalized(ctx, "org", WorkerFinalization{
 		ExitObserved: true, ExitCode: 0, ResourceTier: "target_override",
+		RecordResourceEvidence: true,
 		ResourceEvidence: &WorkerResourceEvidence{
 			Status: "complete", MemoryPeakBytes: 1986422374, OOMEvents: 0, OOMKillEvents: 0,
 			CPUPeriods: 123, CPUThrottledPeriods: 7, CPUThrottledMicroseconds: 50000,
 			PIDsPeak: 88, IOReadBytes: 2000000000, IOWriteBytes: 5500000000,
 		},
+	})
+	// A retry may re-run finalization after the sidecar is already durable. It
+	// remains a lifecycle attempt but must not duplicate terminal histograms or
+	// OOM counters.
+	recorder.WorkerFinalized(ctx, "org", WorkerFinalization{
+		ExitObserved: true, ExitCode: 0, ResourceTier: "target_override",
+		ResourceEvidence: &WorkerResourceEvidence{Status: "complete", MemoryPeakBytes: 1986422374, OOMEvents: 9},
 	})
 	recorder.ObserveJobCompleted(ctx, "org", "Succeeded", true)
 	finish(snapshot, nil)
@@ -63,6 +75,8 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 		"ci_runner.controller.reconcile.duration",
 		"ci_runner.controller.observed.checkpoint.age",
 		"ci_runner.capacity.advertised",
+		"ci_runner.capacity.acknowledged",
+		"ci_runner.capacity.acknowledgement.pending.age",
 		"ci_runner.capacity.assigned",
 		"ci_runner.capacity.desired",
 		"ci_runner.workers",
@@ -197,6 +211,31 @@ func TestRecorderMarksUnexpectedReconcileFailure(t *testing.T) {
 	}
 }
 
+func TestRecorderOmitsUnavailableCheckpointAge(t *testing.T) {
+	t.Parallel()
+	reader := metric.NewManualReader()
+	meters := metric.NewMeterProvider(metric.WithReader(reader))
+	traces := sdktrace.NewTracerProvider()
+	defer func() {
+		_ = meters.Shutdown(context.Background())
+		_ = traces.Shutdown(context.Background())
+	}()
+	recorder, err := newRecorder(traces, meters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, finish := recorder.BeginReconcile(context.Background())
+	finish(ReconcileSnapshot{Valid: true, Phase: "ready"}, nil)
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := metricMap(collected)["ci_runner.controller.observed.checkpoint.age"]; found {
+		t.Fatal("unavailable checkpoint age emitted a false zero sample")
+	}
+}
+
 func TestOneShotBrokerTaskCanceledLogDoesNotOverrideSuccessfulContainerExit(t *testing.T) {
 	t.Parallel()
 	// TaskCanceledException is diagnostic text from the stock runner stopping
@@ -207,8 +246,11 @@ func TestOneShotBrokerTaskCanceledLogDoesNotOverrideSuccessfulContainerExit(t *t
 	if got := ClassifyWorkerFinalization(WorkerFinalization{ExitObserved: true, ExitCode: 1}); got != WorkerFinalizationWorkerError {
 		t.Fatalf("nonzero-exit finalization = %q, want worker error", got)
 	}
-	if got := ClassifyWorkerFinalization(WorkerFinalization{Err: context.Canceled}); got != WorkerFinalizationCanceled {
-		t.Fatalf("context-canceled finalization = %q, want canceled", got)
+	if got := ClassifyWorkerFinalization(WorkerFinalization{Err: context.DeadlineExceeded}); got != WorkerFinalizationRuntimeError {
+		t.Fatalf("artifact deadline finalization = %q, want runtime error", got)
+	}
+	if got := ClassifyWorkerFinalization(WorkerFinalization{Err: context.Canceled, ControllerShutdown: true}); got != WorkerFinalizationCanceled {
+		t.Fatalf("controller-shutdown finalization = %q, want canceled", got)
 	}
 }
 

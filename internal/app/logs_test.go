@@ -33,7 +33,7 @@ func TestJobLogsUsesExactDurableIndexAndToleratesMissingArtifactFile(t *testing.
 	logs := FileLogs{WorkerLogDirectory: root, DiagnosticDirectory: root, Jobs: staticJobStore{records: map[string]jobindex.Record{
 		"12": {
 			PoolID: "org", RunnerName: "runner-12", JobID: "12",
-			LogPath: filepath.Join(root, "already-removed.log"), DiagnosticPath: diagnostic, ResourcePath: resources,
+			LogPath: filepath.Join(root, "already-removed.log"), DiagnosticPath: diagnostic,
 		},
 		"123": {PoolID: "org", RunnerName: "runner-123", JobID: "123", LogPath: neighbor},
 	}}}

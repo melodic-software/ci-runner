@@ -585,6 +585,7 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	for resultChannel != nil || errorChannel != nil {
 		select {
 		case <-r.ctx.Done():
+			finalization.ControllerShutdown = true
 			watch.err = r.ctx.Err()
 			return
 		case result, ok := <-resultChannel:
@@ -608,11 +609,21 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	}
 	if waitErr != nil {
 		inspect, err := r.engine.ContainerInspect(r.ctx, id, client.ContainerInspectOptions{})
-		if err != nil || (inspect.Container.State != nil && inspect.Container.State.Running) {
+		if cerrdefs.IsNotFound(err) {
+			// A concurrent Docker cleanup can remove a stopped ephemeral worker
+			// between inventory and wait. This is bounded missing lifecycle
+			// evidence, not an adapter failure and not an inferred zero peak.
+			finalization.ResourceEvidence = &telemetry.WorkerResourceEvidence{Status: "missing"}
+			finalization.RecordResourceEvidence = true
+			return
+		}
+		if err != nil || inspect.Container.State == nil || inspect.Container.State.Running {
 			watch.err = fmt.Errorf("wait for worker exit: %w", waitErr)
 			r.opts.OnError(watch.err)
 			return
 		}
+		finalization.ExitCode = int64(inspect.Container.State.ExitCode)
+		finalization.ExitObserved = true
 	}
 
 	finalizeCtx, cancel := context.WithTimeout(r.ctx, r.opts.FinalizationTimeout)
@@ -642,12 +653,13 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		watch.err = errors.Join(watch.err, err)
 	}
 	metadata := r.metadata(finalizeCtx, id)
-	evidence, evidenceErr := r.captureResourceEvidence(finalizeCtx, id, metadata)
+	evidence, evidenceRecorded, evidenceErr := r.captureResourceEvidence(finalizeCtx, id, metadata)
 	if evidenceErr != nil {
 		r.opts.OnError(evidenceErr)
 		watch.err = errors.Join(watch.err, evidenceErr)
 	}
 	finalization.ResourceTier = metadata.ResourceTier
+	finalization.RecordResourceEvidence = evidenceRecorded
 	finalization.ResourceEvidence = &telemetry.WorkerResourceEvidence{
 		Status: evidence.Status, Missing: append([]string(nil), evidence.Missing...),
 		MemoryPeakBytes:          evidence.Memory.PeakBytes,
@@ -719,7 +731,7 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata) (ResourceEvidence, error) {
+func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata) (ResourceEvidence, bool, error) {
 	evidence := fallbackResourceEvidence("unavailable", "docker-copy-unavailable")
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
 	if err != nil {
@@ -737,10 +749,11 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 			evidence = parsed
 		}
 	}
-	if err := r.opts.Artifacts.WriteResourceEvidence(ctx, metadata, evidence); err != nil {
-		return evidence, fmt.Errorf("persist terminal worker resource evidence: %w", err)
+	recorded, err := r.opts.Artifacts.WriteResourceEvidence(ctx, metadata, evidence)
+	if err != nil {
+		return evidence, false, fmt.Errorf("persist terminal worker resource evidence: %w", err)
 	}
-	return evidence, nil
+	return evidence, recorded, nil
 }
 
 func readSingleRegularArchive(source io.Reader, maximum int64) ([]byte, error) {

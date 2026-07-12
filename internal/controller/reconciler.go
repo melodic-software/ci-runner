@@ -57,9 +57,10 @@ type Reconciler struct {
 }
 
 type ReconcileResult struct {
-	Observed      model.ObservedState
-	Plan          Plan
-	CheckpointAge time.Duration
+	Observed           model.ObservedState
+	Plan               Plan
+	CheckpointAge      time.Duration
+	CheckpointAgeValid bool
 }
 
 func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Reconciler, error) {
@@ -163,13 +164,18 @@ func telemetrySnapshot(result ReconcileResult) telemetry.ReconcileSnapshot {
 		ResourceGateBlocked:  observed.ResourceGate.Blocked,
 		PowerGateBlocked:     observed.Phase == model.PhasePowerSuspended,
 		CheckpointAge:        result.CheckpointAge,
+		CheckpointAgeValid:   result.CheckpointAgeValid,
 		Pools:                make([]telemetry.ReconcilePool, 0, len(observed.Pools)),
 		Workers:              make([]telemetry.ReconcileWorker, 0, len(observed.Workers)),
 	}
 	for _, pool := range observed.Pools {
+		acknowledgementAgeValid := !pool.UpdatedAt.IsZero() && !observed.HeartbeatAt.Before(pool.UpdatedAt)
 		snapshot.Pools = append(snapshot.Pools, telemetry.ReconcilePool{
 			ID: pool.ID, Advertised: pool.MaxCapacity,
 			Assigned: pool.TotalAssignedJobs, Desired: pool.DesiredWorkers,
+			CapacityAcknowledged:           pool.CapacityAcknowledged,
+			AcknowledgementPendingAge:      observed.HeartbeatAt.Sub(pool.UpdatedAt),
+			AcknowledgementPendingAgeValid: acknowledgementAgeValid,
 		})
 	}
 	for _, worker := range observed.Workers {
@@ -209,7 +215,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 
 	previous, err := r.deps.State.LoadObserved(ctx)
 	checkpointAge := time.Duration(0)
-	if err == nil && !previous.HeartbeatAt.IsZero() && now.After(previous.HeartbeatAt) {
+	checkpointAgeValid := err == nil && !previous.HeartbeatAt.IsZero() && !previous.HeartbeatAt.After(now)
+	if checkpointAgeValid {
 		checkpointAge = now.Sub(previous.HeartbeatAt)
 	}
 	recoveryOnly := false
@@ -737,16 +744,21 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
 		pool := findPool(pools, target.ID)
-		actualCapacity := previousPools[target.ID].MaxCapacity
+		priorPool := previousPools[target.ID]
+		actualCapacity := priorPool.MaxCapacity
 		if capacityAcknowledged[target.ID] {
 			actualCapacity = acknowledgedCapacity[target.ID]
 		}
+		updatedAt := poolAcknowledgementTransitionAt(
+			priorPool, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
+			actualCapacity, capacityAcknowledged[target.ID], now,
+		)
 		observedPools = append(observedPools, model.PoolObservation{
 			ID: target.ID, ScaleSetID: pool.Identity.ScaleSetID, ListenerID: pool.Identity.ListenerID,
 			TotalAssignedJobs: pool.TotalAssignedJobs, MaxCapacity: actualCapacity, CapacityAcknowledged: capacityAcknowledged[target.ID],
 			ZeroCapacityConfirmations: zeroConfirmations[target.ID],
 			DrainServiceCapacity:      pool.DrainServiceCapacity,
-			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: now,
+			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: updatedAt,
 		})
 	}
 	problems := append([]model.Problem(nil), postPlan.Problems...)
@@ -775,7 +787,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if saveErr := r.deps.State.SaveObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
-	return ReconcileResult{Observed: observed, Plan: postPlan, CheckpointAge: checkpointAge}, errors.Join(operationErrors...)
+	return ReconcileResult{
+		Observed: observed, Plan: postPlan,
+		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
+	}, errors.Join(operationErrors...)
 }
 
 func (r *Reconciler) resourceTier(poolID string) string {

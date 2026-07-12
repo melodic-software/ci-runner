@@ -188,6 +188,7 @@ jobs:
             :(exclude)docs/worker-image.md
             :(exclude)scripts/Test-ReleasePins.ps1
             :(exclude)scripts/verify-worker-image.sh
+            :(exclude)worker/capture-cgroup.sh
             :(exclude)worker/entrypoint.sh
             :(exclude)worker/set-state.sh
 

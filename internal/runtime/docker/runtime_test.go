@@ -380,7 +380,13 @@ func TestArtifactPersistenceFailureRetainsExitedContainerAndListRetries(t *testi
 	engine := newFakeEngine()
 	engine.addContainer("retry-worker", "completed", "exited")
 	sink := &memoryArtifacts{finalizeErr: errors.New("durable index unavailable")}
-	runtime := newTestRuntime(t, engine, sink)
+	recorder := &recordingTelemetry{}
+	options := testOptions(sink)
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer runtime.Close()
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
@@ -409,6 +415,72 @@ func TestArtifactPersistenceFailureRetainsExitedContainerAndListRetries(t *testi
 	}
 	if engine.hasContainer("retry-worker") {
 		t.Fatal("successfully persisted exited container was not removed")
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 2 || !finalizations[0].value.RecordResourceEvidence || finalizations[1].value.RecordResourceEvidence {
+		t.Fatalf("retry resource recording flags = %#v", finalizations)
+	}
+}
+
+func TestWaitNotFoundIsBoundedMissingLifecycleEvidence(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("vanished-worker", "completed", "exited")
+	recorder := &recordingTelemetry{}
+	var reported []error
+	options := testOptions(&memoryArtifacts{})
+	options.Telemetry = recorder
+	options.OnError = func(err error) { reported = append(reported, err) }
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest("vanished-worker")
+	engine.signalMissingWait("vanished-worker")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatalf("Docker disappearance became runtime error: %v", err)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("Docker disappearance reported as adapter failure: %v", reported)
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 1 || telemetry.ClassifyWorkerFinalization(finalizations[0].value) != telemetry.WorkerFinalizationUnknown || finalizations[0].value.ResourceEvidence == nil || finalizations[0].value.ResourceEvidence.Status != "missing" {
+		t.Fatalf("missing lifecycle telemetry = %#v", finalizations)
+	}
+}
+
+func TestWaitFailureRecoversStoppedContainerExitCodeFromInspect(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("inspect-worker", "completed", "exited")
+	engine.setExitCode("inspect-worker", 23)
+	recorder := &recordingTelemetry{}
+	options := testOptions(&memoryArtifacts{})
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest("inspect-worker")
+	engine.signalWaitError("inspect-worker", errors.New("wait stream reset"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 1 || !finalizations[0].value.ExitObserved || finalizations[0].value.ExitCode != 23 || telemetry.ClassifyWorkerFinalization(finalizations[0].value) != telemetry.WorkerFinalizationWorkerError {
+		t.Fatalf("inspect fallback finalization = %#v", finalizations)
 	}
 }
 
@@ -553,6 +625,7 @@ type fakeContainer struct {
 	stateReads  int
 	changeAfter int
 	changeTo    string
+	exitCode    int
 	waitResult  chan containertypes.WaitResponse
 	waitError   chan error
 }
@@ -649,7 +722,7 @@ func (e *fakeEngine) ContainerInspect(_ context.Context, id string, _ client.Con
 	}
 	return client.ContainerInspectResult{Container: containertypes.InspectResponse{
 		ID:     id,
-		State:  &containertypes.State{Running: container.state == "running"},
+		State:  &containertypes.State{Running: container.state == "running", ExitCode: container.exitCode},
 		Config: &containertypes.Config{Labels: cloneLabels(container.labels)},
 	}}, nil
 }
@@ -669,8 +742,12 @@ func (e *fakeEngine) ContainerWait(_ context.Context, id string, _ client.Contai
 	return client.ContainerWaitResult{Result: container.waitResult, Error: container.waitError}
 }
 
-func (e *fakeEngine) ContainerLogs(context.Context, string, client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+func (e *fakeEngine) ContainerLogs(_ context.Context, id string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 	e.mu.Lock()
+	if _, ok := e.containers[id]; !ok {
+		e.mu.Unlock()
+		return nil, cerrdefs.ErrNotFound.WithMessage("container missing")
+	}
 	if e.blockLogs {
 		e.activeLogs++
 		if e.activeLogs > e.maximumLogs {
@@ -784,6 +861,27 @@ func (e *fakeEngine) signalExit(id string) {
 	result := e.containers[id].waitResult
 	e.mu.Unlock()
 	result <- containertypes.WaitResponse{StatusCode: 0}
+}
+
+func (e *fakeEngine) signalWaitError(id string, err error) {
+	e.mu.Lock()
+	result := e.containers[id].waitError
+	e.mu.Unlock()
+	result <- err
+}
+
+func (e *fakeEngine) signalMissingWait(id string) {
+	e.mu.Lock()
+	result := e.containers[id].waitError
+	delete(e.containers, id)
+	e.mu.Unlock()
+	result <- cerrdefs.ErrNotFound.WithMessage("No such container")
+}
+
+func (e *fakeEngine) setExitCode(id string, exitCode int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].exitCode = exitCode
 }
 
 func (e *fakeEngine) hasContainer(id string) bool {
@@ -905,13 +1003,14 @@ func (*fakePull) JSONMessages(context.Context) iter.Seq2[jsonstream.Message, err
 }
 
 type memoryArtifacts struct {
-	mu          sync.Mutex
-	logs        []*bufferWriteCloser
-	diagnostics [][]byte
-	adopted     [][]ArtifactMetadata
-	events      []string
-	finalizeErr error
-	resources   []ResourceEvidence
+	mu              sync.Mutex
+	logs            []*bufferWriteCloser
+	diagnostics     [][]byte
+	adopted         [][]ArtifactMetadata
+	events          []string
+	finalizeErr     error
+	resources       []ResourceEvidence
+	resourceWritten bool
 }
 
 type recordedWorkerStart struct {
@@ -969,12 +1068,14 @@ func (s *memoryArtifacts) WriteDiagnostics(_ context.Context, _ ArtifactMetadata
 	s.diagnostics = append(s.diagnostics, content)
 	return err
 }
-func (s *memoryArtifacts) WriteResourceEvidence(_ context.Context, _ ArtifactMetadata, evidence ResourceEvidence) error {
+func (s *memoryArtifacts) WriteResourceEvidence(_ context.Context, _ ArtifactMetadata, evidence ResourceEvidence) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, "resources")
 	s.resources = append(s.resources, evidence)
-	return nil
+	newlyPersisted := !s.resourceWritten
+	s.resourceWritten = true
+	return newlyPersisted, nil
 }
 func (s *memoryArtifacts) Finalize(context.Context, ArtifactMetadata) error {
 	s.mu.Lock()

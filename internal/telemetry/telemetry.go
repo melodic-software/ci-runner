@@ -33,10 +33,13 @@ type Recorder interface {
 }
 
 type ReconcilePool struct {
-	ID         string
-	Advertised int
-	Assigned   int
-	Desired    int
+	ID                             string
+	Advertised                     int
+	Assigned                       int
+	Desired                        int
+	CapacityAcknowledged           bool
+	AcknowledgementPendingAge      time.Duration
+	AcknowledgementPendingAgeValid bool
 }
 
 type ReconcileWorker struct {
@@ -54,6 +57,7 @@ type ReconcileSnapshot struct {
 	ResourceGateBlocked  bool
 	PowerGateBlocked     bool
 	CheckpointAge        time.Duration
+	CheckpointAgeValid   bool
 }
 
 type WorkerStartOutcome string
@@ -79,12 +83,14 @@ func ClassifyWorkerStart(err error, mayBeActive bool) WorkerStartOutcome {
 }
 
 type WorkerFinalization struct {
-	ExitCode         int64
-	ExitObserved     bool
-	Err              error
-	ResourceTier     string
-	ResourceEvidence *WorkerResourceEvidence
-	Duration         time.Duration
+	ExitCode               int64
+	ExitObserved           bool
+	Err                    error
+	ControllerShutdown     bool
+	ResourceTier           string
+	ResourceEvidence       *WorkerResourceEvidence
+	RecordResourceEvidence bool
+	Duration               time.Duration
 }
 
 type WorkerResourceEvidence struct {
@@ -116,7 +122,7 @@ const (
 // one-shot GitHub runner can log TaskCanceledException while shutting down its
 // broker poll after a successful job; a zero container exit remains completed.
 func ClassifyWorkerFinalization(value WorkerFinalization) WorkerFinalizationOutcome {
-	if errors.Is(value.Err, context.Canceled) || errors.Is(value.Err, context.DeadlineExceeded) {
+	if value.ControllerShutdown {
 		return WorkerFinalizationCanceled
 	}
 	if value.Err != nil {
@@ -149,43 +155,45 @@ func (noopRecorder) ObserveJobCompleted(context.Context, string, string, bool)  
 type recorder struct {
 	tracer trace.Tracer
 
-	reconcileDuration  metric.Float64Histogram
-	reconcileErrors    metric.Int64Counter
-	checkpointAge      metric.Float64Gauge
-	advertised         metric.Int64Gauge
-	assigned           metric.Int64Gauge
-	desired            metric.Int64Gauge
-	workers            metric.Int64Gauge
-	activeJobs         metric.Int64Gauge
-	inventoryWorkers   metric.Int64Gauge
-	assignmentGap      metric.Int64Gauge
-	transientLag       metric.Int64Gauge
-	cpuPercent         metric.Float64Gauge
-	availableMemory    metric.Int64Gauge
-	resourceGate       metric.Int64Gauge
-	powerGate          metric.Int64Gauge
-	workerStarts       metric.Int64Counter
-	workerStartTime    metric.Float64Histogram
-	workerRegisters    metric.Int64Counter
-	workerRegisterTime metric.Float64Histogram
-	workerFinalizes    metric.Int64Counter
-	workerFinalizeTime metric.Float64Histogram
-	jobsStarted        metric.Int64Counter
-	jobStartLag        metric.Float64Histogram
-	lifecycleEventTime metric.Float64Gauge
-	jobsCompleted      metric.Int64Counter
-	cancellations      metric.Int64Counter
-	resourceEvidence   metric.Int64Counter
-	memoryPeak         metric.Int64Histogram
-	memorySwapPeak     metric.Int64Histogram
-	oomEvents          metric.Int64Counter
-	oomKillEvents      metric.Int64Counter
-	cpuPeriods         metric.Int64Histogram
-	cpuThrottled       metric.Int64Histogram
-	cpuThrottledTime   metric.Float64Histogram
-	pidsPeak           metric.Int64Histogram
-	ioRead             metric.Int64Histogram
-	ioWrite            metric.Int64Histogram
+	reconcileDuration         metric.Float64Histogram
+	reconcileErrors           metric.Int64Counter
+	checkpointAge             metric.Float64Gauge
+	advertised                metric.Int64Gauge
+	capacityAcknowledged      metric.Int64Gauge
+	acknowledgementPendingAge metric.Float64Gauge
+	assigned                  metric.Int64Gauge
+	desired                   metric.Int64Gauge
+	workers                   metric.Int64Gauge
+	activeJobs                metric.Int64Gauge
+	inventoryWorkers          metric.Int64Gauge
+	assignmentGap             metric.Int64Gauge
+	transientLag              metric.Int64Gauge
+	cpuPercent                metric.Float64Gauge
+	availableMemory           metric.Int64Gauge
+	resourceGate              metric.Int64Gauge
+	powerGate                 metric.Int64Gauge
+	workerStarts              metric.Int64Counter
+	workerStartTime           metric.Float64Histogram
+	workerRegisters           metric.Int64Counter
+	workerRegisterTime        metric.Float64Histogram
+	workerFinalizes           metric.Int64Counter
+	workerFinalizeTime        metric.Float64Histogram
+	jobsStarted               metric.Int64Counter
+	jobStartLag               metric.Float64Histogram
+	lifecycleEventTime        metric.Float64Gauge
+	jobsCompleted             metric.Int64Counter
+	cancellations             metric.Int64Counter
+	resourceEvidence          metric.Int64Counter
+	memoryPeak                metric.Int64Histogram
+	memorySwapPeak            metric.Int64Histogram
+	oomEvents                 metric.Int64Counter
+	oomKillEvents             metric.Int64Counter
+	cpuPeriods                metric.Int64Histogram
+	cpuThrottled              metric.Int64Histogram
+	cpuThrottledTime          metric.Float64Histogram
+	pidsPeak                  metric.Int64Histogram
+	ioRead                    metric.Int64Histogram
+	ioWrite                   metric.Int64Histogram
 }
 
 func newRecorder(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider) (*recorder, error) {
@@ -202,6 +210,12 @@ func newRecorder(tracerProvider trace.TracerProvider, meterProvider metric.Meter
 		return nil, err
 	}
 	if r.advertised, err = meter.Int64Gauge("ci_runner.capacity.advertised", metric.WithUnit("{worker}"), metric.WithDescription("Capacity acknowledged to GitHub by target pool.")); err != nil {
+		return nil, err
+	}
+	if r.capacityAcknowledged, err = meter.Int64Gauge("ci_runner.capacity.acknowledged", metric.WithUnit("1"), metric.WithDescription("Whether the latest target capacity is acknowledged by the GitHub listener.")); err != nil {
+		return nil, err
+	}
+	if r.acknowledgementPendingAge, err = meter.Float64Gauge("ci_runner.capacity.acknowledgement.pending.age", metric.WithUnit("s"), metric.WithDescription("Age of the current unacknowledged capacity transition; omitted when acknowledged or unavailable.")); err != nil {
 		return nil, err
 	}
 	if r.assigned, err = meter.Int64Gauge("ci_runner.capacity.assigned", metric.WithUnit("{job}"), metric.WithDescription("Authoritative assigned jobs by target pool.")); err != nil {
@@ -353,6 +367,10 @@ func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapsho
 	for _, pool := range snapshot.Pools {
 		attrs := metric.WithAttributes(attribute.String("ci_runner.pool.id", pool.ID))
 		r.advertised.Record(ctx, int64(pool.Advertised), attrs)
+		r.capacityAcknowledged.Record(ctx, boolInt64(pool.CapacityAcknowledged), attrs)
+		if !pool.CapacityAcknowledged && pool.AcknowledgementPendingAgeValid {
+			r.acknowledgementPendingAge.Record(ctx, max(0, pool.AcknowledgementPendingAge.Seconds()), attrs)
+		}
 		r.assigned.Record(ctx, int64(pool.Assigned), attrs)
 		r.desired.Record(ctx, int64(pool.Desired), attrs)
 		counts[pool.ID] = make(map[string]int64, len(workerStates))
@@ -396,7 +414,9 @@ func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapsho
 	r.availableMemory.Record(ctx, int64(available))
 	r.resourceGate.Record(ctx, boolInt64(snapshot.ResourceGateBlocked))
 	r.powerGate.Record(ctx, boolInt64(snapshot.PowerGateBlocked))
-	r.checkpointAge.Record(ctx, max(0, snapshot.CheckpointAge.Seconds()))
+	if snapshot.CheckpointAgeValid {
+		r.checkpointAge.Record(ctx, max(0, snapshot.CheckpointAge.Seconds()))
+	}
 }
 
 func snapshotHasTransientAccountingLag(snapshot ReconcileSnapshot) bool {
@@ -470,7 +490,9 @@ func (r *recorder) WorkerFinalized(ctx context.Context, poolID string, value Wor
 			attribute.String("ci_runner.cancellation.classification", "controller_context"),
 		))
 	}
-	r.recordWorkerResourceEvidence(ctx, poolID, tier, outcome, value.ResourceEvidence)
+	if value.RecordResourceEvidence {
+		r.recordWorkerResourceEvidence(ctx, poolID, tier, outcome, value.ResourceEvidence)
+	}
 }
 
 func (r *recorder) ObserveJobStarted(ctx context.Context, poolID string, visibilityLag time.Duration) {
@@ -504,7 +526,7 @@ func (r *recorder) recordWorkerResourceEvidence(ctx context.Context, poolID, tie
 		attribute.String("ci_runner.worker.resource.outcome", status),
 	}
 	r.resourceEvidence.Add(ctx, 1, metric.WithAttributes(evidenceAttributes...))
-	if evidence == nil || status == "unavailable" || status == "invalid" {
+	if evidence == nil || status == "missing" || status == "unavailable" || status == "invalid" {
 		return
 	}
 	attrs := metric.WithAttributes(
@@ -553,7 +575,7 @@ func normalizeResourceTier(value string) string {
 
 func normalizeResourceOutcome(value string) string {
 	switch value {
-	case "complete", "partial", "unavailable", "invalid":
+	case "complete", "partial", "missing", "unavailable", "invalid":
 		return value
 	default:
 		return "invalid"

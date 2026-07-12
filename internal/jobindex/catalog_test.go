@@ -1,7 +1,9 @@
 package jobindex
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -10,6 +12,69 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSchemaVersionOneEncodingRemainsStrictlyReadableByV019(t *testing.T) {
+	t.Parallel()
+	type legacyRecord struct {
+		PoolID            string     `json:"poolId"`
+		RunnerName        string     `json:"runnerName"`
+		ContainerID       string     `json:"containerId,omitempty"`
+		JobID             string     `json:"jobId,omitempty"`
+		Result            string     `json:"result,omitempty"`
+		LogPath           string     `json:"logPath,omitempty"`
+		DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
+		ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
+		JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
+		CompletedAt       time.Time  `json:"completedAt,omitempty"`
+		FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
+		UpdatedAt         time.Time  `json:"updatedAt"`
+		Open              bool       `json:"open"`
+		TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
+	}
+	type legacyCatalog struct {
+		SchemaVersion int            `json:"schemaVersion"`
+		Records       []legacyRecord `json:"records"`
+	}
+
+	now := time.Unix(500, 0).UTC()
+	tombstonedAt := now.Add(time.Minute)
+	encoded, err := json.Marshal(Catalog{SchemaVersion: SchemaVersion, Records: []Record{{
+		PoolID: "org", RunnerName: "runner", ContainerID: "container", JobID: "job", Result: "Succeeded",
+		LogPath: filepath.Join(t.TempDir(), "worker.log"), DiagnosticPath: filepath.Join(t.TempDir(), "worker-diag.tar.gz"),
+		ArtifactStartedAt: now, JobStartedAt: now, CompletedAt: now, FinalizedAt: now,
+		UpdatedAt: now, Open: false, TombstonedAt: &tombstonedAt,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"resourcePath"`)) {
+		t.Fatalf("schemaVersion 1 unexpectedly persisted resourcePath: %s", encoded)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var decoded legacyCatalog
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("v0.1.9 strict decoder rejected current schemaVersion 1 jobs.json: %v\n%s", err, encoded)
+	}
+	if decoded.SchemaVersion != SchemaVersion || len(decoded.Records) != 1 || decoded.Records[0].RunnerName != "runner" {
+		t.Fatalf("legacy decode = %#v", decoded)
+	}
+}
+
+func TestResourceEvidencePathDerivesFromLegacyDiagnosticPath(t *testing.T) {
+	t.Parallel()
+	diagnosticPath := filepath.Join(t.TempDir(), "worker-diag.tar.gz")
+	path, err := ResourceEvidencePath(Record{DiagnosticPath: diagnosticPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.TrimSuffix(diagnosticPath, "-diag.tar.gz") + "-resources.json"; path != want {
+		t.Fatalf("resource evidence path = %q, want %q", path, want)
+	}
+	if _, err := ResourceEvidencePath(Record{DiagnosticPath: filepath.Join(t.TempDir(), "unexpected.tar.gz")}); err == nil {
+		t.Fatal("unexpected diagnostic path derived a resource sidecar")
+	}
+}
 
 func TestEventThenArtifactAndArtifactThenEventConverge(t *testing.T) {
 	t.Parallel()

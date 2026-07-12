@@ -151,7 +151,9 @@ missing Docker archive endpoint, absent cgroup field, or invalid payload creates
 a bounded controller-owned fallback record; it does not infer a zero peak or a
 job failure. Failure to durably persist either the fallback or real evidence
 retains the exited container for the same evidence retry contract as logs and
-`_diag`. Workflow code shares the disposable runner identity and can alter its
+`_diag`. The sidecar path is derived from the existing diagnostic archive so
+schema-version-1 `jobs.json` remains readable by v0.1.9 after rollback. Workflow
+code shares the disposable runner identity and can alter its
 own writable layer, so cgroup evidence is capacity-tuning telemetry, not a
 security attestation.
 

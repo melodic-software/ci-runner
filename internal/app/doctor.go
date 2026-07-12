@@ -88,10 +88,15 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		}
 		for _, target := range a.dependencies.Config.GitHub.Targets {
 			pool, found := pools[target.ID]
-			listenerHealthy := found && pool.ScaleSetID > 0 && pool.ListenerID != "" && pool.CapacityAcknowledged
+			acknowledgementAge := now.Sub(pool.UpdatedAt)
+			acknowledgementGrace := listenerAcknowledgementGrace(a.dependencies.Config)
+			acknowledgementPendingWithinGrace := found && !pool.CapacityAcknowledged && !pool.UpdatedAt.IsZero() &&
+				acknowledgementAge >= 0 && acknowledgementAge <= acknowledgementGrace
+			listenerHealthy := found && pool.ScaleSetID > 0 && pool.ListenerID != "" &&
+				(pool.CapacityAcknowledged || acknowledgementPendingWithinGrace)
 			listenerDetail := "no current listener observation"
 			if found {
-				listenerDetail = fmt.Sprintf("scaleSetId=%d listenerId=%s capacity=%d assigned=%d acknowledged=%t", pool.ScaleSetID, displayValue(pool.ListenerID), pool.MaxCapacity, pool.TotalAssignedJobs, pool.CapacityAcknowledged)
+				listenerDetail = fmt.Sprintf("scaleSetId=%d listenerId=%s capacity=%d assigned=%d acknowledged=%t transitionAge=%s grace=%s", pool.ScaleSetID, displayValue(pool.ListenerID), pool.MaxCapacity, pool.TotalAssignedJobs, pool.CapacityAcknowledged, acknowledgementAge.Round(time.Second), acknowledgementGrace)
 			}
 			checks = append(checks, DoctorCheck{Name: "github-listener/" + target.ID, Healthy: listenerHealthy, Detail: listenerDetail})
 		}
@@ -166,6 +171,19 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		}
 	}
 	return ExitOK
+}
+
+func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
+	const maximum = time.Duration(1<<63 - 1)
+	reconcile := cfg.Controller.ReconcileInterval.Duration
+	if reconcile > maximum/2 {
+		return maximum
+	}
+	extra := 2 * reconcile
+	if cfg.GitHub.RequestTimeout.Duration > maximum-extra {
+		return maximum
+	}
+	return cfg.GitHub.RequestTimeout.Duration + extra
 }
 
 func validPhase(phase model.Phase) bool {

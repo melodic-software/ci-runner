@@ -32,7 +32,6 @@ type Record struct {
 	Result            string     `json:"result,omitempty"`
 	LogPath           string     `json:"logPath,omitempty"`
 	DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
-	ResourcePath      string     `json:"resourcePath,omitempty"`
 	ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
 	JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
 	CompletedAt       time.Time  `json:"completedAt,omitempty"`
@@ -50,7 +49,6 @@ type Patch struct {
 	Result            string
 	LogPath           string
 	DiagnosticPath    string
-	ResourcePath      string
 	ArtifactStartedAt time.Time
 	JobStartedAt      time.Time
 	CompletedAt       time.Time
@@ -98,9 +96,6 @@ func Merge(existing Record, patch Patch, now time.Time) (Record, error) {
 		return Record{}, err
 	}
 	if existing.DiagnosticPath, err = mergePath("worker diagnostics", existing.DiagnosticPath, patch.DiagnosticPath); err != nil {
-		return Record{}, err
-	}
-	if existing.ResourcePath, err = mergePath("worker resource evidence", existing.ResourcePath, patch.ResourcePath); err != nil {
 		return Record{}, err
 	}
 	mergeTime := func(destination *time.Time, value time.Time) {
@@ -152,13 +147,28 @@ func Validate(catalog Catalog) error {
 			}
 			containers[record.ContainerID] = struct{}{}
 		}
-		for name, path := range map[string]string{"logPath": record.LogPath, "diagnosticPath": record.DiagnosticPath, "resourcePath": record.ResourcePath} {
+		for name, path := range map[string]string{"logPath": record.LogPath, "diagnosticPath": record.DiagnosticPath} {
 			if path != "" && !filepath.IsAbs(path) {
 				return fmt.Errorf("record %d %s must be absolute", index, name)
 			}
 		}
 	}
 	return nil
+}
+
+// ResourceEvidencePath derives the terminal resource sidecar path without
+// extending the schemaVersion 1 job record. Older controllers use strict JSON
+// decoding, so adding an indexed field would make their rollback fail closed.
+func ResourceEvidencePath(record Record) (string, error) {
+	if record.DiagnosticPath == "" {
+		return "", nil
+	}
+	const diagnosticSuffix = "-diag.tar.gz"
+	if !filepath.IsAbs(record.DiagnosticPath) || !strings.HasSuffix(record.DiagnosticPath, diagnosticSuffix) {
+		return "", errors.New("worker diagnostic path cannot identify its resource sidecar")
+	}
+	base := strings.TrimSuffix(filepath.Clean(record.DiagnosticPath), diagnosticSuffix)
+	return base + "-resources.json", nil
 }
 
 func Sort(catalog *Catalog) {
