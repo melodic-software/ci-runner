@@ -24,16 +24,21 @@ import (
 )
 
 const (
-	managedLabel      = "com.melodic-software.ci-runner.managed"
-	hostLabel         = "com.melodic-software.ci-runner.host"
-	poolLabel         = "com.melodic-software.ci-runner.pool"
-	workerNameLabel   = "com.melodic-software.ci-runner.name"
-	runnerIDLabel     = "com.melodic-software.ci-runner.github-runner-id"
-	startedAtLabel    = "com.melodic-software.ci-runner.started-at"
-	controllerLabel   = "com.melodic-software.ci-runner.controller-version"
-	defaultStatePath  = "/home/runner/_runner_state/state"
-	defaultDiagPath   = "/home/runner/_diag"
-	maximumStateBytes = 32
+	managedLabel        = "com.melodic-software.ci-runner.managed"
+	hostLabel           = "com.melodic-software.ci-runner.host"
+	poolLabel           = "com.melodic-software.ci-runner.pool"
+	workerNameLabel     = "com.melodic-software.ci-runner.name"
+	runnerIDLabel       = "com.melodic-software.ci-runner.github-runner-id"
+	startedAtLabel      = "com.melodic-software.ci-runner.started-at"
+	controllerLabel     = "com.melodic-software.ci-runner.controller-version"
+	composeProjectLabel = "com.docker.compose.project"
+	composeServiceLabel = "com.docker.compose.service"
+	composeNumberLabel  = "com.docker.compose.container-number"
+	composeOneoffLabel  = "com.docker.compose.oneoff"
+	composeServiceName  = "worker"
+	defaultStatePath    = "/home/runner/_runner_state/state"
+	defaultDiagPath     = "/home/runner/_diag"
+	maximumStateBytes   = 32
 )
 
 var digestPinnedImage = regexp.MustCompile(`^[^\s@]+(?::[^\s@]+)?@sha256:[0-9a-f]{64}$`)
@@ -289,6 +294,8 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 			Labels: map[string]string{
 				managedLabel: "true", hostLabel: r.opts.HostID, poolLabel: request.PoolID,
 				workerNameLabel: request.Name, runnerIDLabel: strconv.FormatInt(runnerID, 10), startedAtLabel: startedAt.Format(time.RFC3339Nano), controllerLabel: r.opts.ControllerVersion,
+				composeProjectLabel: "ci-runner-" + r.opts.HostID, composeServiceLabel: composeServiceName,
+				composeNumberLabel: strconv.FormatInt(runnerID, 10), composeOneoffLabel: "False",
 			},
 		},
 		HostConfig: &containertypes.HostConfig{
