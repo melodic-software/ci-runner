@@ -118,12 +118,21 @@ type DesktopStatus struct {
 	RunningWSLCount int  `json:"runningWslCount"`
 }
 
-// ResourceGateState persists observation and hysteresis windows across a
-// controller restart.
+type ResourceGateReason string
+
+const (
+	ResourceGateReasonCPU                ResourceGateReason = "cpu"
+	ResourceGateReasonInvalidObservation ResourceGateReason = "invalid-observation"
+)
+
+// ResourceGateState persists the blocking cause and hysteresis windows across
+// a controller restart. An empty Reason on a blocked state is the legacy v0.1.7
+// representation, migrated by controller policy on its first observation.
 type ResourceGateState struct {
-	Blocked      bool       `json:"blocked"`
-	HighCPUSince *time.Time `json:"highCpuSince,omitempty"`
-	HealthySince *time.Time `json:"healthySince,omitempty"`
+	Blocked      bool               `json:"blocked"`
+	Reason       ResourceGateReason `json:"reason,omitempty"`
+	HighCPUSince *time.Time         `json:"highCpuSince,omitempty"`
+	HealthySince *time.Time         `json:"healthySince,omitempty"`
 }
 
 // PowerGateState persists stable-AC recovery state across a restart.

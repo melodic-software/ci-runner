@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -155,7 +157,7 @@ func TestCPUBlockAndResumeHysteresis(t *testing.T) {
 	input.Previous.ResourceGate = plan.ResourceGate
 	input.Now = input.Now.Add(60 * time.Second)
 	plan = BuildPlan(input)
-	if plan.Phase != model.PhaseResourceConstrained || !plan.ResourceGate.Blocked {
+	if plan.Phase != model.PhaseResourceConstrained || !plan.ResourceGate.Blocked || plan.ResourceGate.Reason != model.ResourceGateReasonCPU {
 		t.Fatalf("CPU did not block after observation window: %#v", plan.ResourceGate)
 	}
 
@@ -174,21 +176,290 @@ func TestCPUBlockAndResumeHysteresis(t *testing.T) {
 	input.Previous.ResourceGate = plan.ResourceGate
 	input.Now = input.Now.Add(time.Second)
 	plan = BuildPlan(input)
-	if plan.Phase != model.PhaseReady || plan.ResourceGate.Blocked {
+	if plan.Phase != model.PhaseReady || plan.ResourceGate != (model.ResourceGateState{}) {
 		t.Fatalf("gate did not resume: %#v", plan.ResourceGate)
 	}
 }
 
-func TestMemoryAdmissionAccountsForNextWorker(t *testing.T) {
+func TestLegacyMemoryBlockedGateClearsImmediatelyOnValidLowCPU(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
-	input.Resources.AvailableMemoryBytes = 20 << 30 // 8 GiB worker leaves 18.75% of a 64 GiB host
+	input.Previous.ResourceGate = model.ResourceGateState{Blocked: true} // v0.1.7 persisted state had no reason.
+	input.Resources.AvailableMemoryBytes = 20 << 30
+	input.Workers = []model.Worker{{ID: "idle", PoolID: "org", State: model.WorkerIdle}}
+
 	plan := BuildPlan(input)
-	if plan.Phase != model.PhaseResourceConstrained {
-		t.Fatalf("phase = %s", plan.Phase)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate != (model.ResourceGateState{}) {
+		t.Fatalf("legacy low-CPU resource gate was not cleared immediately: %#v", plan.ResourceGate)
 	}
-	if len(plan.Start) != 0 || plan.AdvertisedCapacity["org"] != 0 {
-		t.Fatalf("resource-constrained plan admitted work: %#v", plan)
+	if len(plan.Remove) != 0 || plan.AdvertisedCapacity["org"] != 1 {
+		t.Fatalf("legacy memory block disturbed live capacity: %#v", plan)
+	}
+}
+
+func TestLegacyBlockedGateMigratesToCPUAndRequiresResumeHysteresis(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Previous.ResourceGate = model.ResourceGateState{Blocked: true}
+	input.Resources.CPUUtilizationPercent = 61
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseResourceConstrained || plan.ResourceGate.Reason != model.ResourceGateReasonCPU || plan.ResourceGate.HealthySince != nil {
+		t.Fatalf("legacy high-CPU gate migration = %#v", plan.ResourceGate)
+	}
+
+	input.Previous.ResourceGate = plan.ResourceGate
+	input.Resources.CPUUtilizationPercent = 60
+	plan = BuildPlan(input)
+	if plan.Phase != model.PhaseResourceConstrained || plan.ResourceGate.HealthySince == nil {
+		t.Fatalf("migrated CPU gate skipped resume hysteresis: %#v", plan.ResourceGate)
+	}
+	input.Previous.ResourceGate = plan.ResourceGate
+	input.Now = input.Now.Add(60 * time.Second)
+	plan = BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate != (model.ResourceGateState{}) {
+		t.Fatalf("migrated CPU gate did not recover: %#v", plan.ResourceGate)
+	}
+}
+
+func TestInvalidObservationReasonRecoversOnlyAfterHealthyHysteresis(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Resources.TotalMemoryBytes = 0
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseResourceConstrained || plan.ResourceGate.Reason != model.ResourceGateReasonInvalidObservation {
+		t.Fatalf("invalid observation gate = %#v", plan.ResourceGate)
+	}
+
+	input.Previous.ResourceGate = plan.ResourceGate
+	input.Resources = healthyInput().Resources
+	plan = BuildPlan(input)
+	if plan.Phase != model.PhaseResourceConstrained || plan.ResourceGate.HealthySince == nil || plan.ResourceGate.Reason != model.ResourceGateReasonInvalidObservation {
+		t.Fatalf("invalid-observation gate recovered without hysteresis: %#v", plan.ResourceGate)
+	}
+	input.Previous.ResourceGate = plan.ResourceGate
+	input.Now = input.Now.Add(60 * time.Second)
+	plan = BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate != (model.ResourceGateState{}) {
+		t.Fatalf("invalid-observation gate did not clear after healthy hysteresis: %#v", plan.ResourceGate)
+	}
+}
+
+func TestResourceGateStateLegacyJSONBackwardCompatibility(t *testing.T) {
+	t.Parallel()
+	var state model.ResourceGateState
+	if err := json.Unmarshal([]byte(`{"blocked":true}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Blocked || state.Reason != "" {
+		t.Fatalf("legacy resource gate = %#v", state)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"reason"`)) {
+		t.Fatalf("legacy empty reason was not omitted: %s", encoded)
+	}
+}
+
+func TestResourceGateStateReasonJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	want := model.ResourceGateState{Blocked: true, Reason: model.ResourceGateReasonInvalidObservation}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got model.ResourceGateState
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("resource gate round trip = %#v, want %#v", got, want)
+	}
+}
+
+func TestLowMemoryRetainsIdleWarmCapacityWithoutBlockingGate(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Resources.AvailableMemoryBytes = 20 << 30 // Only 4 GiB remains above the 25% floor.
+	input.Workers = []model.Worker{{ID: "idle", PoolID: "org", State: model.WorkerIdle}}
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate.Blocked || plan.ResourceGate.HealthySince != nil {
+		t.Fatalf("low-memory gate = %#v phase=%s", plan.ResourceGate, plan.Phase)
+	}
+	if len(plan.Start) != 0 || len(plan.Remove) != 0 || plan.AdvertisedCapacity["org"] != 1 || plan.DesiredWorkers["org"] != 1 {
+		t.Fatalf("low-memory plan disturbed satisfied warm capacity: %#v", plan)
+	}
+}
+
+func TestLowMemoryWithNoPendingWorkDoesNotBlockGate(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+	input.Resources.AvailableMemoryBytes = 20 << 30
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate != (model.ResourceGateState{}) || len(plan.Start) != 0 {
+		t.Fatalf("no-pending low-memory plan = %#v", plan)
+	}
+}
+
+func TestUnaffordableLargeTargetPreservesExistingSmallerPool(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].Priority = 10
+	input.Workers = []model.Worker{{ID: "ordinary-idle", PoolID: "org", State: model.WorkerIdle}}
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, WarmIdle: 1, Priority: 0,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", Ready: true})
+	input.Resources.AvailableMemoryBytes = 20 << 30
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate.Blocked || len(plan.Start) != 0 || len(plan.Remove) != 0 {
+		t.Fatalf("unaffordable large-target plan = %#v", plan)
+	}
+	if plan.AdvertisedCapacity["org"] != 1 || plan.AdvertisedCapacity["codeql"] != 0 {
+		t.Fatalf("capacity = %#v, want existing ordinary capacity only", plan.AdvertisedCapacity)
+	}
+}
+
+func TestLowMemoryNeverRetiresBusyWorker(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Resources.AvailableMemoryBytes = 16 << 30
+	input.Workers = []model.Worker{{ID: "busy", PoolID: "org", State: model.WorkerBusy}}
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate.Blocked || len(plan.Start) != 0 {
+		t.Fatalf("busy low-memory plan = %#v", plan)
+	}
+	assertNotRemoved(t, plan.Remove, "busy")
+	if plan.AdvertisedCapacity["org"] != 1 {
+		t.Fatalf("busy capacity = %d, want 1", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestDormantLargeTargetDoesNotReduceOrdinaryAdmission(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, Priority: 10,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", Ready: true})
+	input.Resources.AvailableMemoryBytes = 24 << 30 // Exactly one ordinary 8-GiB worker above the floor.
+
+	plan := BuildPlan(input)
+	if len(plan.Start) != 1 || plan.Start[0] != (StartDecision{PoolID: "org", Count: 1}) {
+		t.Fatalf("starts = %#v, want the ordinary worker", plan.Start)
+	}
+	if plan.AdvertisedCapacity["org"] != 1 || plan.AdvertisedCapacity["codeql"] != 0 {
+		t.Fatalf("advertised capacity = %#v", plan.AdvertisedCapacity)
+	}
+}
+
+func TestLargeTargetRequiresItsOwnMemoryHeadroom(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, WarmIdle: 1,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", Ready: true})
+	input.Resources.AvailableMemoryBytes = 39 << 30 // 23 GiB above the floor cannot fund CodeQL.
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseReady || plan.ResourceGate.Blocked || totalStarts(plan.Start) != 0 {
+		t.Fatalf("underfunded plan = %#v", plan)
+	}
+
+	input.Resources.AvailableMemoryBytes = 40 << 30
+	plan = BuildPlan(input)
+	if len(plan.Start) != 1 || plan.Start[0] != (StartDecision{PoolID: "codeql", Count: 1}) {
+		t.Fatalf("exactly funded starts = %#v", plan.Start)
+	}
+}
+
+func TestMixedProfilesChargeExactMemory(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 2
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, WarmIdle: 1, Priority: 10,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", Ready: true})
+	input.Resources.AvailableMemoryBytes = 48 << 30 // Exactly 8+24 GiB above the floor.
+
+	plan := BuildPlan(input)
+	if len(plan.Start) != 2 || plan.Start[0] != (StartDecision{PoolID: "org", Count: 1}) || plan.Start[1] != (StartDecision{PoolID: "codeql", Count: 1}) {
+		t.Fatalf("starts = %#v, want exact 8+24-GiB allocation", plan.Start)
+	}
+}
+
+func TestOversizedHighPriorityTargetDoesNotStarveSmallerTarget(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 2
+	input.Config.GitHub.Targets[0].Priority = 10
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, WarmIdle: 1, Priority: 0,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", Ready: true})
+	input.Resources.AvailableMemoryBytes = 24 << 30 // Only the ordinary 8-GiB profile fits.
+
+	plan := BuildPlan(input)
+	if len(plan.Start) != 1 || plan.Start[0] != (StartDecision{PoolID: "org", Count: 1}) {
+		t.Fatalf("starts = %#v, want smaller lower-priority target", plan.Start)
+	}
+}
+
+func TestOutstandingAssignmentsUseWeightedMemoryAdmission(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Desired.Mode = model.ModeDisabled
+	input.Config.GitHub.Targets[0].Priority = 10
+	input.Pools[0].TotalAssignedJobs = 1
+	input.Pools[0].DrainServiceCapacity = 1
+	highMemory := config.ByteSize(24 << 30)
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "codeql", MaxCapacity: 1, Priority: 0,
+		Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}},
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "codeql", TotalAssignedJobs: 1, DrainServiceCapacity: 1, Ready: true})
+	input.Resources.AvailableMemoryBytes = 24 << 30
+
+	plan := BuildPlan(input)
+	if len(plan.Start) != 1 || plan.Start[0] != (StartDecision{PoolID: "org", Count: 1}) {
+		t.Fatalf("outstanding starts = %#v, want the smaller service obligation", plan.Start)
+	}
+}
+
+func TestUniformProfilesRetainSlotCompatibility(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 3
+	input.Config.GitHub.Targets[0].WarmIdle = 2
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets, config.Target{
+		ID: "personal", MaxCapacity: 1, WarmIdle: 1, Priority: 10,
+	})
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "personal", Ready: true})
+	input.Resources.AvailableMemoryBytes = 40 << 30 // Three uniform 8-GiB profiles above the floor.
+
+	plan := BuildPlan(input)
+	if totalStarts(plan.Start) != 3 || plan.AdvertisedCapacity["org"] != 2 || plan.AdvertisedCapacity["personal"] != 1 {
+		t.Fatalf("uniform allocation changed: starts=%#v capacity=%#v", plan.Start, plan.AdvertisedCapacity)
 	}
 }
 

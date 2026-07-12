@@ -96,6 +96,75 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if cfg.Drain.WarningAfter.Duration != 20*time.Minute {
 		t.Fatalf("warningAfter = %s", cfg.Drain.WarningAfter.Duration)
 	}
+	worker, ok := cfg.WorkerForTarget("melodic-org")
+	if !ok || worker != cfg.Resources.Worker {
+		t.Fatalf("default effective worker = %#v, found=%v", worker, ok)
+	}
+}
+
+func TestTargetWorkerOverridesInheritUnspecifiedGlobalValues(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "      warmIdle: 1", `      resources:
+        worker:
+          cpus: 4
+          memory: 24GiB
+          memorySwap: 24GiB
+      warmIdle: 1`, 1)
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, ok := cfg.WorkerForTarget("melodic-org")
+	if !ok {
+		t.Fatal("configured target was not resolved")
+	}
+	want := Worker{CPUs: 4, Memory: ByteSize(24 << 30), MemorySwap: ByteSize(24 << 30), PIDs: 4096}
+	if worker != want {
+		t.Fatalf("effective worker = %#v, want %#v", worker, want)
+	}
+}
+
+func TestTargetWorkerOverridesUseGlobalValidationContract(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		field  string
+		mutate func(*Worker)
+	}{
+		"cpus":        {field: "cpus", mutate: func(worker *Worker) { worker.CPUs = 0 }},
+		"memory":      {field: "memory", mutate: func(worker *Worker) { worker.Memory = 0 }},
+		"memory swap": {field: "memorySwap", mutate: func(worker *Worker) { worker.MemorySwap = worker.Memory - 1 }},
+		"pids":        {field: "pids", mutate: func(worker *Worker) { worker.PIDs = 0 }},
+	}
+	for name, test := range tests {
+		name, test := name, test
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			global, err := Load(strings.NewReader(validYAML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&global.Resources.Worker)
+			globalErr := global.Validate()
+			if globalErr == nil || !strings.Contains(globalErr.Error(), "resources.worker."+test.field) {
+				t.Fatalf("global validation error = %v", globalErr)
+			}
+
+			target, err := Load(strings.NewReader(validYAML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			invalid := target.Resources.Worker
+			test.mutate(&invalid)
+			target.GitHub.Targets[0].Resources.Worker = &WorkerOverrides{
+				CPUs: &invalid.CPUs, Memory: &invalid.Memory, MemorySwap: &invalid.MemorySwap, PIDs: &invalid.PIDs,
+			}
+			targetErr := target.Validate()
+			wantPath := "github.targets[0].resources.worker." + test.field
+			if targetErr == nil || !strings.Contains(targetErr.Error(), wantPath) {
+				t.Fatalf("target validation error = %v, want %s", targetErr, wantPath)
+			}
+		})
+	}
 }
 
 func TestLoadRejectsUnknownProperty(t *testing.T) {
@@ -103,6 +172,59 @@ func TestLoadRejectsUnknownProperty(t *testing.T) {
 	_, err := Load(strings.NewReader(strings.Replace(validYAML, "  id: melo-desk-001", "  id: melo-desk-001\n  mystery: true", 1)))
 	if err == nil || !strings.Contains(err.Error(), "mystery") {
 		t.Fatalf("error = %v, want unknown property", err)
+	}
+}
+
+func TestLoadRejectsNullBlankAndUnknownTargetWorkerOverrides(t *testing.T) {
+	t.Parallel()
+	type testCase struct {
+		name     string
+		fragment string
+		want     string
+	}
+	tests := []testCase{
+		{name: "null resources", fragment: "      resources: null", want: "github.targets[0].resources"},
+		{name: "blank resources", fragment: "      resources:", want: "github.targets[0].resources"},
+		{name: "null worker", fragment: "      resources:\n        worker: null", want: "github.targets[0].resources.worker"},
+		{name: "blank worker", fragment: "      resources:\n        worker:", want: "github.targets[0].resources.worker"},
+		{name: "unknown resources key", fragment: "      resources:\n        mystery: true", want: "mystery"},
+		{name: "unknown worker key", fragment: "      resources:\n        worker:\n          mystery: true", want: "mystery"},
+	}
+	for _, field := range []string{"cpus", "memory", "memorySwap", "pids"} {
+		tests = append(tests,
+			testCase{name: "null " + field, fragment: "      resources:\n        worker:\n          " + field + ": null", want: "github.targets[0].resources.worker." + field},
+			testCase{name: "blank " + field, fragment: "      resources:\n        worker:\n          " + field + ":", want: "github.targets[0].resources.worker." + field},
+		)
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input := strings.Replace(validYAML, "      warmIdle: 1", test.fragment+"\n      warmIdle: 1", 1)
+			_, err := Load(strings.NewReader(input))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want rejection containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsYAMLMergeKeys(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"target resources merge": strings.Replace(validYAML, "      warmIdle: 1", "      resources: {<<: {worker: null}}\n      warmIdle: 1", 1),
+		"worker fields merge":    strings.Replace(validYAML, "      warmIdle: 1", "      resources:\n        worker: {<<: {memory: null}}\n      warmIdle: 1", 1),
+		"merge elsewhere":        strings.Replace(validYAML, "host:\n", "host:\n  <<: {id: inherited}\n", 1),
+	}
+	for name, input := range tests {
+		name, input := name, input
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Load(strings.NewReader(input))
+			if err == nil || !strings.Contains(err.Error(), "YAML merge keys (<<) are not allowed") {
+				t.Fatalf("error = %v, want explicit merge-key rejection", err)
+			}
+		})
 	}
 }
 

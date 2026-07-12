@@ -43,6 +43,30 @@ func TestReconcilerCreatesOneWarmEphemeralWorker(t *testing.T) {
 	}
 }
 
+func TestReconcilerStartsWorkerWithTargetEffectiveLimits(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	cpus := 4.0
+	memory := config.ByteSize(24 << 30)
+	memorySwap := config.ByteSize(24 << 30)
+	pids := int64(8192)
+	harness.controller.config.GitHub.Targets[0].Resources.Worker = &config.WorkerOverrides{
+		CPUs: &cpus, Memory: &memory, MemorySwap: &memorySwap, PIDs: &pids,
+	}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests := harness.runtime.startRequests()
+	if len(requests) != 1 {
+		t.Fatalf("start requests = %#v", requests)
+	}
+	want := config.Worker{CPUs: cpus, Memory: memory, MemorySwap: memorySwap, PIDs: pids}
+	if requests[0].Limits != want {
+		t.Fatalf("worker limits = %#v, want %#v", requests[0].Limits, want)
+	}
+}
+
 func TestEnabledStartsDesktopBeforeWorkerInventory(t *testing.T) {
 	t.Parallel()
 	trace := &callTrace{}
@@ -881,6 +905,100 @@ func TestResourceDerivedPlanAdmitsOnlySafeMultiWorkerSlots(t *testing.T) {
 	}
 }
 
+func TestLowMemoryStepRetainsSatisfiedIdleWarmCapacity(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{{ID: "idle", Name: "idle", PoolID: "org", RunnerID: 41, State: model.WorkerIdle}}
+	harness.controller.deps.Resources = staticResources{snapshot: model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 20 << 30, CPUUtilizationPercent: 10,
+	}}
+
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !harness.runtime.hasWorker("idle") || harness.runtime.startCount() != 0 {
+		t.Fatalf("low-memory step changed satisfied worker inventory: %#v", harness.runtime.snapshot())
+	}
+	if result.Observed.Phase != model.PhaseReady || result.Observed.ResourceGate != (model.ResourceGateState{}) {
+		t.Fatalf("low-memory observed gate = %#v phase=%s", result.Observed.ResourceGate, result.Observed.Phase)
+	}
+	if len(result.Observed.Pools) != 1 || result.Observed.Pools[0].MaxCapacity != 1 || result.Observed.Pools[0].DesiredWorkers != 1 {
+		t.Fatalf("low-memory pool observation = %#v", result.Observed.Pools)
+	}
+}
+
+func TestFreshAdmissionReservesExactMixedProfileMemory(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	highMemory := config.ByteSize(24 << 30)
+	codeql := harness.controller.config.GitHub.Targets[0]
+	codeql.ID = "codeql"
+	codeql.RunnerGroup = "ci-local-codeql"
+	codeql.ScaleSetName = "codeql-ubuntu-24.04-x64"
+	codeql.Priority = 10
+	codeql.Resources.Worker = &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}
+	harness.controller.config.GitHub.Targets = append(harness.controller.config.GitHub.Targets, codeql)
+	harness.controller.deps.Resources = staticResources{snapshot: model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 48 << 30, CPUUtilizationPercent: 10,
+	}}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests := harness.runtime.startRequests()
+	if len(requests) != 2 || requests[0].PoolID != "org" || requests[1].PoolID != "codeql" {
+		t.Fatalf("start requests = %#v", requests)
+	}
+	if requests[0].Limits.Memory != config.ByteSize(8<<30) || requests[1].Limits.Memory != highMemory {
+		t.Fatalf("mixed start limits = %#v", requests)
+	}
+}
+
+func TestFreshAdmissionSkipsNewlyOversizedStartAndContinuesSmallerPool(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 3
+	harness.controller.config.GitHub.Targets[0].Priority = 10
+	highMemory := config.ByteSize(24 << 30)
+	codeql := harness.controller.config.GitHub.Targets[0]
+	codeql.ID = "codeql"
+	codeql.RunnerGroup = "ci-local-codeql"
+	codeql.ScaleSetName = "codeql-ubuntu-24.04-x64"
+	codeql.WarmIdle = 2
+	codeql.MaxCapacity = 2
+	codeql.Priority = 0
+	codeql.Resources.Worker = &config.WorkerOverrides{Memory: &highMemory, MemorySwap: &highMemory}
+	harness.controller.config.GitHub.Targets = append(harness.controller.config.GitHub.Targets, codeql)
+	initial := model.ResourceSnapshot{TotalMemoryBytes: 128 << 30, AvailableMemoryBytes: 88 << 30, CPUUtilizationPercent: 10}
+	contracted := initial
+	contracted.AvailableMemoryBytes = 72 << 30
+	harness.controller.deps.Resources = &sequenceResources{snapshots: []model.ResourceSnapshot{
+		initial, initial, initial, contracted,
+	}}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests := harness.runtime.startRequests()
+	if len(requests) != 2 || requests[0].PoolID != "codeql" || requests[1].PoolID != "org" {
+		t.Fatalf("start requests = %#v, want one CodeQL start followed by the smaller ordinary start", requests)
+	}
+}
+
+func TestMemoryReservationSaturatesAndFailsClosed(t *testing.T) {
+	t.Parallel()
+	maximum := ^uint64(0)
+	reserved := saturatingAddUint64(maximum-4, 8)
+	if reserved != maximum {
+		t.Fatalf("saturated reservation = %d, want %d", reserved, maximum)
+	}
+	if available := availableAfterMemoryReservation(maximum-1, reserved); available != 0 {
+		t.Fatalf("available memory after saturated stale reservation = %d, want fail-closed zero", available)
+	}
+}
+
 func TestPollFailurePreservesIdleWorkerUntilCapacityAcknowledged(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeDisabled)
@@ -1166,6 +1284,7 @@ func validControllerConfig() config.Config {
 type testRuntime struct {
 	mu              sync.Mutex
 	workers         []model.Worker
+	requests        []StartWorkerRequest
 	starts          int
 	lists           int
 	listErr         error
@@ -1208,6 +1327,7 @@ func (r *testRuntime) Start(ctx context.Context, request StartWorkerRequest) (mo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts++
+	r.requests = append(r.requests, request)
 	if r.startErr != nil {
 		return model.Worker{}, r.startErr
 	}
@@ -1271,6 +1391,11 @@ func (r *testRuntime) Close() error {
 
 func (r *testRuntime) startCount() int { r.mu.Lock(); defer r.mu.Unlock(); return r.starts }
 func (r *testRuntime) listCount() int  { r.mu.Lock(); defer r.mu.Unlock(); return r.lists }
+func (r *testRuntime) startRequests() []StartWorkerRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]StartWorkerRequest(nil), r.requests...)
+}
 func (r *testRuntime) snapshot() []model.Worker {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1398,6 +1523,27 @@ type staticResources struct {
 
 func (m staticResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {
 	return m.snapshot, m.err
+}
+
+type sequenceResources struct {
+	mu        sync.Mutex
+	snapshots []model.ResourceSnapshot
+	next      int
+}
+
+func (m *sequenceResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.snapshots) == 0 {
+		return model.ResourceSnapshot{}, errors.New("test resource sequence is empty")
+	}
+	index := m.next
+	if index >= len(m.snapshots) {
+		index = len(m.snapshots) - 1
+	} else {
+		m.next++
+	}
+	return m.snapshots[index], nil
 }
 
 type callTrace struct {

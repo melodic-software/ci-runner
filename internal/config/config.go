@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -122,18 +123,34 @@ const (
 )
 
 type Target struct {
-	ID             string   `yaml:"id"`
-	URL            string   `yaml:"url"`
-	Scope          Scope    `yaml:"scope"`
-	ClientID       string   `yaml:"clientId"`
-	InstallationID int64    `yaml:"installationId"`
-	SecretID       string   `yaml:"secretId"`
-	RunnerGroup    string   `yaml:"runnerGroup"`
-	ScaleSetName   string   `yaml:"scaleSetName"`
-	Labels         []string `yaml:"labels"`
-	WarmIdle       int      `yaml:"warmIdle"`
-	MaxCapacity    int      `yaml:"maxCapacity"`
-	Priority       int      `yaml:"priority"`
+	ID             string          `yaml:"id"`
+	URL            string          `yaml:"url"`
+	Scope          Scope           `yaml:"scope"`
+	ClientID       string          `yaml:"clientId"`
+	InstallationID int64           `yaml:"installationId"`
+	SecretID       string          `yaml:"secretId"`
+	RunnerGroup    string          `yaml:"runnerGroup"`
+	ScaleSetName   string          `yaml:"scaleSetName"`
+	Labels         []string        `yaml:"labels"`
+	WarmIdle       int             `yaml:"warmIdle"`
+	MaxCapacity    int             `yaml:"maxCapacity"`
+	Priority       int             `yaml:"priority"`
+	Resources      TargetResources `yaml:"resources"`
+}
+
+type TargetResources struct {
+	Worker *WorkerOverrides `yaml:"worker"`
+}
+
+// WorkerOverrides overlays only explicitly configured fields on the global
+// worker profile. Pointers preserve omitted fields while explicit scalar values
+// (including invalid zeroes) reach validation; Load rejects null and blank nodes
+// before they can be mistaken for omission.
+type WorkerOverrides struct {
+	CPUs       *float64  `yaml:"cpus"`
+	Memory     *ByteSize `yaml:"memory"`
+	MemorySwap *ByteSize `yaml:"memorySwap"`
+	PIDs       *int64    `yaml:"pids"`
 }
 
 type Resources struct {
@@ -151,6 +168,38 @@ type Worker struct {
 	Memory     ByteSize `yaml:"memory"`
 	MemorySwap ByteSize `yaml:"memorySwap"`
 	PIDs       int64    `yaml:"pids"`
+}
+
+// EffectiveWorker returns the target worker profile after applying optional
+// field-level overrides to the global defaults.
+func (t Target) EffectiveWorker(defaults Worker) Worker {
+	if t.Resources.Worker == nil {
+		return defaults
+	}
+	overrides := *t.Resources.Worker
+	if overrides.CPUs != nil {
+		defaults.CPUs = *overrides.CPUs
+	}
+	if overrides.Memory != nil {
+		defaults.Memory = *overrides.Memory
+	}
+	if overrides.MemorySwap != nil {
+		defaults.MemorySwap = *overrides.MemorySwap
+	}
+	if overrides.PIDs != nil {
+		defaults.PIDs = *overrides.PIDs
+	}
+	return defaults
+}
+
+// WorkerForTarget resolves the exact runtime profile for a configured target.
+func (c Config) WorkerForTarget(id string) (Worker, bool) {
+	for _, target := range c.GitHub.Targets {
+		if target.ID == id {
+			return target.EffectiveWorker(c.Resources.Worker), true
+		}
+	}
+	return Worker{}, false
 }
 
 type PowerPolicy string
@@ -206,23 +255,143 @@ type Paths struct {
 // Load reads exactly one YAML document, rejects unknown fields, and validates
 // every field before returning it to policy code.
 func Load(r io.Reader) (Config, error) {
-	var cfg Config
-	dec := yaml.NewDecoder(r)
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return Config{}, fmt.Errorf("read configuration: %w", err)
+	}
+	var document yaml.Node
+	syntax := yaml.NewDecoder(bytes.NewReader(data))
+	if err := syntax.Decode(&document); err != nil {
+		return Config{}, fmt.Errorf("decode configuration syntax tree: %w", err)
 	}
 	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+	if err := syntax.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return Config{}, errors.New("decode configuration: multiple YAML documents are not allowed")
 		}
 		return Config{}, fmt.Errorf("decode configuration trailer: %w", err)
 	}
+	if err := rejectYAMLMergeKeys(&document); err != nil {
+		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	}
+	if err := validateTargetResourceSyntax(&document); err != nil {
+		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	}
+
+	var cfg Config
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func rejectYAMLMergeKeys(document *yaml.Node) error {
+	visited := make(map[*yaml.Node]struct{})
+	var walk func(*yaml.Node) error
+	walk = func(node *yaml.Node) error {
+		if node == nil {
+			return nil
+		}
+		if _, seen := visited[node]; seen {
+			return nil
+		}
+		visited[node] = struct{}{}
+		if node.Kind == yaml.AliasNode {
+			return walk(node.Alias)
+		}
+		if node.Kind == yaml.MappingNode {
+			for index := 0; index+1 < len(node.Content); index += 2 {
+				key := node.Content[index]
+				if key.Tag == "!!merge" || key.Value == "<<" {
+					return errors.New("YAML merge keys (<<) are not allowed")
+				}
+			}
+		}
+		for _, child := range node.Content {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(document)
+}
+
+func validateTargetResourceSyntax(document *yaml.Node) error {
+	root := dereferenceYAMLNode(document)
+	if root == nil || root.Kind != yaml.DocumentNode || len(root.Content) != 1 {
+		return nil
+	}
+	root = dereferenceYAMLNode(root.Content[0])
+	github, ok := yamlMappingValue(root, "github")
+	if !ok {
+		return nil
+	}
+	targets, ok := yamlMappingValue(dereferenceYAMLNode(github), "targets")
+	if !ok {
+		return nil
+	}
+	targets = dereferenceYAMLNode(targets)
+	if targets == nil || targets.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for index, rawTarget := range targets.Content {
+		target := dereferenceYAMLNode(rawTarget)
+		resources, present := yamlMappingValue(target, "resources")
+		if !present {
+			continue
+		}
+		path := fmt.Sprintf("github.targets[%d].resources", index)
+		resources = dereferenceYAMLNode(resources)
+		if yamlNodeIsNull(resources) {
+			return fmt.Errorf("%s: must not be null or blank", path)
+		}
+		worker, present := yamlMappingValue(resources, "worker")
+		if !present {
+			continue
+		}
+		path += ".worker"
+		worker = dereferenceYAMLNode(worker)
+		if yamlNodeIsNull(worker) {
+			return fmt.Errorf("%s: must not be null or blank", path)
+		}
+		for _, field := range []string{"cpus", "memory", "memorySwap", "pids"} {
+			value, fieldPresent := yamlMappingValue(worker, field)
+			if fieldPresent && yamlNodeIsNull(dereferenceYAMLNode(value)) {
+				return fmt.Errorf("%s.%s: must not be null or blank", path, field)
+			}
+		}
+	}
+	return nil
+}
+
+func yamlMappingValue(mapping *yaml.Node, key string) (*yaml.Node, bool) {
+	mapping = dereferenceYAMLNode(mapping)
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1], true
+		}
+	}
+	return nil, false
+}
+
+func dereferenceYAMLNode(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	return node
+}
+
+func yamlNodeIsNull(node *yaml.Node) bool {
+	return node != nil && node.Tag == "!!null"
 }
 
 func (c Config) Validate() error {
@@ -320,23 +489,15 @@ func (c Config) Validate() error {
 		if target.Priority < 0 {
 			add(fmt.Errorf("%s.priority: must not be negative", path))
 		}
+		if target.Resources.Worker != nil {
+			add(validateWorker(path+".resources.worker", target.EffectiveWorker(c.Resources.Worker)))
+		}
 	}
 	resources := c.Resources
 	if resources.MaximumConcurrentWorkers <= 0 {
 		add(errors.New("resources.maximumConcurrentWorkers: must be positive"))
 	}
-	if resources.Worker.CPUs <= 0 || math.IsNaN(resources.Worker.CPUs) || math.IsInf(resources.Worker.CPUs, 0) {
-		add(errors.New("resources.worker.cpus: must be a finite positive number"))
-	}
-	if resources.Worker.Memory == 0 {
-		add(errors.New("resources.worker.memory: must be positive"))
-	}
-	if resources.Worker.MemorySwap < resources.Worker.Memory {
-		add(errors.New("resources.worker.memorySwap: Docker total memory+swap must be at least memory"))
-	}
-	if resources.Worker.PIDs <= 0 {
-		add(errors.New("resources.worker.pids: must be positive"))
-	}
+	add(validateWorker("resources.worker", resources.Worker))
 	add(validatePercent("resources.minimumAvailableMemoryPercent", resources.MinimumAvailableMemoryPct, false))
 	add(validatePercent("resources.cpuBlockPercent", resources.CPUBlockPercent, false))
 	add(validatePercent("resources.cpuResumePercent", resources.CPUResumePercent, true))
@@ -409,6 +570,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid configuration: %w", errors.Join(problems...))
 	}
 	return nil
+}
+
+func validateWorker(name string, worker Worker) error {
+	var problems []error
+	if worker.CPUs <= 0 || math.IsNaN(worker.CPUs) || math.IsInf(worker.CPUs, 0) {
+		problems = append(problems, fmt.Errorf("%s.cpus: must be a finite positive number", name))
+	}
+	if worker.Memory == 0 {
+		problems = append(problems, fmt.Errorf("%s.memory: must be positive", name))
+	}
+	if worker.MemorySwap < worker.Memory {
+		problems = append(problems, fmt.Errorf("%s.memorySwap: Docker total memory+swap must be at least memory", name))
+	}
+	if worker.PIDs <= 0 {
+		problems = append(problems, fmt.Errorf("%s.pids: must be positive", name))
+	}
+	return errors.Join(problems...)
 }
 
 func validatePercent(name string, value float64, allowZero bool) error {
