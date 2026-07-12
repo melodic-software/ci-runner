@@ -307,7 +307,7 @@ func BuildPlan(input PlanInput) Plan {
 				plan.Remove = append(plan.Remove, worker)
 				excess--
 			}
-		} else if !capacityDebt {
+		} else if !capacityDebt && ready[target.ID] {
 			plan.AdvertisedCapacity[target.ID] = desired
 			advertisable[target.ID] = true
 		}

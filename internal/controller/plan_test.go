@@ -631,6 +631,39 @@ func TestUnavailablePoolFailsClosedLocally(t *testing.T) {
 	assertRemoved(t, plan.Remove, "idle")
 }
 
+func TestUnavailableEmptyPoolNeverReceivesSpareCapacity(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Pools = nil
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 0 || plan.DesiredWorkers["org"] != 0 || len(plan.Start) != 0 {
+		t.Fatalf("unavailable empty pool admitted spare capacity: %#v", plan)
+	}
+	if len(plan.Problems) == 0 || plan.Problems[0].Code != "pool-unavailable" {
+		t.Fatalf("unavailable pool problem = %#v", plan.Problems)
+	}
+}
+
+func TestSpareCapacityIsAllocatedOnlyToReadyPools(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "unavailable", MaxCapacity: 3, WarmIdle: 1, Priority: -1},
+	)
+	input.Pools = append(input.Pools, PoolSnapshot{TargetID: "unavailable", Ready: false})
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 3 || plan.DesiredWorkers["org"] != 1 {
+		t.Fatalf("ready pool lost service capacity: desired %#v capacity %#v", plan.DesiredWorkers, plan.AdvertisedCapacity)
+	}
+	if plan.AdvertisedCapacity["unavailable"] != 0 || plan.DesiredWorkers["unavailable"] != 0 {
+		t.Fatalf("unavailable higher-priority pool received capacity: desired %#v capacity %#v", plan.DesiredWorkers, plan.AdvertisedCapacity)
+	}
+}
+
 func TestOrphanedBusyWorkerIsReportedAndPreserved(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
