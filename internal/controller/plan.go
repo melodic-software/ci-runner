@@ -316,6 +316,8 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		remaining = 0
 	}
 	memoryRemaining := availableMemoryHeadroom(input.Resources, input.Config.Resources)
+	memoryObservationValid := input.Resources.TotalMemoryBytes > 0 &&
+		input.Resources.AvailableMemoryBytes <= input.Resources.TotalMemoryBytes
 	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
 	sort.SliceStable(targets, func(i, j int) bool {
 		if targets[i].Priority == targets[j].Priority {
@@ -338,11 +340,20 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		serviceable := minInt(uncovered, minInt(pool.DrainServiceCapacity, target.MaxCapacity))
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		start := minInt(maxInt(0, serviceable-nonbusy), remaining)
-		start = minInt(start, affordableWorkerCount(memoryRemaining, workerMemory))
+		// An assignment can win the race with a fail-closed poll cancellation.
+		// When physical-memory telemetry is valid, keep using the exact target
+		// profile to rank what can start now. When it is invalid, do not treat
+		// the synthetic zero headroom as authoritative for work GitHub already
+		// assigned under the last acknowledged, memory-bounded capacity.
+		if memoryObservationValid {
+			start = minInt(start, affordableWorkerCount(memoryRemaining, workerMemory))
+		}
 		if start > 0 {
 			plan.Start = append(plan.Start, StartDecision{PoolID: target.ID, Count: start})
 			remaining -= start
-			memoryRemaining -= uint64(start) * uint64(workerMemory)
+			if memoryObservationValid {
+				memoryRemaining -= uint64(start) * uint64(workerMemory)
+			}
 			if !input.Desktop.DesktopRunning || !input.Desktop.EngineReachable {
 				plan.StartDesktop = true
 			}
