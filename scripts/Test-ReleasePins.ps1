@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 $dependencies = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'release\dependencies.json') | ConvertFrom-Json
 $dockerfile = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Dockerfile')
 $freshnessMonitor = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'scripts\Test-DependencyFreshness.ps1')
+$readme = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'README.md')
+$normalizedReadme = [regex]::Replace($readme, '\s+', ' ').Trim()
 $releaseDocumentation = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'docs\releases.md')
 $normalizedReleaseDocumentation = [regex]::Replace($releaseDocumentation, '\s+', ' ').Trim()
 
@@ -20,6 +22,22 @@ foreach ($fragment in @(
         '`v0.1.6` is reserved by this rule and has no release assets.')) {
     if (-not $normalizedReleaseDocumentation.Contains($fragment)) {
         throw "Release documentation is missing the immutable suppressed-tag contract: $fragment"
+    }
+}
+
+foreach ($fragment in @(
+        '`artifact-metadata:write`',
+        'publication fails closed unless the pinned attestation action returns at least one numeric storage-record ID.')) {
+    if (-not $normalizedReadme.Contains($fragment)) {
+        throw "README is missing the worker artifact storage-record contract: $fragment"
+    }
+}
+foreach ($fragment in @(
+        '`create-storage-record:true`',
+        '`storage-record-ids` output',
+        '`artifact-metadata:write` exists only on the publication job')) {
+    if (-not $normalizedReleaseDocumentation.Contains($fragment)) {
+        throw "Release documentation is missing the worker artifact storage-record contract: $fragment"
     }
 }
 
@@ -194,6 +212,55 @@ foreach ($match in $setupBuildxMatches) {
 }
 $releaseWorkflow = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot '.github\workflows\release.yml')
 $releaseTransaction = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot '.github\scripts\release-transaction.cjs')
+$publishEvidenceMatch = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^  publish-evidence:\s*\r?\n(?<block>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?\n|\z)')
+if (-not $publishEvidenceMatch.Success) {
+    throw 'Release workflow is missing the publish-evidence job'
+}
+$publishEvidenceBlock = $publishEvidenceMatch.Groups['block'].Value
+$artifactMetadataPermissions = [regex]::Matches(
+    $releaseWorkflow,
+    '(?m)^\s+artifact-metadata:\s*write(?:\s*#.*)?$')
+if ($artifactMetadataPermissions.Count -ne 1 -or
+    $publishEvidenceBlock -notmatch '(?m)^      artifact-metadata:\s*write(?:\s*#.*)?$') {
+    throw 'artifact-metadata:write must exist exactly once and only in publish-evidence'
+}
+
+$workerAttestationMatch = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^      - name: Attest worker image\r?\n(?<block>.*?)(?=^      - name:|\z)')
+if (-not $workerAttestationMatch.Success) {
+    throw 'Release workflow is missing the worker attestation step'
+}
+$workerAttestationBlock = $workerAttestationMatch.Groups['block'].Value
+foreach ($fragment in @(
+        'id: worker-attestation',
+        'push-to-registry: true',
+        'create-storage-record: true')) {
+    if (-not $workerAttestationBlock.Contains($fragment)) {
+        throw "Worker attestation must explicitly request an artifact storage record: $fragment"
+    }
+}
+
+$storageRecordCheckMatch = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^      - name: Require worker artifact storage record\r?\n(?<block>.*?)(?=^      - name:|\z)')
+if (-not $storageRecordCheckMatch.Success) {
+    throw 'Release workflow is missing the worker storage-record fail-closed check'
+}
+$storageRecordCheckBlock = $storageRecordCheckMatch.Groups['block'].Value
+foreach ($fragment in @(
+        "if: `${{ steps.release.outputs.exists != 'true' }}",
+        'STORAGE_RECORD_IDS: ${{ steps.worker-attestation.outputs.storage-record-ids }}',
+        '[[ "$STORAGE_RECORD_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]]')) {
+    if (-not $storageRecordCheckBlock.Contains($fragment)) {
+        throw "Worker storage-record check is missing required fail-closed behavior: $fragment"
+    }
+}
+if ([regex]::Matches($releaseWorkflow, '(?m)^\s+create-storage-record:\s*true\s*$').Count -ne 1) {
+    throw 'Only the worker attestation may request an artifact storage record'
+}
 foreach ($fragment in @(
         'transactionMarker(sourceSHA)',
         'more than one release exists for the requested tag',
@@ -205,10 +272,18 @@ foreach ($fragment in @(
     }
 }
 $candidateIndex = $releaseWorkflow.IndexOf('Build and push untagged worker candidate', [StringComparison]::Ordinal)
+$workerAttestationIndex = $releaseWorkflow.IndexOf('Attest worker image', [StringComparison]::Ordinal)
+$storageRecordCheckIndex = $releaseWorkflow.IndexOf('Require worker artifact storage record', [StringComparison]::Ordinal)
+$uploadIndex = $releaseWorkflow.IndexOf('Upload immutable release evidence', [StringComparison]::Ordinal)
 $publishIndex = $releaseWorkflow.IndexOf('Publish GitHub release before OCI tag promotion', [StringComparison]::Ordinal)
 $promoteIndex = $releaseWorkflow.IndexOf('promote-image:', [StringComparison]::Ordinal)
-if ($candidateIndex -lt 0 -or $publishIndex -le $candidateIndex -or $promoteIndex -le $publishIndex) {
-    throw 'Immutable GitHub release publication must precede the separate OCI promotion job'
+if ($candidateIndex -lt 0 -or
+    $workerAttestationIndex -le $candidateIndex -or
+    $storageRecordCheckIndex -le $workerAttestationIndex -or
+    $uploadIndex -le $storageRecordCheckIndex -or
+    $publishIndex -le $uploadIndex -or
+    $promoteIndex -le $publishIndex) {
+    throw 'Untagged worker attestation and storage-record verification must precede release publication and OCI promotion'
 }
 if (-not $releaseWorkflow.Contains('push-by-digest=true') -or
     $releaseWorkflow.IndexOf('docker buildx imagetools create', [StringComparison]::Ordinal) -le $promoteIndex) {

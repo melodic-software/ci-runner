@@ -244,8 +244,13 @@ and [Docker resource constraints](https://docs.docker.com/engine/containers/reso
 Local gates include module verification, vet, unit and race tests, Windows and
 Linux builds, `govulncheck`, Actionlint, Zizmor, strict configuration tests, and
 the live worker-image verifier. Release tags first run the complete read-only
-gate against the exact tagged source. Only a dependent publication job receives
-`contents`, `packages`, `attestations`, and OIDC write permissions.
+gate against the exact tagged source. Only the dependent publication job
+receives the combined job-scoped `contents:write`, `packages:write`,
+`attestations:write`, `artifact-metadata:write`, and `id-token:write` grant; the
+later image-promotion job retains only `contents:read` and `packages:write`.
+Worker provenance explicitly requests an organization artifact storage record,
+and publication fails closed unless the pinned attestation action returns at
+least one numeric storage-record ID.
 
 Releases produce an immutable pair:
 
