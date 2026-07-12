@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -16,6 +15,8 @@ import (
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
+
+	"github.com/melodic-software/ci-runner/internal/childprocess"
 )
 
 const (
@@ -111,22 +112,29 @@ func getSystemDirectory() (string, error) {
 }
 
 func bitLockerQueryScript(volume string) string {
-	return fmt.Sprintf("$ErrorActionPreference='Stop';$v=Get-BitLockerVolume -MountPoint '%s';[pscustomobject]@{VolumeStatus=[string]$v.VolumeStatus;ProtectionStatus=[string]$v.ProtectionStatus}|ConvertTo-Json -Compress", volume)
+	return fmt.Sprintf("%s$v=Get-BitLockerVolume -MountPoint '%s';[pscustomobject]@{VolumeStatus=[string]$v.VolumeStatus;ProtectionStatus=[string]$v.ProtectionStatus}|ConvertTo-Json -Compress", machineReadablePowerShellPrefix(), volume)
+}
+
+func machineReadablePowerShellPrefix() string {
+	return "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$WarningPreference='SilentlyContinue';$InformationPreference='SilentlyContinue';$VerbosePreference='SilentlyContinue';$DebugPreference='SilentlyContinue';"
 }
 
 func runPowerShell(ctx context.Context, executable, script string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(script))
+	cmd := childprocess.CommandContext(ctx, executable, powerShellArguments(script)...)
 	return cmd.CombinedOutput()
+}
+
+func powerShellArguments(script string) []string {
+	return []string{
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text",
+		"-EncodedCommand", encodePowerShell(script),
+	}
 }
 
 func verifyBitLockerElevated(ctx context.Context, powerShell, volume string) error {
 	childScript := elevatedBitLockerScript(volume)
-	arguments := "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + encodePowerShell(childScript)
-	outerScript := fmt.Sprintf(
-		"$ErrorActionPreference='Stop';$p=Start-Process -FilePath '%s' -Verb RunAs -WindowStyle Hidden -ArgumentList '%s' -Wait -PassThru;[Console]::Out.Write([int]$p.ExitCode)",
-		quotePowerShellLiteral(powerShell),
-		quotePowerShellLiteral(arguments),
-	)
+	arguments := strings.Join(powerShellArguments(childScript), " ")
+	outerScript := elevatedBitLockerLauncherScript(powerShell, arguments)
 	out, err := runPowerShell(ctx, powerShell, outerScript)
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
@@ -136,6 +144,15 @@ func verifyBitLockerElevated(ctx context.Context, powerShell, volume string) err
 		return fmt.Errorf("start elevated Get-BitLockerVolume: %w (%s)", err, detail)
 	}
 	return parseElevatedBitLockerExit(out)
+}
+
+func elevatedBitLockerLauncherScript(powerShell, arguments string) string {
+	return fmt.Sprintf(
+		"%s$p=Start-Process -FilePath '%s' -Verb RunAs -WindowStyle Hidden -ArgumentList '%s' -Wait -PassThru;[Console]::Out.Write([int]$p.ExitCode)",
+		machineReadablePowerShellPrefix(),
+		quotePowerShellLiteral(powerShell),
+		quotePowerShellLiteral(arguments),
+	)
 }
 
 func parseElevatedBitLockerExit(out []byte) error {
@@ -158,8 +175,8 @@ func parseElevatedBitLockerExit(out []byte) error {
 }
 
 func elevatedBitLockerScript(volume string) string {
-	return fmt.Sprintf(`$ErrorActionPreference='Stop';try{$v=Get-BitLockerVolume -MountPoint '%s';if([string]$v.VolumeStatus -ne 'FullyEncrypted'){exit %d};if([string]$v.ProtectionStatus -ne 'On'){exit %d};exit %d}catch{exit %d}`,
-		quotePowerShellLiteral(volume), bitLockerNotEncryptedExit, bitLockerProtectionOffExit,
+	return fmt.Sprintf(`%stry{$v=Get-BitLockerVolume -MountPoint '%s';if([string]$v.VolumeStatus -ne 'FullyEncrypted'){exit %d};if([string]$v.ProtectionStatus -ne 'On'){exit %d};exit %d}catch{exit %d}`,
+		machineReadablePowerShellPrefix(), quotePowerShellLiteral(volume), bitLockerNotEncryptedExit, bitLockerProtectionOffExit,
 		bitLockerProtectedExit, bitLockerQueryFailedExit)
 }
 

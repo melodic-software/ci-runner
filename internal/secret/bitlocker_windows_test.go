@@ -3,8 +3,10 @@
 package secret
 
 import (
+	"context"
 	"encoding/base64"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -33,6 +35,8 @@ func TestElevatedBitLockerScriptUsesOnlyStatusAndExitCodes(t *testing.T) {
 	t.Parallel()
 	script := elevatedBitLockerScript(`C:`)
 	for _, required := range []string{
+		`$ProgressPreference='SilentlyContinue'`,
+		`$WarningPreference='SilentlyContinue'`,
 		"Get-BitLockerVolume -MountPoint 'C:'",
 		`VolumeStatus`,
 		`ProtectionStatus`,
@@ -50,6 +54,50 @@ func TestElevatedBitLockerScriptUsesOnlyStatusAndExitCodes(t *testing.T) {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("elevated query unexpectedly contains %q", forbidden)
 		}
+	}
+}
+
+func TestMachineReadablePowerShellPathsSuppressProgressAndForceText(t *testing.T) {
+	t.Parallel()
+	childArguments := strings.Join(powerShellArguments(elevatedBitLockerScript(`C:`)), " ")
+	for name, script := range map[string]string{
+		"direct":   bitLockerQueryScript(`C:`),
+		"elevated": elevatedBitLockerScript(`C:`),
+		"launcher": elevatedBitLockerLauncherScript(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, childArguments),
+	} {
+		for _, preference := range []string{
+			`$ProgressPreference='SilentlyContinue'`,
+			`$WarningPreference='SilentlyContinue'`,
+			`$InformationPreference='SilentlyContinue'`,
+			`$VerbosePreference='SilentlyContinue'`,
+			`$DebugPreference='SilentlyContinue'`,
+		} {
+			if !strings.Contains(script, preference) {
+				t.Fatalf("%s script does not contain %s: %s", name, preference, script)
+			}
+		}
+	}
+	arguments := powerShellArguments(`Write-Output fixture`)
+	if !slices.Contains(arguments, "-OutputFormat") || !slices.Contains(arguments, "Text") {
+		t.Fatalf("PowerShell arguments do not force text output: %q", arguments)
+	}
+	if !strings.Contains(childArguments, "-OutputFormat Text") {
+		t.Fatalf("elevated child arguments do not force text output: %q", childArguments)
+	}
+}
+
+func TestRunPowerShellSuppressesModuleProgressInMachineReadableOutput(t *testing.T) {
+	powerShell, err := windowsPowerShellPath()
+	if err != nil {
+		t.Fatalf("resolve Windows PowerShell: %v", err)
+	}
+	script := machineReadablePowerShellPrefix() + `Import-Module BitLocker -ErrorAction Stop;[Console]::Out.Write('fixture')`
+	out, err := runPowerShell(context.Background(), powerShell, script)
+	if err != nil {
+		t.Fatalf("run Windows PowerShell: %v (%s)", err, out)
+	}
+	if got, want := string(out), "fixture"; got != want {
+		t.Fatalf("machine-readable output = %q, want %q", got, want)
 	}
 }
 
