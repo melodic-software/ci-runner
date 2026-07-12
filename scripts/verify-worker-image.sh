@@ -15,6 +15,10 @@ config="$(docker image inspect "$image" --format '{{json .Config}}')"
 [[ "$(jq --compact-output '.Entrypoint' <<<"$config")" == '["/usr/local/bin/ci-runner-entrypoint"]' ]]
 [[ "$(jq --compact-output '.Volumes' <<<"$config")" == 'null' ]]
 [[ "$(jq --raw-output '.Labels["org.opencontainers.image.base.digest"]' <<<"$config")" == "$expected_base_digest" ]]
+[[ "$(jq --raw-output '.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED="))' <<<"$config")" == \
+  'ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh' ]]
+[[ "$(jq --raw-output '.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))' <<<"$config")" == \
+  'ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh' ]]
 
 if jq --exit-status '.Env[] | select(test("(APP_PRIVATE|PRIVATE_KEY|INSTALLATION_TOKEN|JITCONFIG|GITHUB_TOKEN)"; "i"))' <<<"$config" >/dev/null; then
   echo "worker image config contains a forbidden credential/JIT environment variable" >&2
@@ -40,8 +44,8 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   for hook in \
     /usr/local/bin/ci-runner-entrypoint \
     /usr/local/libexec/ci-runner-set-state \
-    /usr/local/libexec/ci-runner-job-started \
-    /usr/local/libexec/ci-runner-job-completed; do
+    /usr/local/libexec/ci-runner-job-started.sh \
+    /usr/local/libexec/ci-runner-job-completed.sh; do
     test "$(stat --format="%U:%G:%a" "$hook")" = "root:root:555"
   done
 '
@@ -49,10 +53,10 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
 states="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
   cat /home/runner/_runner_state/state
   printf " "
-  /usr/local/libexec/ci-runner-job-started
+  /usr/local/libexec/ci-runner-job-started.sh
   cat /home/runner/_runner_state/state
   printf " "
-  /usr/local/libexec/ci-runner-job-completed
+  /usr/local/libexec/ci-runner-job-completed.sh
   cat /home/runner/_runner_state/state
 ')"
 [[ "$states" == 'idle busy completed' ]]

@@ -40,13 +40,13 @@ RUN apt-get update \
  && rm --recursive --force /var/lib/apt/lists/*
 
 COPY --chmod=0555 worker/set-state.sh /usr/local/libexec/ci-runner-set-state
-COPY --chmod=0555 worker/job-started.sh /usr/local/libexec/ci-runner-job-started
-COPY --chmod=0555 worker/job-completed.sh /usr/local/libexec/ci-runner-job-completed
+COPY --chmod=0555 worker/job-started.sh /usr/local/libexec/ci-runner-job-started.sh
+COPY --chmod=0555 worker/job-completed.sh /usr/local/libexec/ci-runner-job-completed.sh
 COPY --chmod=0555 worker/entrypoint.sh /usr/local/bin/ci-runner-entrypoint
 
 ENV ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1 \
-    ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started \
-    ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed \
+    ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh \
+    ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh \
     ImageOS=ubuntu24
 
 LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
