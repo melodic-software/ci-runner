@@ -53,15 +53,30 @@ func TestDisabledDrainNeverRemovesBusyWorker(t *testing.T) {
 		{ID: "busy", PoolID: "org", State: model.WorkerBusy, JobID: "job-1"},
 		{ID: "idle", PoolID: "org", State: model.WorkerIdle},
 		{ID: "starting", PoolID: "org", State: model.WorkerStarting},
+		{ID: "unregistered", PoolID: "org", State: model.WorkerUnregistered},
 	}
 	plan := BuildPlan(input)
 	if plan.Phase != model.PhaseDraining {
 		t.Fatalf("phase = %s", plan.Phase)
 	}
-	assertRemoved(t, plan.Remove, "idle", "starting")
+	assertRemoved(t, plan.Remove, "idle", "starting", "unregistered")
 	assertNotRemoved(t, plan.Remove, "busy")
 	if plan.AdvertisedCapacity["org"] != 0 {
 		t.Fatal("drain did not advertise zero")
+	}
+}
+
+func TestGamingPlansUnregisteredWorkerRemoval(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Desired.Mode = model.ModeGaming
+	input.Desktop.RunningWSLCount = 1
+	input.Workers = []model.Worker{{ID: "unregistered", PoolID: "org", State: model.WorkerUnregistered}}
+
+	plan := BuildPlan(input)
+	assertRemoved(t, plan.Remove, "unregistered")
+	if !plan.StopDesktop || !plan.ShutdownWSL {
+		t.Fatalf("gaming cleanup did not proceed after planning unusable worker removal: %#v", plan)
 	}
 }
 

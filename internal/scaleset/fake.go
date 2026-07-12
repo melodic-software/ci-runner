@@ -10,12 +10,14 @@ import (
 type Fake struct {
 	mu sync.Mutex
 
-	Identities map[string]Identity
-	Stats      map[string]Statistics
-	Errors     map[string]error
-	JIT        JITConfig
-	Calls      []Call
-	RemoveErr  error
+	Identities     map[string]Identity
+	Stats          map[string]Statistics
+	Errors         map[string]error
+	JIT            JITConfig
+	Calls          []Call
+	RemoveErr      error
+	MissingRunners map[int64]bool
+	RunnerErrors   map[int64]error
 }
 
 type Call struct {
@@ -28,11 +30,26 @@ type Call struct {
 
 func NewFake() *Fake {
 	return &Fake{
-		Identities: map[string]Identity{},
-		Stats:      map[string]Statistics{},
-		Errors:     map[string]error{},
-		JIT:        NewRunnerJITConfig([]byte("test-jit-config"), 101),
+		Identities:     map[string]Identity{},
+		Stats:          map[string]Statistics{},
+		Errors:         map[string]error{},
+		JIT:            NewRunnerJITConfig([]byte("test-jit-config"), 101),
+		MissingRunners: map[int64]bool{},
+		RunnerErrors:   map[int64]error{},
 	}
+}
+
+func (f *Fake) RunnerRegistered(ctx context.Context, poolID string, runnerID int64, runnerName string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Operation: "runner-registration", TargetID: poolID, ScaleSetID: runnerID, RunnerName: runnerName})
+	if err := f.RunnerErrors[runnerID]; err != nil {
+		return false, err
+	}
+	return !f.MissingRunners[runnerID], nil
 }
 
 func (f *Fake) Ensure(ctx context.Context, definition Definition, previous *Identity) (Identity, error) {

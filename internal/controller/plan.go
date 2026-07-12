@@ -103,7 +103,7 @@ func BuildPlan(input PlanInput) Plan {
 		}
 		if _, known := targetIDs[worker.PoolID]; !known {
 			switch worker.State {
-			case model.WorkerExited:
+			case model.WorkerExited, model.WorkerUnregistered:
 				plan.Remove = append(plan.Remove, worker)
 			case model.WorkerBusy:
 				plan.Problems = append(plan.Problems, problem(input.Now, "orphaned-busy-worker", "busy worker belongs to an unknown pool and will be preserved", worker.PoolID, false))
@@ -243,7 +243,7 @@ func BuildPlan(input PlanInput) Plan {
 			case model.WorkerStarting, model.WorkerIdle:
 				active++
 				removable = append(removable, worker)
-			case model.WorkerExited:
+			case model.WorkerExited, model.WorkerUnregistered:
 				plan.Remove = append(plan.Remove, worker)
 			}
 		}
@@ -363,7 +363,7 @@ func appendSafeRemovals(plan *Plan, workersByPool map[string][]model.Worker, kno
 		}
 		removeCount := activeNonBusy - keep
 		for _, worker := range workers {
-			if worker.State == model.WorkerExited {
+			if worker.State == model.WorkerExited || worker.State == model.WorkerUnregistered {
 				plan.Remove = append(plan.Remove, worker)
 				continue
 			}

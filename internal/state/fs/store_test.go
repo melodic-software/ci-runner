@@ -78,6 +78,31 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	}
 }
 
+func TestStoreRoundTripsUnregisteredWorkerState(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+	now := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+	observed := model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseDegraded,
+		HeartbeatAt:   now,
+		Workers: []model.Worker{{
+			ID: "container-1", PoolID: "org", Name: "runner-1", RunnerID: 42,
+			State: model.WorkerUnregistered, StartedAt: now.Add(-time.Minute),
+		}},
+	}
+	if err := store.SaveObserved(context.Background(), observed); err != nil {
+		t.Fatalf("SaveObserved unregistered worker: %v", err)
+	}
+	loaded, err := store.LoadObserved(context.Background())
+	if err != nil {
+		t.Fatalf("LoadObserved unregistered worker: %v", err)
+	}
+	if len(loaded.Workers) != 1 || loaded.Workers[0].State != model.WorkerUnregistered || loaded.Workers[0].RunnerID != 42 {
+		t.Fatalf("unregistered worker did not round trip: %#v", loaded.Workers)
+	}
+}
+
 func TestStoreRejectsUnknownFieldsAndMultipleValues(t *testing.T) {
 	store, directory := newTestStore(t)
 	if err := os.MkdirAll(directory, 0o700); err != nil {

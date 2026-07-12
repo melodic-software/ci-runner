@@ -50,10 +50,11 @@ type DesiredState struct {
 type WorkerState string
 
 const (
-	WorkerStarting WorkerState = "starting"
-	WorkerIdle     WorkerState = "idle"
-	WorkerBusy     WorkerState = "busy"
-	WorkerExited   WorkerState = "exited"
+	WorkerStarting     WorkerState = "starting"
+	WorkerIdle         WorkerState = "idle"
+	WorkerBusy         WorkerState = "busy"
+	WorkerUnregistered WorkerState = "unregistered"
+	WorkerExited       WorkerState = "exited"
 )
 
 // Worker describes a managed, one-job worker. Adapter-specific container data

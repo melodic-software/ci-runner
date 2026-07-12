@@ -98,13 +98,234 @@ func TestOfficialStatisticsReportsCapacityAcknowledgesAcquiresAndTracksJobs(t *t
 	api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
 		MessageID:            10,
 		Statistics:           &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 0},
-		JobCompletedMessages: []*actionsscale.JobCompleted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		JobCompletedMessages: []*actionsscale.JobCompleted{{RunnerID: 41, RunnerName: "runner-1", Result: "Succeeded", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
 	})
 	if _, err := client.Statistics(context.Background(), identity, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := client.ActiveJob("org", "runner-1"); ok {
 		t.Fatal("completed job remained active")
+	}
+}
+
+func TestOfficialUnassignedCanceledCompletionAcknowledgesAndLaterCapacityRecovers(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	events := &recordingJobEventSink{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.session.messages = append(api.session.messages,
+		&actionsscale.RunnerScaleSetMessage{
+			MessageID: 20, Statistics: &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 0},
+			JobCompletedMessages: []*actionsscale.JobCompleted{{
+				Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "canceled-before-assignment"},
+			}},
+		},
+		&actionsscale.RunnerScaleSetMessage{
+			MessageID: 21, Statistics: &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 1},
+			JobAvailableMessages: []*actionsscale.JobAvailable{{JobMessageBase: actionsscale.JobMessageBase{RunnerRequestID: 202}}},
+		},
+	)
+
+	first, err := client.Statistics(context.Background(), identity, 0)
+	if err != nil || first.TotalAssignedJobs != 0 {
+		t.Fatalf("unassigned cancellation poll = %#v, error = %v", first, err)
+	}
+	if len(events.completions) != 0 {
+		t.Fatalf("unassigned completion was written to runner index: %#v", events.completions)
+	}
+	second, err := client.Statistics(context.Background(), identity, 1)
+	if err != nil || second.TotalAssignedJobs != 1 {
+		t.Fatalf("capacity recovery poll = %#v, error = %v", second, err)
+	}
+	if got := fmt.Sprint(api.session.callOrder()); got != "[get delete get delete acquire]" {
+		t.Fatalf("message order = %s", got)
+	}
+	if got := fmt.Sprint(api.session.lastMessageIDs()); got != "[0 20]" {
+		t.Fatalf("listener cursors = %s, want acknowledged cancellation cursor", got)
+	}
+	if got := fmt.Sprint(api.session.acquiredRequestIDs()); got != "[202]" {
+		t.Fatalf("acquired runner requests = %s", got)
+	}
+}
+
+func TestOfficialIdentifiedCompletionIsPersistedExactly(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	events := &recordingJobEventSink{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
+		MessageID: 30, Statistics: &actionsscale.RunnerScaleSetStatistic{},
+		JobCompletedMessages: []*actionsscale.JobCompleted{{
+			RunnerID: 41, RunnerName: "runner-1", Result: "Succeeded",
+			JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"},
+		}},
+	})
+	if _, err := client.Statistics(context.Background(), identity, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := recordedCompletion{poolID: "org", runnerName: "runner-1", jobID: "job-1", result: "Succeeded"}
+	if len(events.completions) != 1 || events.completions[0] != want {
+		t.Fatalf("persisted completions = %#v, want %#v", events.completions, want)
+	}
+}
+
+func TestOfficialMalformedJobCompletionFailsBeforeAcknowledgement(t *testing.T) {
+	t.Parallel()
+	tests := map[string]*actionsscale.JobCompleted{
+		"nil":                    nil,
+		"missing-job-id":         {RunnerID: 41, RunnerName: "runner-1", Result: "Succeeded"},
+		"missing-result":         {RunnerID: 41, RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
+		"runner-name-only":       {RunnerName: "runner-1", Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
+		"runner-id-only":         {RunnerID: 41, Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
+		"anonymous-success":      {Result: "Succeeded", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
+		"anonymous-assigned":     {Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1", RunnerAssignTime: time.Unix(1, 0).UTC()}},
+		"whitespace-runner-name": {RunnerID: 41, RunnerName: " ", Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
+	}
+	for name, completed := range tests {
+		completed := completed
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			api := newFakeOfficialAPI()
+			client := newOfficialForTest(t, &fakeOfficialFactory{api: api})
+			identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
+				MessageID: 40, Statistics: &actionsscale.RunnerScaleSetStatistic{},
+				JobCompletedMessages: []*actionsscale.JobCompleted{completed},
+			})
+			_, err = client.Statistics(context.Background(), identity, 0)
+			if !IsKind(err, ErrorInvalid) {
+				t.Fatalf("error = %v, want invalid lifecycle event", err)
+			}
+			if got := fmt.Sprint(api.session.callOrder()); got != "[get]" {
+				t.Fatalf("malformed completion was acknowledged: %s", got)
+			}
+		})
+	}
+}
+
+func TestOfficialAnonymousCompletionConflictingWithBatchStartFailsBeforePersistence(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	events := &recordingJobEventSink{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
+		MessageID: 50, Statistics: &actionsscale.RunnerScaleSetStatistic{},
+		JobStartedMessages: []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		JobCompletedMessages: []*actionsscale.JobCompleted{{
+			Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"},
+		}},
+	})
+	_, err = client.Statistics(context.Background(), identity, 0)
+	if !IsKind(err, ErrorInvalid) {
+		t.Fatalf("error = %v, want conflicting anonymous completion rejection", err)
+	}
+	if events.started != 0 || len(events.completions) != 0 {
+		t.Fatalf("invalid batch partially persisted: starts=%d completions=%#v", events.started, events.completions)
+	}
+	if got := fmt.Sprint(api.session.callOrder()); got != "[get]" {
+		t.Fatalf("invalid batch was acknowledged: %s", got)
+	}
+}
+
+func TestOfficialIdentifiedStartAndCompletionInSameBatchConverge(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	events := &recordingJobEventSink{}
+	client, err := NewOfficialClient(OfficialOptions{
+		HostID: "melo-desk-001", Version: "test", RequestTimeout: time.Minute,
+		Secrets: fakeSecretStore{}, Factory: &fakeOfficialFactory{api: api}, Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.session.messages = append(api.session.messages, &actionsscale.RunnerScaleSetMessage{
+		MessageID: 51, Statistics: &actionsscale.RunnerScaleSetStatistic{},
+		JobStartedMessages: []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		JobCompletedMessages: []*actionsscale.JobCompleted{{
+			RunnerID: 41, RunnerName: "runner-1", Result: "Canceled",
+			JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1", RunnerAssignTime: time.Unix(1, 0).UTC()},
+		}},
+	})
+	if _, err := client.Statistics(context.Background(), identity, 0); err != nil {
+		t.Fatal(err)
+	}
+	if events.started != 1 || len(events.completions) != 1 {
+		t.Fatalf("identified batch persistence = starts:%d completions:%#v", events.started, events.completions)
+	}
+	if _, active := client.ActiveJob("org", "runner-1"); active {
+		t.Fatal("identified same-batch completion left the runner job active")
+	}
+	if got := fmt.Sprint(api.session.callOrder()); got != "[get delete]" {
+		t.Fatalf("identified batch order = %s", got)
+	}
+}
+
+func TestOfficialAnonymousCompletionCannotClearPreviouslyActiveJob(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	client := newOfficialForTest(t, &fakeOfficialFactory{api: api})
+	identity, err := client.Ensure(context.Background(), testDefinition(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.session.messages = append(api.session.messages,
+		&actionsscale.RunnerScaleSetMessage{
+			MessageID: 52, Statistics: &actionsscale.RunnerScaleSetStatistic{TotalAssignedJobs: 1},
+			JobStartedMessages: []*actionsscale.JobStarted{{RunnerName: "runner-1", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		},
+		&actionsscale.RunnerScaleSetMessage{
+			MessageID: 53, Statistics: &actionsscale.RunnerScaleSetStatistic{},
+			JobCompletedMessages: []*actionsscale.JobCompleted{{Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}}},
+		},
+	)
+	if _, err := client.Statistics(context.Background(), identity, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Statistics(context.Background(), identity, 0); !IsKind(err, ErrorInvalid) {
+		t.Fatalf("error = %v, want active-job conflict", err)
+	}
+	if jobID, active := client.ActiveJob("org", "runner-1"); !active || jobID != "job-1" {
+		t.Fatalf("active job was lost: %q %t", jobID, active)
+	}
+	if got := fmt.Sprint(api.session.callOrder()); got != "[get delete get]" {
+		t.Fatalf("active conflict order = %s", got)
 	}
 }
 
@@ -224,6 +445,41 @@ func TestOfficialJITConfigIsValidatedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestOfficialRunnerRegistrationRequiresExactIdentityAndNormalizesNotFound(t *testing.T) {
+	t.Parallel()
+	api := newFakeOfficialAPI()
+	client := newOfficialForTest(t, &fakeOfficialFactory{api: api})
+	if _, err := client.Ensure(context.Background(), testDefinition(), nil); err != nil {
+		t.Fatal(err)
+	}
+	// The pinned client documents RunnerScaleSetID as optional on this lookup;
+	// the exact ID and name still prove the one-job registration identity.
+	api.runner = &actionsscale.RunnerReference{ID: 99, Name: "runner-1"}
+	registered, err := client.RunnerRegistered(context.Background(), "org", 99, "runner-1")
+	if err != nil || !registered {
+		t.Fatalf("registered = %t, error = %v", registered, err)
+	}
+
+	api.runnerErr = fmt.Errorf("get runner: %w", actionsscale.RunnerNotFoundError)
+	registered, err = client.RunnerRegistered(context.Background(), "org", 99, "runner-1")
+	if err != nil || registered {
+		t.Fatalf("missing registered = %t, error = %v", registered, err)
+	}
+
+	api.runnerErr = fmt.Errorf(`request failed(status="404 Not Found")`)
+	registered, err = client.RunnerRegistered(context.Background(), "org", 99, "runner-1")
+	if registered || !IsKind(err, ErrorNotFound) {
+		t.Fatalf("generic 404 registered = %t, error = %v; want fail-closed typed error", registered, err)
+	}
+
+	api.runnerErr = nil
+	api.runner = &actionsscale.RunnerReference{ID: 99, Name: "different-runner", RunnerScaleSetID: 42}
+	registered, err = client.RunnerRegistered(context.Background(), "org", 99, "runner-1")
+	if registered || !IsKind(err, ErrorInvalid) {
+		t.Fatalf("mismatched registered = %t, error = %v", registered, err)
+	}
+}
+
 func TestOfficialErrorClassification(t *testing.T) {
 	t.Parallel()
 	tests := map[int]ErrorKind{
@@ -300,13 +556,21 @@ func (s failingJobEventSink) JobCompleted(context.Context, string, string, strin
 	return s.err
 }
 
-type recordingJobEventSink struct{ started int }
+type recordedCompletion struct {
+	poolID, runnerName, jobID, result string
+}
+
+type recordingJobEventSink struct {
+	started     int
+	completions []recordedCompletion
+}
 
 func (s *recordingJobEventSink) JobStarted(context.Context, string, string, string) error {
 	s.started++
 	return nil
 }
-func (*recordingJobEventSink) JobCompleted(context.Context, string, string, string, string) error {
+func (s *recordingJobEventSink) JobCompleted(_ context.Context, poolID, runnerName, jobID, result string) error {
+	s.completions = append(s.completions, recordedCompletion{poolID: poolID, runnerName: runnerName, jobID: jobID, result: result})
 	return nil
 }
 
@@ -331,6 +595,8 @@ type fakeOfficialAPI struct {
 	updated        *actionsscale.RunnerScaleSet
 	deletes        int
 	runnerRemovals []int64
+	runner         *actionsscale.RunnerReference
+	runnerErr      error
 	session        *fakeOfficialSession
 }
 
@@ -382,6 +648,18 @@ func (a *fakeOfficialAPI) MessageSession(context.Context, int, string) (official
 func (*fakeOfficialAPI) GenerateJITConfig(_ context.Context, setting *actionsscale.RunnerScaleSetJitRunnerSetting, _ int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error) {
 	return &actionsscale.RunnerScaleSetJitRunnerConfig{Runner: &actionsscale.RunnerReference{ID: 99, Name: setting.Name}, EncodedJITConfig: "encoded-jit"}, nil
 }
+func (a *fakeOfficialAPI) GetRunner(_ context.Context, _ int) (*actionsscale.RunnerReference, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.runnerErr != nil {
+		return nil, a.runnerErr
+	}
+	if a.runner == nil {
+		return nil, nil
+	}
+	copy := *a.runner
+	return &copy, nil
+}
 func (a *fakeOfficialAPI) RemoveRunner(_ context.Context, runnerID int64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -406,6 +684,8 @@ type fakeOfficialSession struct {
 	messages      []*actionsscale.RunnerScaleSetMessage
 	maxCapacity   int
 	calls         []string
+	lastIDs       []int
+	acquiredIDs   []int64
 	getMessageErr error
 	deleteErr     error
 	acquireErr    error
@@ -416,10 +696,11 @@ func (s *fakeOfficialSession) Session() actionsscale.RunnerScaleSetSession {
 	defer s.mu.Unlock()
 	return s.session
 }
-func (s *fakeOfficialSession) GetMessage(_ context.Context, _ int, max int) (*actionsscale.RunnerScaleSetMessage, error) {
+func (s *fakeOfficialSession) GetMessage(_ context.Context, lastID int, max int) (*actionsscale.RunnerScaleSetMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, "get")
+	s.lastIDs = append(s.lastIDs, lastID)
 	s.maxCapacity = max
 	if s.getMessageErr != nil {
 		return nil, s.getMessageErr
@@ -441,6 +722,7 @@ func (s *fakeOfficialSession) AcquireJobs(_ context.Context, ids []int64) ([]int
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, "acquire")
+	s.acquiredIDs = append(s.acquiredIDs, ids...)
 	return append([]int64(nil), ids...), s.acquireErr
 }
 func (*fakeOfficialSession) Close(context.Context) error { return nil }
@@ -448,6 +730,16 @@ func (s *fakeOfficialSession) callOrder() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.calls...)
+}
+func (s *fakeOfficialSession) lastMessageIDs() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.lastIDs...)
+}
+func (s *fakeOfficialSession) acquiredRequestIDs() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.acquiredIDs...)
 }
 
 func cloneScaleSet(input *actionsscale.RunnerScaleSet) *actionsscale.RunnerScaleSet {
