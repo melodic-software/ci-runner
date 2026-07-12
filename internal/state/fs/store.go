@@ -284,7 +284,7 @@ func validateObserved(value model.ObservedState) error {
 		}
 		workerIDs[worker.ID] = struct{}{}
 		switch worker.State {
-		case model.WorkerStarting, model.WorkerIdle, model.WorkerBusy, model.WorkerExited:
+		case model.WorkerStarting, model.WorkerIdle, model.WorkerBusy, model.WorkerUnregistered, model.WorkerExited:
 		default:
 			return fmt.Errorf("worker %q has unsupported state %q", worker.ID, worker.State)
 		}

@@ -396,6 +396,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// and protected before any conditional removal is attempted.
 	if mayHaveManagedWorkers(desktop, desktopStatusKnown) {
 		if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
+			jobStateKnown = false
 			observationFailed = true
 			resources = model.ResourceSnapshot{}
 			record("worker-refresh-error", "managed-worker refresh failed after capacity update; new work is blocked", "", true, listErr)
@@ -406,6 +407,33 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			record("job-index-refresh-error", "durable job lifecycle state could not be refreshed after the capacity update; automatic retirement is blocked", "", true, lookupErr)
 		} else {
 			workers = enriched
+		}
+	}
+
+	// A JIT runner can be canceled after GitHub assigns it but before the runner
+	// acquires the job. GitHub then removes the one-job registration while the
+	// stock runner process can remain alive with the hook state still at idle.
+	// Verify only exact, job-free idle identities. An authoritative missing
+	// registration makes that container unusable capacity; every lookup error
+	// and every active/racing worker remains preserved.
+	if jobStateKnown {
+		for index := range workers {
+			worker := &workers[index]
+			if worker.State != model.WorkerIdle || worker.JobID != "" || worker.RunnerID <= 0 {
+				continue
+			}
+			if pool := findPool(pools, worker.PoolID); !pool.Ready {
+				continue
+			}
+			registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
+			if registrationErr != nil {
+				record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)
+				continue
+			}
+			if !registered {
+				worker.State = model.WorkerUnregistered
+				_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
+			}
 		}
 	}
 
@@ -435,6 +463,19 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		seenRemoval[worker.ID] = struct{}{}
 		if worker.State == model.WorkerBusy {
 			record("busy-worker-removal-refused", "controller policy refused to remove a busy worker", worker.PoolID, false, nil)
+			continue
+		}
+		if worker.State == model.WorkerUnregistered {
+			removed, removeErr := r.deps.Workers.RemoveIfIdle(ctx, worker.ID)
+			if removeErr != nil {
+				record("unregistered-worker-remove-error", "unregistered idle worker removal failed", worker.PoolID, true, removeErr)
+				continue
+			}
+			if !removed {
+				record("unregistered-worker-became-busy", "worker acquired work during final removal verification and was preserved", worker.PoolID, false, nil)
+				continue
+			}
+			_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "unregistered-worker-removed", Message: "removed idle container after GitHub deleted its one-job registration", PoolID: worker.PoolID, WorkerID: worker.ID})
 			continue
 		}
 		requiredCapacity, configuredPool := plan.AdvertisedCapacity[worker.PoolID]
@@ -705,6 +746,12 @@ func (r *Reconciler) deregisterRunner(ctx context.Context, poolID string, runner
 		return struct{}{}, err
 	})
 	return err
+}
+
+func (r *Reconciler) runnerRegistered(ctx context.Context, poolID string, runnerID int64, runnerName string) (bool, error) {
+	return RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callContext context.Context) (bool, error) {
+		return r.deps.ScaleSets.RunnerRegistered(callContext, poolID, runnerID, runnerName)
+	})
 }
 
 func (r *Reconciler) target(id string) config.Target {

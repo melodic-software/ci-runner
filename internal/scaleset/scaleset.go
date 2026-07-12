@@ -86,6 +86,11 @@ type Client interface {
 	Statistics(context.Context, Identity, int) (Statistics, error)
 	// CreateJITConfig returns one ephemeral, one-job runner configuration.
 	CreateJITConfig(context.Context, Identity, string) (JITConfig, error)
+	// RunnerRegistered authoritatively verifies that the exact runner still
+	// exists in its configured scale set. A clean false result means GitHub has
+	// removed the one-job registration; transport and identity failures are
+	// returned as errors and must fail lifecycle cleanup closed.
+	RunnerRegistered(context.Context, string, int64, string) (bool, error)
 	// RemoveRunner deregisters an exact runner only after controller policy has
 	// quiesced its pool and ruled out assigned/active work.
 	RemoveRunner(context.Context, string, int64) error

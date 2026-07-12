@@ -394,11 +394,131 @@ func TestCanceledAssignmentEventuallyQuiescesUnusedIdleRunner(t *testing.T) {
 	}
 }
 
+func TestMissingJITRegistrationReplacesOrphanedWarmContainerInSameStep(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{{
+		ID: "orphan", Name: "runner-orphan", PoolID: "org", RunnerID: 42, State: model.WorkerIdle,
+	}}
+	harness.scaleSets.MissingRunners[42] = true
+
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := harness.runtime.snapshot()
+	if len(workers) != 1 || workers[0].ID == "orphan" || harness.runtime.startCount() != 1 {
+		t.Fatalf("orphan was not replaced: observed=%#v workers=%#v starts=%d", result.Observed, workers, harness.runtime.startCount())
+	}
+	if result.Observed.Phase != model.PhaseReady || result.Observed.Pools[0].DesiredWorkers != 1 {
+		t.Fatalf("replacement did not restore ready capacity: %#v", result.Observed)
+	}
+	for _, call := range harness.scaleSets.SnapshotCalls() {
+		if call.Operation == "remove-runner" && call.ScaleSetID == 42 {
+			t.Fatal("already-missing GitHub runner was deregistered instead of retiring only its idle container")
+		}
+	}
+}
+
+func TestMissingJITRegistrationFinalBusyRacePreservesWorker(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{{
+		ID: "racing", Name: "runner-racing", PoolID: "org", RunnerID: 42, State: model.WorkerIdle,
+	}}
+	harness.runtime.acquireOnRemove = "racing"
+	harness.scaleSets.MissingRunners[42] = true
+
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := harness.runtime.snapshot()
+	if len(workers) != 1 || workers[0].ID != "racing" || workers[0].State != model.WorkerBusy || harness.runtime.startCount() != 0 {
+		t.Fatalf("final busy race was not preserved: observed=%#v workers=%#v", result.Observed, workers)
+	}
+	assertProblemCode(t, result.Observed.Problems, "unregistered-worker-became-busy")
+}
+
+func TestRunnerRegistrationLookupFailurePreservesIdleCapacity(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{{
+		ID: "idle", Name: "runner-idle", PoolID: "org", RunnerID: 42, State: model.WorkerIdle,
+	}}
+	lookupErr := &scaleset.Error{Kind: scaleset.ErrorForbidden, Operation: "get runner", StatusCode: 403}
+	harness.scaleSets.RunnerErrors[42] = lookupErr
+
+	result, err := harness.controller.Step(context.Background())
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("error = %v, want registration lookup failure", err)
+	}
+	if !harness.runtime.hasWorker("idle") || harness.runtime.startCount() != 0 {
+		t.Fatalf("uncertain registration mutated capacity: %#v", harness.runtime.snapshot())
+	}
+	assertProblemCode(t, result.Observed.Problems, "runner-registration-check-error")
+}
+
+func TestPostCapacityInventoryFailureSkipsMissingRegistrationCleanup(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{{
+		ID: "idle", Name: "runner-idle", PoolID: "org", RunnerID: 42, State: model.WorkerIdle,
+	}}
+	harness.scaleSets.MissingRunners[42] = true
+	refreshErr := errors.New("post-capacity Docker inventory failed")
+	harness.runtime.listErr = refreshErr
+	harness.runtime.listErrAt = 2
+
+	result, err := harness.controller.Step(context.Background())
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("error = %v, want post-capacity inventory failure", err)
+	}
+	if !harness.runtime.hasWorker("idle") || harness.runtime.startCount() != 0 {
+		t.Fatalf("stale inventory mutated worker capacity: %#v", harness.runtime.snapshot())
+	}
+	for _, call := range harness.scaleSets.SnapshotCalls() {
+		if call.Operation == "runner-registration" && call.ScaleSetID == 42 {
+			t.Fatal("registration was checked from stale pre-capacity worker state")
+		}
+	}
+	assertProblemCode(t, result.Observed.Problems, "worker-refresh-error")
+}
+
+func TestUnregisteredWorkerPersistsWhenRemovalAndFinalInventoryFail(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeDisabled)
+	harness.runtime.workers = []model.Worker{{
+		ID: "orphan", Name: "runner-orphan", PoolID: "org", RunnerID: 42, State: model.WorkerIdle,
+	}}
+	harness.scaleSets.MissingRunners[42] = true
+	removeErr := errors.New("graceful container removal failed")
+	finalInventoryErr := errors.New("final Docker inventory failed")
+	harness.runtime.removeErr = removeErr
+	harness.runtime.listErr = finalInventoryErr
+	harness.runtime.listErrAt = 3
+
+	result, err := harness.controller.Step(context.Background())
+	if !errors.Is(err, removeErr) || !errors.Is(err, finalInventoryErr) {
+		t.Fatalf("error = %v, want removal and final inventory failures", err)
+	}
+	if len(result.Observed.Workers) != 1 || result.Observed.Workers[0].State != model.WorkerUnregistered {
+		t.Fatalf("transient unregistered evidence was lost: %#v", result.Observed.Workers)
+	}
+	persisted, loadErr := harness.store.LoadObserved(context.Background())
+	if loadErr != nil || len(persisted.Workers) != 1 || persisted.Workers[0].State != model.WorkerUnregistered {
+		t.Fatalf("persisted workers = %#v, error = %v", persisted.Workers, loadErr)
+	}
+	assertProblemCode(t, result.Observed.Problems, "unregistered-worker-remove-error")
+	assertProblemCode(t, result.Observed.Problems, "worker-final-inventory-error")
+}
+
 func TestDurableActiveJobOverridesJobWritableIdleState(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeDisabled)
 	harness.runtime.workers = []model.Worker{{ID: "idle", Name: "runner", PoolID: "org", RunnerID: 44, State: model.WorkerIdle}}
 	harness.jobs.active["org\x00runner"] = "job-1"
+	harness.scaleSets.MissingRunners[44] = true
 	for range 2 {
 		if _, err := harness.controller.Step(context.Background()); err != nil {
 			t.Fatal(err)
@@ -406,6 +526,11 @@ func TestDurableActiveJobOverridesJobWritableIdleState(t *testing.T) {
 	}
 	if !harness.runtime.hasWorker("idle") {
 		t.Fatal("job-writable idle state overrode durable active-job evidence")
+	}
+	for _, call := range harness.scaleSets.SnapshotCalls() {
+		if call.Operation == "runner-registration" && call.ScaleSetID == 44 {
+			t.Fatal("active-job evidence was ignored in favor of a registration lookup")
+		}
 	}
 }
 
@@ -1044,8 +1169,10 @@ type testRuntime struct {
 	starts          int
 	lists           int
 	listErr         error
+	listErrAt       int
 	forced          []string
 	acquireOnRemove string
+	removeErr       error
 	trace           *callTrace
 	closed          bool
 	startErr        error
@@ -1061,7 +1188,7 @@ func (r *testRuntime) List(ctx context.Context) ([]model.Worker, error) {
 	if r.trace != nil {
 		r.trace.add("workers:list")
 	}
-	if r.listErr != nil {
+	if r.listErr != nil && (r.listErrAt == 0 || r.lists == r.listErrAt) {
 		return nil, r.listErr
 	}
 	result := append([]model.Worker(nil), r.workers...)
@@ -1101,6 +1228,9 @@ func (r *testRuntime) RemoveIfIdle(ctx context.Context, id string) (bool, error)
 	for index := range r.workers {
 		if r.workers[index].ID != id {
 			continue
+		}
+		if r.removeErr != nil {
+			return false, r.removeErr
 		}
 		if r.acquireOnRemove == id {
 			r.workers[index].State = model.WorkerBusy

@@ -23,6 +23,9 @@ const (
 
 type JobEventSink interface {
 	JobStarted(context.Context, string, string, string) error
+	// JobCompleted receives only completions with an exact runner identity.
+	// Valid canceled-before-assignment events are not runner-indexable and are
+	// acknowledged without calling this method.
 	JobCompleted(context.Context, string, string, string, string) error
 }
 
@@ -195,6 +198,38 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	if message.Statistics == nil {
 		return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "poll", Err: errors.New("message did not contain authoritative statistics")}
 	}
+	// Validate the whole lifecycle batch before the first durable write. A
+	// malformed completion must not leave a newly-started job active forever
+	// merely because its start happened earlier in this same message.
+	startedJobIDs := make(map[string]struct{}, len(message.JobStartedMessages))
+	for _, started := range message.JobStartedMessages {
+		if started == nil || strings.TrimSpace(started.JobID) == "" {
+			return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "validate job-started event", Err: errors.New("job-started event is nil or missing its job ID")}
+		}
+		startedJobIDs[strings.TrimSpace(started.JobID)] = struct{}{}
+	}
+	identifiedCompletions := make([]*actionsscale.JobCompleted, 0, len(message.JobCompletedMessages))
+	for _, completed := range message.JobCompletedMessages {
+		identified, validationErr := validateJobCompletion(completed)
+		if validationErr != nil {
+			return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "validate job-completed event", Err: validationErr}
+		}
+		if !identified {
+			jobID := strings.TrimSpace(completed.JobID)
+			if _, startedInBatch := startedJobIDs[jobID]; startedInBatch {
+				return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "validate job-completed event", Err: errors.New("anonymous completion conflicts with a job-started event in the same batch")}
+			}
+			if _, alreadyActive := c.activeRunnerForJob(target.definition.TargetID, jobID); alreadyActive {
+				return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "validate job-completed event", Err: errors.New("anonymous completion conflicts with an active runner job")}
+			}
+			// GitHub emits a terminal completion with no runner identity when a
+			// job is canceled before assignment. It has no runner-index state to
+			// persist or clear, but is still a valid lifecycle event that must not
+			// poison message acknowledgement and later capacity updates.
+			continue
+		}
+		identifiedCompletions = append(identifiedCompletions, completed)
+	}
 	// Persist lifecycle identity before either acquiring or acknowledging the
 	// message. Redelivery is expected, so the sink contract is idempotent.
 	for _, started := range message.JobStartedMessages {
@@ -202,7 +237,7 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-started event", Err: err}
 		}
 	}
-	for _, completed := range message.JobCompletedMessages {
+	for _, completed := range identifiedCompletions {
 		if err := c.opts.Events.JobCompleted(ctx, target.definition.TargetID, completed.RunnerName, completed.JobID, completed.Result); err != nil {
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-completed event", Err: err}
 		}
@@ -214,7 +249,7 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	for _, started := range message.JobStartedMessages {
 		c.setActiveJob(target.definition.TargetID, started.RunnerName, started.JobID)
 	}
-	for _, completed := range message.JobCompletedMessages {
+	for _, completed := range identifiedCompletions {
 		c.clearActiveJob(target.definition.TargetID, completed.RunnerName)
 	}
 	// Preserve the pinned official listener's acknowledge-before-acquire order.
@@ -237,6 +272,37 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	return Statistics{TotalAssignedJobs: target.statistics.TotalAssignedJobs}, nil
 }
 
+// validateJobCompletion returns true only when the completion has an exact
+// runner identity that belongs in the durable runner/job index. GitHub's
+// canceled-before-assignment event deliberately has neither identity field;
+// accepting that shape is restricted to a real job ID, cancellation result,
+// and the absence of a runner-assignment timestamp.
+func validateJobCompletion(completed *actionsscale.JobCompleted) (bool, error) {
+	if completed == nil {
+		return false, errors.New("job-completed event is nil")
+	}
+	if strings.TrimSpace(completed.JobID) == "" {
+		return false, errors.New("job-completed event is missing its job ID")
+	}
+	result := strings.TrimSpace(completed.Result)
+	if result == "" {
+		return false, errors.New("job-completed event is missing its result")
+	}
+	if completed.RunnerID == 0 && completed.RunnerName == "" {
+		if !completed.RunnerAssignTime.IsZero() {
+			return false, errors.New("job-completed event without a runner identity has a runner assignment time")
+		}
+		if !strings.EqualFold(result, "canceled") && !strings.EqualFold(result, "cancelled") {
+			return false, errors.New("job-completed event without a runner identity must be canceled")
+		}
+		return false, nil
+	}
+	if completed.RunnerID <= 0 || strings.TrimSpace(completed.RunnerName) == "" {
+		return false, errors.New("job-completed event has a partial runner identity")
+	}
+	return true, nil
+}
+
 func (c *OfficialClient) CreateJITConfig(ctx context.Context, identity Identity, runnerName string) (JITConfig, error) {
 	if runnerName == "" {
 		return JITConfig{}, &Error{Kind: ErrorInvalid, Operation: "create JIT configuration", Err: errors.New("runner name is required")}
@@ -257,6 +323,38 @@ func (c *OfficialClient) CreateJITConfig(ctx context.Context, identity Identity,
 		return JITConfig{}, &Error{Kind: ErrorInvalid, Operation: "create JIT configuration", Err: errors.New("GitHub returned an invalid JIT runner response")}
 	}
 	return NewRunnerJITConfig([]byte(result.EncodedJITConfig), int64(result.Runner.ID)), nil
+}
+
+func (c *OfficialClient) RunnerRegistered(ctx context.Context, poolID string, runnerID int64, runnerName string) (bool, error) {
+	if poolID == "" || runnerID <= 0 || runnerName == "" {
+		return false, &Error{Kind: ErrorInvalid, Operation: "get runner", Err: errors.New("pool ID, positive runner ID, and runner name are required")}
+	}
+	c.mu.RLock()
+	target := c.targets[poolID]
+	c.mu.RUnlock()
+	if target == nil {
+		return false, &Error{Kind: ErrorNotFound, Operation: "get runner", Err: errors.New("scale-set target is not initialized")}
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.scaleSet == nil || target.scaleSet.ID <= 0 {
+		return false, &Error{Kind: ErrorNotFound, Operation: "get runner", Err: errors.New("scale set is not initialized")}
+	}
+	runner, err := target.api.GetRunner(ctx, int(runnerID))
+	if err != nil {
+		// Only the Scale Set Client's parsed AgentNotFoundException proves
+		// this exact registration is gone. A generic HTTP 404 can come from
+		// token refresh, admin-connection discovery, or a wrong scope and must
+		// remain an error so cleanup fails closed.
+		if errors.Is(err, actionsscale.RunnerNotFoundError) {
+			return false, nil
+		}
+		return false, translateOfficialError("get runner", err)
+	}
+	if runner == nil || int64(runner.ID) != runnerID || runner.Name != runnerName || runner.RunnerScaleSetID != 0 && runner.RunnerScaleSetID != target.scaleSet.ID {
+		return false, &Error{Kind: ErrorInvalid, Operation: "get runner", Err: errors.New("GitHub returned a mismatched runner identity")}
+	}
+	return true, nil
 }
 
 func (c *OfficialClient) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
@@ -362,6 +460,17 @@ func (c *OfficialClient) clearActiveJob(poolID, runnerName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.activeJobs[poolID], runnerName)
+}
+
+func (c *OfficialClient) activeRunnerForJob(poolID, jobID string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for runnerName, activeJobID := range c.activeJobs[poolID] {
+		if activeJobID == jobID {
+			return runnerName, true
+		}
+	}
+	return "", false
 }
 
 func validateDefinition(definition Definition) error {
@@ -486,6 +595,7 @@ type officialAPI interface {
 	DeleteRunnerScaleSet(context.Context, int) error
 	MessageSession(context.Context, int, string) (officialSession, error)
 	GenerateJITConfig(context.Context, *actionsscale.RunnerScaleSetJitRunnerSetting, int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error)
+	GetRunner(context.Context, int) (*actionsscale.RunnerReference, error)
 	RemoveRunner(context.Context, int64) error
 }
 
@@ -541,6 +651,9 @@ func (c *officialAPIWrapper) MessageSession(ctx context.Context, scaleSetID int,
 }
 func (c *officialAPIWrapper) GenerateJITConfig(ctx context.Context, setting *actionsscale.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error) {
 	return c.Client.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
+}
+func (c *officialAPIWrapper) GetRunner(ctx context.Context, runnerID int) (*actionsscale.RunnerReference, error) {
+	return c.Client.GetRunner(ctx, runnerID)
 }
 func (c *officialAPIWrapper) RemoveRunner(ctx context.Context, runnerID int64) error {
 	return c.Client.RemoveRunner(ctx, runnerID)
