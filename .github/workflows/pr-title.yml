@@ -3,12 +3,11 @@ name: pr-title
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
-  merge_group:
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
