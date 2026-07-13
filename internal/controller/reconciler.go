@@ -378,7 +378,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
 	})
-	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, provisional, r.deps.Clock.Now().UTC(), operationProblems)
+	pollPlan := provisional
+	pollPlan.AdvertisedCapacity = sequenceCapacityTransfer(previous, provisional.AdvertisedCapacity)
+	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, r.deps.Clock.Now().UTC(), operationProblems)
 	var (
 		stopPollWatch context.CancelFunc
 		pollWatchDone chan pollCadenceResult
@@ -390,7 +392,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pollWatchDone = make(chan pollCadenceResult, 1)
 		cadenceState := pollCadenceState{
 			desired: desired, observed: checkpoint, pools: pools, workers: workers, desktop: desktop,
-			advertised: provisional.AdvertisedCapacity, operationProblems: operationProblems,
+			advertised: pollPlan.AdvertisedCapacity, operationProblems: operationProblems,
 			forcedZero:    recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
 			checkpointErr: checkpointErr,
 		}
@@ -419,7 +421,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		polls.Add(1)
 		go func() {
 			defer polls.Done()
-			advertised := provisional.AdvertisedCapacity[pool.TargetID]
+			advertised := pollPlan.AdvertisedCapacity[pool.TargetID]
 			stats, identity, statsErr := r.statistics(ctx, r.target(pool.TargetID), pool.Identity, advertised)
 			pollResults <- pollResult{index: index, stats: stats, identity: identity, advertised: advertised, err: statsErr}
 		}()
@@ -759,7 +761,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 		updatedAt := r.poolAcknowledgementTransitionAt(
 			target.ID, priorPool, pool.Identity.ScaleSetID, pool.Identity.ListenerID,
-			actualCapacity, provisional.AdvertisedCapacity[target.ID], capacityAcknowledged[target.ID], now,
+			actualCapacity, pollPlan.AdvertisedCapacity[target.ID], capacityAcknowledged[target.ID], now,
 		)
 		observedPools = append(observedPools, model.PoolObservation{
 			ID: target.ID, ScaleSetID: pool.Identity.ScaleSetID, ListenerID: pool.Identity.ListenerID,
