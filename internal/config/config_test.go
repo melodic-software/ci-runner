@@ -102,6 +102,65 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadConfiguredTelemetry(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "paths:\n", `telemetry:
+  endpoint: http://127.0.0.1:19889
+  protocol: grpc
+  traces: true
+  metrics: true
+  metricExportInterval: 15s
+  metricExportTimeout: 10s
+paths:
+`, 1)
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Telemetry.Enabled() || cfg.Telemetry.Protocol != "grpc" || cfg.Telemetry.MetricExportInterval.Duration != 15*time.Second {
+		t.Fatalf("telemetry = %#v", cfg.Telemetry)
+	}
+}
+
+func TestValidateRejectsInvalidTelemetry(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"missing endpoint": `telemetry:
+  protocol: grpc
+  traces: true
+`,
+		"invalid endpoint": `telemetry:
+  endpoint: file:///tmp/collector
+  protocol: grpc
+  traces: true
+`,
+		"invalid protocol": `telemetry:
+  endpoint: http://127.0.0.1:19889
+  protocol: thrift
+  traces: true
+`,
+		"no signals": `telemetry:
+  endpoint: http://127.0.0.1:19889
+  protocol: grpc
+`,
+		"missing metric cadence": `telemetry:
+  endpoint: http://127.0.0.1:19889
+  protocol: grpc
+  metrics: true
+`,
+	}
+	for name, block := range tests {
+		name, block := name, block
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := strings.Replace(validYAML, "paths:\n", block+"paths:\n", 1)
+			if _, err := Load(strings.NewReader(input)); err == nil || !strings.Contains(err.Error(), "telemetry") {
+				t.Fatalf("error = %v, want telemetry validation failure", err)
+			}
+		})
+	}
+}
+
 func TestTargetWorkerOverridesInheritUnspecifiedGlobalValues(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "      warmIdle: 1", `      resources:

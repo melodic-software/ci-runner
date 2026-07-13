@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTelemetryIsDisabledWhenStandardOTELConfigurationIsUnset(t *testing.T) {
@@ -19,6 +20,38 @@ func TestTelemetryIsDisabledWhenStandardOTELConfigurationIsUnset(t *testing.T) {
 	}
 	if err := provider.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConfiguredExportUsesReviewedSettingsInsteadOfSignalEnvironment(t *testing.T) {
+	for _, variable := range telemetryEnvironmentVariables() {
+		t.Setenv(variable, "")
+	}
+	t.Setenv("OTEL_SDK_DISABLED", "true")
+	t.Setenv("OTEL_TRACES_EXPORTER", "none")
+	provider, problems := NewFromEnv(context.Background(), Options{
+		HostID: "melo-desk-001", Version: "1.2.3",
+		Export: &ExportConfig{
+			Endpoint: "http://127.0.0.1:19889", Protocol: "grpc",
+			Traces: true, Metrics: true,
+			MetricExportInterval: 15 * time.Second, MetricExportTimeout: 10 * time.Second,
+		},
+	})
+	if len(problems) != 0 || !provider.enabled || len(provider.shutdown) != 2 {
+		t.Fatalf("configured provider = %#v, problems = %v", provider, problems)
+	}
+	if err := provider.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPSignalEndpointUsesStandardSignalPaths(t *testing.T) {
+	t.Parallel()
+	if got := httpSignalEndpoint("http://collector:4318/base/", "traces"); got != "http://collector:4318/base/v1/traces" {
+		t.Fatalf("trace endpoint = %q", got)
+	}
+	if got := httpSignalEndpoint("http://collector:4318", "metrics"); got != "http://collector:4318/v1/metrics" {
+		t.Fatalf("metric endpoint = %q", got)
 	}
 }
 

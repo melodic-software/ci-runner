@@ -32,6 +32,19 @@ type Options struct {
 	HostID  string
 	Version string
 	OnError func(error)
+	Export  *ExportConfig
+}
+
+// ExportConfig is the reviewed host configuration for OTLP export. When it is
+// present, signal enablement, endpoint, protocol, and metric cadence come from
+// the host YAML rather than ambient process environment.
+type ExportConfig struct {
+	Endpoint             string
+	Protocol             string
+	Traces               bool
+	Metrics              bool
+	MetricExportInterval time.Duration
+	MetricExportTimeout  time.Duration
 }
 
 // Provider owns only the exporters that were explicitly enabled. An empty
@@ -77,17 +90,28 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 	if options.HostID == "" || options.Version == "" {
 		return provider, []error{errors.New("telemetry service identity requires host ID and version")}
 	}
-	disabled, err := sdkDisabled(os.LookupEnv)
-	if err != nil {
-		return provider, []error{err}
+	var traceEnabled, metricEnabled bool
+	var traceProtocol, metricProtocol, endpoint string
+	metricInterval, metricTimeout := defaultMetricExportInterval, defaultMetricExportTimeout
+	var problems []error
+	if options.Export != nil {
+		traceEnabled, metricEnabled = options.Export.Traces, options.Export.Metrics
+		traceProtocol, metricProtocol = options.Export.Protocol, options.Export.Protocol
+		endpoint = options.Export.Endpoint
+		metricInterval, metricTimeout = options.Export.MetricExportInterval, options.Export.MetricExportTimeout
+	} else {
+		disabled, err := sdkDisabled(os.LookupEnv)
+		if err != nil {
+			return provider, []error{err}
+		}
+		if disabled {
+			return provider, nil
+		}
+		var traceErr, metricErr error
+		traceEnabled, traceErr = signalEnabled(os.LookupEnv, "OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+		metricEnabled, metricErr = signalEnabled(os.LookupEnv, "OTEL_METRICS_EXPORTER", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+		problems = compactErrors(traceErr, metricErr)
 	}
-	if disabled {
-		return provider, nil
-	}
-
-	traceEnabled, traceErr := signalEnabled(os.LookupEnv, "OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-	metricEnabled, metricErr := signalEnabled(os.LookupEnv, "OTEL_METRICS_EXPORTER", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-	problems := compactErrors(traceErr, metricErr)
 	if !traceEnabled && !metricEnabled {
 		return provider, problems
 	}
@@ -103,10 +127,13 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 
 	var tracerProvider apiTrace.TracerProvider = apiTrace.NewNoopTracerProvider()
 	if traceEnabled {
-		protocol, protocolErr := signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+		protocol, protocolErr := traceProtocol, error(nil)
+		if options.Export == nil {
+			protocol, protocolErr = signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+		}
 		if protocolErr != nil {
 			problems = append(problems, protocolErr)
-		} else if exporter, exporterErr := newTraceExporter(ctx, protocol); exporterErr != nil {
+		} else if exporter, exporterErr := newTraceExporter(ctx, protocol, endpoint); exporterErr != nil {
 			problems = append(problems, fmt.Errorf("initialize OTLP trace exporter: %w", exporterErr))
 		} else {
 			traces := sdktrace.NewTracerProvider(sdktrace.WithResource(identity), sdktrace.WithBatcher(exporter))
@@ -118,12 +145,17 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 
 	var meterProvider apiMetric.MeterProvider = metricnoop.NewMeterProvider()
 	if metricEnabled {
-		protocol, protocolErr := signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
-		interval, intervalErr := millisecondsEnvironment(os.LookupEnv, "OTEL_METRIC_EXPORT_INTERVAL", defaultMetricExportInterval)
-		timeout, timeoutErr := millisecondsEnvironment(os.LookupEnv, "OTEL_METRIC_EXPORT_TIMEOUT", defaultMetricExportTimeout)
+		protocol, protocolErr := metricProtocol, error(nil)
+		interval, timeout := metricInterval, metricTimeout
+		var intervalErr, timeoutErr error
+		if options.Export == nil {
+			protocol, protocolErr = signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
+			interval, intervalErr = millisecondsEnvironment(os.LookupEnv, "OTEL_METRIC_EXPORT_INTERVAL", defaultMetricExportInterval)
+			timeout, timeoutErr = millisecondsEnvironment(os.LookupEnv, "OTEL_METRIC_EXPORT_TIMEOUT", defaultMetricExportTimeout)
+		}
 		if err := errors.Join(protocolErr, intervalErr, timeoutErr); err != nil {
 			problems = append(problems, err)
-		} else if exporter, exporterErr := newMetricExporter(ctx, protocol); exporterErr != nil {
+		} else if exporter, exporterErr := newMetricExporter(ctx, protocol, endpoint); exporterErr != nil {
 			problems = append(problems, fmt.Errorf("initialize OTLP metric exporter: %w", exporterErr))
 		} else {
 			reader := metric.NewPeriodicReader(exporter, metric.WithInterval(interval), metric.WithTimeout(timeout))
@@ -143,18 +175,34 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 	return provider, problems
 }
 
-func newTraceExporter(ctx context.Context, protocol string) (sdktrace.SpanExporter, error) {
+func newTraceExporter(ctx context.Context, protocol, endpoint string) (sdktrace.SpanExporter, error) {
 	if protocol == "grpc" {
+		if endpoint != "" {
+			return otlptracegrpc.New(ctx, otlptracegrpc.WithEndpointURL(endpoint))
+		}
 		return otlptracegrpc.New(ctx)
+	}
+	if endpoint != "" {
+		return otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(httpSignalEndpoint(endpoint, "traces")))
 	}
 	return otlptracehttp.New(ctx)
 }
 
-func newMetricExporter(ctx context.Context, protocol string) (metric.Exporter, error) {
+func newMetricExporter(ctx context.Context, protocol, endpoint string) (metric.Exporter, error) {
 	if protocol == "grpc" {
+		if endpoint != "" {
+			return otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpointURL(endpoint))
+		}
 		return otlpmetricgrpc.New(ctx)
 	}
+	if endpoint != "" {
+		return otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(httpSignalEndpoint(endpoint, "metrics")))
+	}
 	return otlpmetrichttp.New(ctx)
+}
+
+func httpSignalEndpoint(base, signal string) string {
+	return strings.TrimRight(base, "/") + "/v1/" + signal
 }
 
 type environmentLookup func(string) (string, bool)
