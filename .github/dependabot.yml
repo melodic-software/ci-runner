@@ -4,12 +4,12 @@ updates:
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: daily
+      interval: weekly
       time: '05:20'
       timezone: America/New_York
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     commit-message:
       prefix: build
     groups:
@@ -27,7 +27,7 @@ updates:
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: daily
+      interval: weekly
       time: '05:30'
       timezone: America/New_York
     cooldown:
@@ -48,12 +48,12 @@ updates:
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: daily
+      interval: weekly
       time: '05:40'
       timezone: America/New_York
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     commit-message:
       prefix: build
     groups:
