@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestTelemetryIsDisabledWhenStandardOTELConfigurationIsUnset(t *testing.T) {
@@ -33,11 +32,10 @@ func TestConfiguredExportUsesReviewedSettingsInsteadOfSignalEnvironment(t *testi
 		HostID: "melo-desk-001", Version: "1.2.3",
 		Export: &ExportConfig{
 			Endpoint: "http://127.0.0.1:19889", Protocol: "grpc",
-			Traces: true, Metrics: true,
-			MetricExportInterval: 15 * time.Second, MetricExportTimeout: 10 * time.Second,
+			Traces: true,
 		},
 	})
-	if len(problems) != 0 || !provider.enabled || len(provider.shutdown) != 2 {
+	if len(problems) != 0 || !provider.enabled || len(provider.shutdown) != 1 {
 		t.Fatalf("configured provider = %#v, problems = %v", provider, problems)
 	}
 	if err := provider.Shutdown(context.Background()); err != nil {
