@@ -133,15 +133,24 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 		if !state.forcedZero {
 			power, powerErr := r.deps.Power.Snapshot(ctx)
 			resources, resourceErr := r.deps.Resources.Snapshot(ctx)
+			workers, workerErr := r.deps.Workers.List(ctx)
+			if workerErr == nil {
+				workers, workerErr = r.enrichWorkerJobs(ctx, workers)
+			}
 			if ctx.Err() != nil {
 				return result
 			}
-			observationErr = errors.Join(powerErr, resourceErr)
+			observationErr = errors.Join(powerErr, resourceErr, workerErr)
 			if observationErr == nil {
+				if !sameWorkerInventory(state.workers, workers) {
+					cancel(errReconcileInputsChanged)
+					return result
+				}
 				plan := BuildPlan(PlanInput{
 					Config: r.config, Desired: state.desired, Previous: checkpoint, Pools: state.pools,
-					Workers: state.workers, Resources: resources, Power: power, Desktop: state.desktop, Now: now,
+					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop, Now: now,
 				})
+				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
 				checkpoint = r.pollCheckpoint(checkpoint, state.pools, state.workers, resources, power, state.desktop, plan, now, state.operationProblems)
 				state.observed = checkpoint
 				result.observed = checkpoint
@@ -200,4 +209,28 @@ func capacityDecreased(previous, current map[string]int) bool {
 		}
 	}
 	return false
+}
+
+func sameWorkerInventory(left, right []model.Worker) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	workers := make(map[string]model.Worker, len(left))
+	for _, worker := range left {
+		if worker.ID == "" {
+			return false
+		}
+		if _, duplicate := workers[worker.ID]; duplicate {
+			return false
+		}
+		workers[worker.ID] = worker
+	}
+	for _, worker := range right {
+		prior, found := workers[worker.ID]
+		if !found || prior != worker {
+			return false
+		}
+		delete(workers, worker.ID)
+	}
+	return len(workers) == 0
 }

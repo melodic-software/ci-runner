@@ -195,6 +195,19 @@ and no devices. Admission also honors configurable host memory/CPU thresholds,
 hysteresis, global worker limits, and laptop AC-only policy. Active workers are
 never killed to reclaim resources.
 
+An enabled pool can keep one excess healthy idle runner as bounded burst
+inventory instead of advertising zero capacity for the whole pool to retire it.
+All pools share the host-wide advertised-capacity budget; when no safe slot is
+available, the excess runner falls back to quiescence. The next admitted job
+naturally consumes retained ephemeral inventory. Larger downscales and explicit
+zero-capacity modes retain the two-poll quiescence requirement before exact
+runner deregistration, so assignment races still fail closed.
+
+While a GitHub listener poll is open, the controller refreshes managed worker
+inventory on the normal reconciliation cadence. A completed ephemeral container
+cancels the stale poll immediately so authoritative assignments can start
+replacement workers without waiting for the listener timeout.
+
 Targets may optionally override individual fields from the global
 `resources.worker` profile. Every omitted field inherits the global value; the
 effective profile must still satisfy the same CPU, memory, total memory-plus-swap,

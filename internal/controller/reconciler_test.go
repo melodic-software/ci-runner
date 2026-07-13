@@ -456,7 +456,7 @@ func TestEnabledQuiesceResumesAfterRestartAndSecondZeroPoll(t *testing.T) {
 	}
 }
 
-func TestCanceledAssignmentEventuallyQuiescesUnusedIdleRunner(t *testing.T) {
+func TestSingleExcessIdleRunnerRemainsAvailableWithoutPoolQuiesce(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.runtime.workers = []model.Worker{
@@ -468,16 +468,22 @@ func TestCanceledAssignmentEventuallyQuiescesUnusedIdleRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{}
-	for range 4 {
-		if _, err := harness.controller.Step(context.Background()); err != nil {
+	for range 3 {
+		result, err := harness.controller.Step(context.Background())
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(harness.runtime.snapshot()) == 1 {
-			break
+		if result.Observed.Phase != model.PhaseReady || result.Observed.Pools[0].MaxCapacity != 3 {
+			t.Fatalf("single excess worker interrupted pool service: %#v", result.Observed)
 		}
 	}
-	if len(harness.runtime.snapshot()) != 1 {
-		t.Fatalf("canceled assignment left excess worker online: %#v", harness.runtime.snapshot())
+	if len(harness.runtime.snapshot()) != 2 {
+		t.Fatalf("single excess worker was retired instead of left for natural convergence: %#v", harness.runtime.snapshot())
+	}
+	for _, call := range harness.scaleSets.SnapshotCalls() {
+		if call.Operation == "remove-runner" {
+			t.Fatal("single excess runner was deregistered while the pool remained available")
+		}
 	}
 }
 

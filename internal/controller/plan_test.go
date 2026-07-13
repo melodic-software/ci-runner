@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -640,7 +641,91 @@ func TestCapacityOverrideZeroIsDataOnlyPause(t *testing.T) {
 	assertRemoved(t, plan.Remove, "idle")
 }
 
-func TestEnabledPoolQuiescesBeforeShrinkingExcessIdleWorkers(t *testing.T) {
+func TestEnabledPoolKeepsSingleExcessIdleWorkerAvailableForNaturalConvergence(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 12
+	input.Config.Resources.Worker.Memory = config.ByteSize(2 << 30)
+	input.Config.GitHub.Targets[0].MaxCapacity = 12
+	input.Config.GitHub.Targets[0].WarmIdle = 3
+	input.Workers = []model.Worker{
+		{ID: "idle-1", PoolID: "org", State: model.WorkerIdle},
+		{ID: "idle-2", PoolID: "org", State: model.WorkerIdle},
+		{ID: "idle-3", PoolID: "org", State: model.WorkerIdle},
+		{ID: "idle-4", PoolID: "org", State: model.WorkerIdle},
+	}
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["org"] != 3 || plan.AdvertisedCapacity["org"] != 12 {
+		t.Fatalf("desired=%d capacity=%d, want three warm workers and uninterrupted service capacity", plan.DesiredWorkers["org"], plan.AdvertisedCapacity["org"])
+	}
+	if plan.Phase != model.PhaseReady {
+		t.Fatalf("phase = %s, want ready", plan.Phase)
+	}
+	assertNotRemoved(t, plan.Remove, "idle-1", "idle-2", "idle-3", "idle-4")
+}
+
+func TestSingleExcessBurstInventorySharesOneGlobalCapacityBudget(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 12
+	input.Config.Resources.Worker.Memory = config.ByteSize(2 << 30)
+	input.Config.GitHub.Targets[0] = config.Target{ID: "light", MaxCapacity: 12, WarmIdle: 11, Priority: 0}
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "build", MaxCapacity: 12, WarmIdle: 0, Priority: 10},
+	)
+	input.Pools = []PoolSnapshot{{TargetID: "light", Ready: true}, {TargetID: "build", Ready: true}}
+	for index := range 12 {
+		input.Workers = append(input.Workers, model.Worker{ID: fmt.Sprintf("light-%d", index), PoolID: "light", State: model.WorkerIdle})
+	}
+	input.Workers = append(input.Workers, model.Worker{ID: "build-0", PoolID: "build", State: model.WorkerIdle})
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["light"] != 11 || plan.DesiredWorkers["build"] != 0 {
+		t.Fatalf("desired workers = %#v, want 11/0", plan.DesiredWorkers)
+	}
+	if plan.AdvertisedCapacity["light"] != 11 || plan.AdvertisedCapacity["build"] != 1 {
+		t.Fatalf("advertised capacity = %#v, want zero-warm pool preserved inside 11/1 global budget", plan.AdvertisedCapacity)
+	}
+	if totalAdvertisedCapacity(plan.AdvertisedCapacity) > input.Config.Resources.MaximumConcurrentWorkers {
+		t.Fatalf("advertised capacity %#v exceeds host limit %d", plan.AdvertisedCapacity, input.Config.Resources.MaximumConcurrentWorkers)
+	}
+	assertNotRemoved(t, plan.Remove, "build-0", "light-0")
+}
+
+func TestWarmSevenAcrossTwoPoolsNeverAdvertisesPastHostLimit(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 12
+	input.Config.Resources.Worker.Memory = config.ByteSize(2 << 30)
+	input.Config.GitHub.Targets[0] = config.Target{ID: "light", MaxCapacity: 12, WarmIdle: 7, Priority: 0}
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "build", MaxCapacity: 12, WarmIdle: 7, Priority: 10},
+	)
+	input.Pools = []PoolSnapshot{{TargetID: "light", Ready: true}, {TargetID: "build", Ready: true}}
+	for index := range 8 {
+		input.Workers = append(input.Workers, model.Worker{ID: fmt.Sprintf("light-%d", index), PoolID: "light", State: model.WorkerIdle})
+	}
+	for index := range 6 {
+		input.Workers = append(input.Workers, model.Worker{ID: fmt.Sprintf("build-%d", index), PoolID: "build", State: model.WorkerIdle})
+	}
+
+	plan := BuildPlan(input)
+
+	if plan.DesiredWorkers["light"] != 7 || plan.DesiredWorkers["build"] != 5 {
+		t.Fatalf("desired workers = %#v, want globally allocated warm inventory 7/5", plan.DesiredWorkers)
+	}
+	if got := totalAdvertisedCapacity(plan.AdvertisedCapacity); got != 12 {
+		t.Fatalf("advertised capacity = %#v (sum %d), want host-bounded sum 12", plan.AdvertisedCapacity, got)
+	}
+	if plan.AdvertisedCapacity["light"] == 0 || plan.AdvertisedCapacity["build"] == 0 {
+		t.Fatalf("one-worker retention blacked out a pool: %#v", plan.AdvertisedCapacity)
+	}
+}
+
+func TestEnabledPoolQuiescesBeforeShrinkingMultipleExcessIdleWorkers(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
 	input.Workers = []model.Worker{
@@ -768,6 +853,14 @@ func totalStarts(decisions []StartDecision) int {
 	total := 0
 	for _, decision := range decisions {
 		total += decision.Count
+	}
+	return total
+}
+
+func totalAdvertisedCapacity(capacities map[string]int) int {
+	total := 0
+	for _, capacity := range capacities {
+		total += capacity
 	}
 	return total
 }

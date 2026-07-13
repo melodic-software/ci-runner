@@ -178,6 +178,59 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	}
 }
 
+func TestWorkerExitInterruptsLongPollAndStartsAssignedReplacements(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	harness.runtime.workers = []model.Worker{{
+		ID: "completed", Name: "runner-completed", PoolID: "org", RunnerID: 1000, State: model.WorkerIdle,
+	}}
+	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 1}
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan ReconcileResult, 1)
+	go func() {
+		result, _ := harness.controller.Step(context.Background())
+		done <- result
+	}()
+	waitForSignal(t, blocking.entered, "listener poll did not begin")
+
+	harness.runtime.mu.Lock()
+	harness.runtime.workers = nil
+	harness.runtime.mu.Unlock()
+
+	select {
+	case result := <-done:
+		if result.Observed.Pools[0].TotalAssignedJobs != 1 || result.Observed.Pools[0].DesiredWorkers != 2 {
+			t.Fatalf("assigned replacement plan was not observed: %#v", result.Observed)
+		}
+		if harness.runtime.startCount() != 2 || len(result.Observed.Workers) != 2 {
+			t.Fatalf("completed worker blocked replacement starts: starts=%d workers=%#v", harness.runtime.startCount(), result.Observed.Workers)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completed worker remained stale behind the listener long poll")
+	}
+	if got := blocking.capacitiesSnapshot(); len(got) < 2 {
+		t.Fatalf("worker exit did not restart listener poll: capacities=%v", got)
+	}
+}
+
+func TestSameWorkerInventoryIgnoresOrderingButDetectsLifecycleChanges(t *testing.T) {
+	t.Parallel()
+	left := []model.Worker{
+		{ID: "a", PoolID: "org", State: model.WorkerIdle},
+		{ID: "b", PoolID: "org", State: model.WorkerIdle},
+	}
+	right := []model.Worker{left[1], left[0]}
+	if !sameWorkerInventory(left, right) {
+		t.Fatal("worker ordering was treated as an inventory change")
+	}
+	right[0].State = model.WorkerExited
+	if sameWorkerInventory(left, right) {
+		t.Fatal("worker lifecycle change was ignored")
+	}
+}
+
 func TestPoolAcknowledgementTransitionTimestampDoesNotResetWhilePending(t *testing.T) {
 	t.Parallel()
 	started := time.Unix(100, 0).UTC()

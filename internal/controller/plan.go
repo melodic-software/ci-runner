@@ -279,6 +279,12 @@ func BuildPlan(input PlanInput) Plan {
 	capacityDebt := busyWorkers > hostLimit
 	quiescing := false
 	advertisable := make(map[string]bool, len(targets))
+	type burstCandidate struct {
+		poolID      string
+		maxCapacity int
+		removable   []model.Worker
+	}
+	burstCandidates := make([]burstCandidate, 0, len(targets))
 	for _, target := range targets {
 		desired := plan.DesiredWorkers[target.ID]
 		active := 0
@@ -297,24 +303,74 @@ func BuildPlan(input PlanInput) Plan {
 		if active < desired {
 			plan.Start = append(plan.Start, StartDecision{PoolID: target.ID, Count: desired - active})
 		}
-		// An enabled pool must quiesce before it shrinks. Capacity remains zero
-		// while active exceeds desired; Reconciler requires two authoritative
-		// zero-assignment polls plus durable no-active-job evidence before any
-		// selected worker is deregistered and removed. The next cycle restores
-		// desired capacity after inventory proves the excess is gone.
+		// A single excess registered worker is useful burst inventory. Keep it
+		// eligible instead of taking the entire pool to zero just to retire one
+		// runner. The next job can consume that ephemeral runner and converge the
+		// pool naturally without a deregistration race or availability blackout.
+		//
+		// Larger or explicit zero-capacity downscales still quiesce. Reconciler
+		// requires two authoritative zero-assignment polls plus durable
+		// no-active-job evidence before any selected worker is deregistered and
+		// removed.
 		if active > desired {
-			quiescing = true
 			excess := active - desired
-			for _, worker := range removable {
-				if excess == 0 {
-					break
+			if excess == 1 && hostLimit > 0 && target.MaxCapacity > 0 && !capacityDebt && ready[target.ID] && !assignmentOverCap[target.ID] {
+				// Begin with this pool's globally allocated worker demand. A later
+				// pass represents the retained excess worker only if capacity remains
+				// in the single host-wide advertisement budget.
+				plan.AdvertisedCapacity[target.ID] = desired
+				advertisable[target.ID] = true
+				burstCandidates = append(burstCandidates, burstCandidate{
+					poolID: target.ID, maxCapacity: target.MaxCapacity, removable: removable,
+				})
+			} else {
+				quiescing = true
+				for _, worker := range removable {
+					if excess == 0 {
+						break
+					}
+					plan.Remove = append(plan.Remove, worker)
+					excess--
 				}
-				plan.Remove = append(plan.Remove, worker)
-				excess--
 			}
 		} else if !capacityDebt && ready[target.ID] && !assignmentOverCap[target.ID] {
 			plan.AdvertisedCapacity[target.ID] = desired
 			advertisable[target.ID] = true
+		}
+	}
+
+	// Desired worker allocation is globally bounded, but each retained excess
+	// worker belongs to an independent listener. Representing every excess in
+	// its pool capacity without a shared budget can therefore over-advertise the
+	// host. Preserve zero-warm pools first so they can converge naturally, then
+	// spend any remaining budget in target priority order. A zero-warm pool that
+	// cannot receive even one safe slot falls back to exact-runner quiescence.
+	advertisedBudget := hostLimit
+	for _, capacity := range plan.AdvertisedCapacity {
+		advertisedBudget -= capacity
+	}
+	if advertisedBudget < 0 {
+		advertisedBudget = 0
+	}
+	sort.SliceStable(burstCandidates, func(i, j int) bool {
+		leftZero := plan.AdvertisedCapacity[burstCandidates[i].poolID] == 0
+		rightZero := plan.AdvertisedCapacity[burstCandidates[j].poolID] == 0
+		return leftZero && !rightZero
+	})
+	for _, candidate := range burstCandidates {
+		capacity := plan.AdvertisedCapacity[candidate.poolID]
+		if capacity < candidate.maxCapacity && advertisedBudget > 0 {
+			plan.AdvertisedCapacity[candidate.poolID]++
+			advertisedBudget--
+			capacity++
+		}
+		if capacity != 0 {
+			continue
+		}
+		quiescing = true
+		advertisable[candidate.poolID] = false
+		if len(candidate.removable) > 0 {
+			plan.Remove = append(plan.Remove, candidate.removable[0])
 		}
 	}
 
@@ -338,6 +394,7 @@ func BuildPlan(input PlanInput) Plan {
 				continue
 			}
 			additional := minInt(target.MaxCapacity-plan.AdvertisedCapacity[target.ID], serviceSlots)
+			additional = minInt(additional, advertisedBudget)
 			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 			additional = minInt(additional, affordableWorkerCount(memoryRemaining, workerMemory))
 			if additional <= 0 {
@@ -345,6 +402,7 @@ func BuildPlan(input PlanInput) Plan {
 			}
 			plan.AdvertisedCapacity[target.ID] += additional
 			serviceSlots -= additional
+			advertisedBudget -= additional
 			memoryRemaining -= uint64(additional) * uint64(workerMemory)
 		}
 	}
