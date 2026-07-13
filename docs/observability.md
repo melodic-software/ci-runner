@@ -1,11 +1,30 @@
 # OpenTelemetry observability
 
-The controller has optional, first-class OTLP trace and metric export. It uses
-the standard OpenTelemetry environment variables read by the official Go OTLP
-exporters; there is no second telemetry configuration format and no secret in
-the host YAML.
+The controller has optional, first-class OTLP trace and metric export. Production
+deployments should use the reviewed host YAML so endpoint, protocol, signal
+enablement, and metric cadence travel with the rest of the fleet configuration:
 
-Telemetry is fully disabled when the environment is unset. In that state the
+```yaml
+telemetry:
+  endpoint: http://127.0.0.1:4317
+  protocol: grpc
+  traces: true
+  metrics: true
+  metricExportInterval: 15s
+  metricExportTimeout: 10s
+```
+
+`endpoint` is the common OTLP base URL. For `http/protobuf`, the controller
+appends the standard `/v1/traces` and `/v1/metrics` signal paths; for `grpc`, it
+uses the URL directly.
+
+Omitting the block preserves the standard OpenTelemetry environment-variable
+interface for ad hoc and legacy deployments. When the block is present, its
+signal selection, endpoint, protocol, and metric cadence take precedence over
+ambient process environment. Exporter-specific standard variables, such as
+headers and certificates, remain available for secrets and transport details.
+
+Telemetry is fully disabled when both the YAML block and environment are unset. In that state the
 controller does not create an exporter or contact the OpenTelemetry localhost
 defaults. It becomes enabled per signal when either its exporter is explicitly
 `otlp`, its signal-specific endpoint is set, or the common OTLP endpoint is
@@ -33,7 +52,7 @@ are consumed only by the exporter; the controller never copies them into logs,
 state, spans, metrics, or worker containers.
 
 The scheduled controller must be gracefully restarted after changing its
-environment. Telemetry initialization, collection, export, and bounded
+configuration or environment. Telemetry initialization, collection, export, and bounded
 shutdown are outside the admission and worker lifecycle decision paths.
 Configuration and initialization problems are written as
 `telemetry-configuration-error`; asynchronous exporter failures are written as

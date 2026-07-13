@@ -76,14 +76,23 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		}
 		return err
 	}
-	telemetryProvider, telemetryProblems := telemetry.NewFromEnv(ctx, telemetry.Options{
+	telemetryOptions := telemetry.Options{
 		HostID: cfg.Host.ID, Version: buildinfo.Version,
 		OnError: func(exportErr error) {
 			if exportErr != nil {
 				logEvent("telemetry-export-error", exportErr.Error())
 			}
 		},
-	})
+	}
+	if cfg.Telemetry.Enabled() {
+		telemetryOptions.Export = &telemetry.ExportConfig{
+			Endpoint: cfg.Telemetry.Endpoint, Protocol: cfg.Telemetry.Protocol,
+			Traces: cfg.Telemetry.Traces, Metrics: cfg.Telemetry.Metrics,
+			MetricExportInterval: cfg.Telemetry.MetricExportInterval.Duration,
+			MetricExportTimeout:  cfg.Telemetry.MetricExportTimeout.Duration,
+		}
+	}
+	telemetryProvider, telemetryProblems := telemetry.NewFromEnv(ctx, telemetryOptions)
 	for _, telemetryErr := range telemetryProblems {
 		logEvent("telemetry-configuration-error", telemetryErr.Error())
 	}

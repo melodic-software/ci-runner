@@ -180,8 +180,9 @@ after every managed active or exited container has been adopted. The explicit
 `host logs --cleanup` command first inventories the fixed local Docker endpoint
 and refuses to run if that safety inventory is unavailable.
 
-Optional OpenTelemetry export uses standard `OTEL_*` environment variables and
-is disabled without explicit configuration. It emits controller reconcile
+Optional OpenTelemetry export uses a reviewed `telemetry:` host configuration
+block, with standard `OTEL_*` environment variables retained for legacy and
+exporter-specific settings. It is disabled without explicit configuration and emits controller reconcile
 spans and low-cardinality fleet, capacity, worker, job, host-pressure, gate, and
 lifecycle metrics. Exporter failures are locally logged and cannot change
 capacity, drain workers, cancel jobs, or stop the controller. Runner names,

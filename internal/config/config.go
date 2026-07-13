@@ -82,8 +82,20 @@ type Config struct {
 	Drain         Drain         `yaml:"drain"`
 	DockerDesktop DockerDesktop `yaml:"dockerDesktop"`
 	Logs          Logs          `yaml:"logs"`
+	Telemetry     Telemetry     `yaml:"telemetry"`
 	Paths         Paths         `yaml:"paths"`
 }
+
+type Telemetry struct {
+	Endpoint             string   `yaml:"endpoint"`
+	Protocol             string   `yaml:"protocol"`
+	Traces               bool     `yaml:"traces"`
+	Metrics              bool     `yaml:"metrics"`
+	MetricExportInterval Duration `yaml:"metricExportInterval"`
+	MetricExportTimeout  Duration `yaml:"metricExportTimeout"`
+}
+
+func (t Telemetry) Enabled() bool { return t.Endpoint != "" }
 
 type Host struct {
 	ID               string `yaml:"id"`
@@ -542,6 +554,7 @@ func (c Config) Validate() error {
 	if c.Logs.WorkerFinalizationTimeout.Duration <= 0 {
 		add(errors.New("logs.workerFinalizationTimeout: must be positive"))
 	}
+	add(validateTelemetry(c.Telemetry))
 	paths := []struct {
 		name string
 		path string
@@ -570,6 +583,38 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid configuration: %w", errors.Join(problems...))
 	}
 	return nil
+}
+
+func validateTelemetry(value Telemetry) error {
+	configured := value.Endpoint != "" || value.Protocol != "" || value.Traces || value.Metrics ||
+		value.MetricExportInterval.Duration != 0 || value.MetricExportTimeout.Duration != 0
+	if !configured {
+		return nil
+	}
+	var problems []error
+	if value.Endpoint == "" {
+		problems = append(problems, errors.New("telemetry.endpoint: required when telemetry is configured"))
+	} else {
+		u, err := url.Parse(value.Endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			problems = append(problems, errors.New("telemetry.endpoint: must be an http or https URL without credentials, query, or fragment"))
+		}
+	}
+	if value.Protocol != "grpc" && value.Protocol != "http/protobuf" {
+		problems = append(problems, errors.New("telemetry.protocol: must be grpc or http/protobuf"))
+	}
+	if !value.Traces && !value.Metrics {
+		problems = append(problems, errors.New("telemetry: at least one of traces or metrics must be enabled"))
+	}
+	if value.Metrics {
+		if value.MetricExportInterval.Duration <= 0 {
+			problems = append(problems, errors.New("telemetry.metricExportInterval: must be positive when metrics are enabled"))
+		}
+		if value.MetricExportTimeout.Duration <= 0 {
+			problems = append(problems, errors.New("telemetry.metricExportTimeout: must be positive when metrics are enabled"))
+		}
+	}
+	return errors.Join(problems...)
 }
 
 func validateWorker(name string, worker Worker) error {
