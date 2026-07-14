@@ -23,10 +23,7 @@ func (r *recordingCommandRunner) Run(_ context.Context, name string, args ...str
 
 func TestDockerInspectorPinsLocalEngineHost(t *testing.T) {
 	t.Parallel()
-	executable, err := trustedDockerDesktopExecutable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`
 	tests := []struct {
 		name string
 		run  func(DockerCLIInspector) error
@@ -54,7 +51,7 @@ func TestDockerInspectorPinsLocalEngineHost(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runner := &recordingCommandRunner{}
-			if err := test.run(DockerCLIInspector{Runner: runner}); err != nil {
+			if err := test.run(DockerCLIInspector{Runner: runner, executablePath: executable}); err != nil {
 				t.Fatal(err)
 			}
 			if runner.name != executable || !reflect.DeepEqual(runner.args, test.want) {
