@@ -130,6 +130,8 @@ if (Test-Path -LiteralPath $goModPath) {
 
 $workflowFiles = Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot '.github\workflows') -Filter '*.yml' -File
 $workflowText = ($workflowFiles | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n"
+$existingReleaseVerifier = Get-Content -Raw -LiteralPath (
+    Join-Path $RepositoryRoot '.github\scripts\verify-existing-release.sh')
 $buildxInstaller = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'scripts\install-verified-buildx.sh')
 $requiredInstallerFragments = @(
     '.buildx.version',
@@ -176,10 +178,16 @@ foreach ($required in @(
         'gh release verify ',
         'gh release verify-asset ',
         'release validate --manifest',
-        'gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets',
+        'run: bash .github/scripts/verify-existing-release.sh',
         'release-transaction.cjs reconcile')) {
     if (-not $workflowText.Contains($required)) {
         throw "Workflow release contract is missing: $required"
+    }
+}
+foreach ($required in @(
+        'gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets')) {
+    if (-not $existingReleaseVerifier.Contains($required)) {
+        throw "Existing release verifier is missing: $required"
     }
 }
 if ($workflowText -match '(?m)^\s*sbom:\s*true\s*$' -or
