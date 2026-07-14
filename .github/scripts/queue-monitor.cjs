@@ -9,9 +9,9 @@ const nonterminalRunStatuses = Object.freeze([
 ]);
 
 const routingRecoverySummary = `
-Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** so the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun because it does not recompute selector eligibility. Where the workflow explicitly supports \`workflow_dispatch\`, a fresh dispatch on the intended ref is also valid, but it is not a substitute for the original pull-request check.
+Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
 `;
-const routingRecoveryFailure = 'Set the effective CI_RUNNER_POLICY value to hosted-only through audited routing control, verify it, then use Re-run all jobs (or a fresh supported workflow_dispatch) and confirm hosted selection.';
+const routingRecoveryFailure = 'Set the effective CI_RUNNER_POLICY value to hosted-only through audited routing control, verify it, then use Re-run all jobs and confirm hosted selection.';
 
 function splitList(value) {
   return (value || '')

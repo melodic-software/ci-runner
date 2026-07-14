@@ -36,9 +36,11 @@ test('recovery requires a verified hosted-only cutoff and fresh selector evaluat
   assert.match(routingRecoverySummary, /audited CI routing-control procedure/);
   assert.match(routingRecoverySummary, /effective `CI_RUNNER_POLICY` value `hosted-only`/);
   assert.match(routingRecoverySummary, /Re-run all jobs/);
-  assert.match(routingRecoverySummary, /selector executes again/);
-  assert.match(routingRecoverySummary, /fresh dispatch on the intended ref/);
+  assert.match(routingRecoverySummary, /guarantee that the selector executes again/);
+  assert.match(routingRecoverySummary, /partial-rerun dependency behavior/);
+  assert.match(routingRecoverySummary, /does not recover the original pull-request check/);
   assert.match(routingRecoveryFailure, /Re-run all jobs/);
+  assert.doesNotMatch(routingRecoveryFailure, /workflow_dispatch/);
   assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
   assert.doesNotMatch(routingRecoveryFailure, /retry(?:ing)? (?:the )?workload/i);
 });

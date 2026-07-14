@@ -48,12 +48,12 @@ the monitor with direct links and this recovery instruction:
 
 > Follow the audited CI routing-control procedure to make the affected
 > repository's effective `CI_RUNNER_POLICY` value `hosted-only` and verify the
-> readback. Cancel the affected run, choose **Re-run all jobs** so the selector
-> executes again, and confirm that it selects hosted capacity. Do not use a
-> failed-job or single-job rerun because it does not recompute selector
-> eligibility. Where the workflow explicitly supports `workflow_dispatch`, a
-> fresh dispatch on the intended ref is also valid, but it is not a substitute
-> for the original pull-request check.
+> readback. Cancel the affected run, choose **Re-run all jobs** to guarantee
+> that the selector executes again, and confirm that it selects hosted capacity.
+> Do not use a failed-job or single-job rerun for this recovery because
+> partial-rerun dependency behavior does not guarantee a fresh selector
+> decision. A `workflow_dispatch` creates a separate run with different event
+> and ref context; it does not recover the original pull-request check.
 
 The monitor never changes policy, cancels, reruns, dispatches, or mutates a
 workload. The central selector applies its policy-driven routing rules on every
