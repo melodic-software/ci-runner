@@ -46,12 +46,20 @@ runner-eligible `queued` jobs carrying an exact managed label. Jobs still
 treated as runner-capacity failures. A queued job older than five minutes fails
 the monitor with direct links and this recovery instruction:
 
-> Cancel the affected run, then choose “Re-run all jobs.”
+> Follow the audited CI routing-control procedure to make the affected
+> repository's effective `CI_RUNNER_POLICY` value `hosted-only` and verify the
+> readback before cancelling and retrying the workload. A rerun alone does not
+> force hosted routing.
 
-The monitor never cancels, reruns, dispatches, or mutates a workload. A full
-rerun has `github.run_attempt > 1`, so the central selector chooses hosted
-capacity. This is the explicit recovery contract for the irreducible case where
-both local hosts disappear after local selection.
+The monitor never changes policy, cancels, reruns, dispatches, or mutates a
+workload. The central selector applies its policy-driven routing rules on every
+attempt; it has no rerun-only hosted branch. Because a repository variable
+overrides an organization variable with the same name, recovery verifies the
+effective value instead of assuming an organization update is sufficient. The
+canonical procedure is the
+[`github-iac` local-CI routing runbook](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance);
+GitHub documents the precedence rule in its
+[variables reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#configuration-variable-precedence).
 
 Enable GitHub Actions failed-workflow email or web notifications for the account
 that owns the schedule. GitHub sends scheduled-workflow notifications to the

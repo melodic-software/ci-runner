@@ -3,7 +3,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { inspectQueuedJobs, nonterminalRunStatuses, splitList } = require('./queue-monitor.cjs');
+const {
+  inspectQueuedJobs,
+  nonterminalRunStatuses,
+  routingRecoveryFailure,
+  routingRecoverySummary,
+  splitList,
+} = require('./queue-monitor.cjs');
 
 function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
   const calls = [];
@@ -24,6 +30,14 @@ function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
 
 test('splitList accepts comma and newline separated configuration', () => {
   assert.deepEqual(splitList('medley, standards\nci-runner'), ['medley', 'standards', 'ci-runner']);
+});
+
+test('recovery requires a verified hosted-only cutoff before retry', () => {
+  assert.match(routingRecoverySummary, /audited CI routing-control procedure/);
+  assert.match(routingRecoverySummary, /effective `CI_RUNNER_POLICY` value `hosted-only`/);
+  assert.match(routingRecoverySummary, /rerun alone does not force hosted routing/);
+  assert.match(routingRecoveryFailure, /verify it before retrying/);
+  assert.doesNotMatch(routingRecoverySummary, /routes every rerun/i);
 });
 
 test('queries every GitHub nonterminal run status and deduplicates runs', async () => {
