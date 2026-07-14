@@ -21,7 +21,8 @@ Docker-daemon workloads remain GitHub-hosted. A future backend may run them in
 a disposable Linux VM whose Docker daemon, filesystem, and runner identity are
 destroyed after one job. The host Docker socket must never be mounted or proxied
 into a worker. The backend must preserve JIT registration, external diagnostics,
-resource admission, graceful drain, and the hosted-rerun recovery contract.
+resource admission, graceful drain, and the audited hosted-only cutoff with a
+full workflow rerun that recomputes selector eligibility.
 
 This work is motivated by GitHub's warning that self-hosted runners can be
 persistently compromised by workflow code and Docker's warning that daemon

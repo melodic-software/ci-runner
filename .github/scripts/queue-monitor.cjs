@@ -8,6 +8,11 @@ const nonterminalRunStatuses = Object.freeze([
   'pending',
 ]);
 
+const routingRecoverySummary = `
+Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
+`;
+const routingRecoveryFailure = 'Set the effective CI_RUNNER_POLICY value to hosted-only through audited routing control, verify it, then use Re-run all jobs and confirm hosted selection.';
+
 function splitList(value) {
   return (value || '')
     .split(/[\s,]+/)
@@ -112,9 +117,16 @@ async function run({ github, core, env = process.env, now = Date.now() }) {
       [{ data: 'Repository', header: true }, { data: 'Workflow', header: true }, { data: 'Job', header: true }, { data: 'Minutes', header: true }, { data: 'Labels', header: true }, { data: 'Link', header: true }],
       ...rows,
     ])
-    .addRaw('\nCancel the affected run, then choose “Re-run all jobs.” The selector routes every rerun to GitHub-hosted capacity.\n')
+    .addRaw(routingRecoverySummary)
     .write();
-  core.setFailed(`${stuck.length} managed job(s) exceeded the five-minute queue threshold. Cancel, then Re-run all jobs.`);
+  core.setFailed(`${stuck.length} managed job(s) exceeded the five-minute queue threshold. ${routingRecoveryFailure}`);
 }
 
-module.exports = { inspectQueuedJobs, nonterminalRunStatuses, run, splitList };
+module.exports = {
+  inspectQueuedJobs,
+  nonterminalRunStatuses,
+  routingRecoveryFailure,
+  routingRecoverySummary,
+  run,
+  splitList,
+};

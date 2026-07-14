@@ -3,7 +3,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { inspectQueuedJobs, nonterminalRunStatuses, splitList } = require('./queue-monitor.cjs');
+const {
+  inspectQueuedJobs,
+  nonterminalRunStatuses,
+  routingRecoveryFailure,
+  routingRecoverySummary,
+  splitList,
+} = require('./queue-monitor.cjs');
 
 function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
   const calls = [];
@@ -24,6 +30,19 @@ function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
 
 test('splitList accepts comma and newline separated configuration', () => {
   assert.deepEqual(splitList('medley, standards\nci-runner'), ['medley', 'standards', 'ci-runner']);
+});
+
+test('recovery requires a verified hosted-only cutoff and fresh selector evaluation', () => {
+  assert.match(routingRecoverySummary, /audited CI routing-control procedure/);
+  assert.match(routingRecoverySummary, /effective `CI_RUNNER_POLICY` value `hosted-only`/);
+  assert.match(routingRecoverySummary, /Re-run all jobs/);
+  assert.match(routingRecoverySummary, /guarantee that the selector executes again/);
+  assert.match(routingRecoverySummary, /partial-rerun dependency behavior/);
+  assert.match(routingRecoverySummary, /does not recover the original pull-request check/);
+  assert.match(routingRecoveryFailure, /Re-run all jobs/);
+  assert.doesNotMatch(routingRecoveryFailure, /workflow_dispatch/);
+  assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
+  assert.doesNotMatch(routingRecoveryFailure, /retry(?:ing)? (?:the )?workload/i);
 });
 
 test('queries every GitHub nonterminal run status and deduplicates runs', async () => {

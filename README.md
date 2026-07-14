@@ -3,8 +3,9 @@
 `ci-runner` is the Windows host controller and disposable Linux worker image
 for a small, demand-scaled GitHub Actions fleet. Its purpose is to move eligible
 private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
-`melo-lap-001` without creating a second CI contract or making local capacity a
-hard dependency.
+`melo-lap-001` without creating a second CI contract. The centrally governed
+routing policy decides whether local capacity is preferred, required, or
+bypassed.
 
 The production architecture is under implementation and must remain routed
 `hosted-only` until the canary gates pass. The former Compose/restart-in-place
@@ -17,8 +18,8 @@ a host or credential; the only production credential entry point is
 
 ```mermaid
 flowchart LR
-    W["Reusable workflow selector"] -->|"idle managed runner"| S["Host-owned scale sets"]
-    W -->|"no safe idle capacity or rerun"| H["GitHub-hosted ubuntu-24.04"]
+    W["Reusable workflow selector"] -->|"managed route"| S["Host-owned scale sets"]
+    W -->|"hosted route"| H["GitHub-hosted ubuntu-24.04"]
     S --> C1["Windows controller\nmelo-desk-001"]
     S --> C2["Windows controller\nmelo-lap-001"]
     C1 --> D1["Fresh one-job Linux containers"]
@@ -49,21 +50,44 @@ engine; `DOCKER_HOST`, TLS, and API-version environment overrides are ignored.
 
 Eligible workflows call the central selector in
 [`melodic-software/ci-workflows`](https://github.com/melodic-software/ci-workflows).
-It chooses local capacity only when an exact managed label and runner-name
-prefix identify an online, idle, ephemeral runner. Missing configuration,
-missing credentials, invalid API data, timeouts, API failures, public or fork
-workflows, Dependabot, and explicit `hosted-only` policy all route hosted.
+The selector owns routing and fallback; this controller only supplies runners
+inside its governed name and label namespaces. Immutable selector revisions are
+reviewed and allowlisted by the
+[`standards` runner policy](https://github.com/melodic-software/standards/blob/main/components/runner-policy/README.md):
 
-A full workflow rerun has `github.run_attempt > 1` and always routes hosted.
-This is the recovery path for the irreducible case where both local hosts
-disappear after local selection. GitHub does not provide an atomic
-hosted-or-self-hosted `runs-on` operator, so simultaneous selector jobs can
-observe the same idle runner and briefly queue. The hosted queue monitor reports
-that condition; it never cancels or replays work automatically.
+- `hosted-only` returns the approved GitHub-hosted image;
+- `prefer-self-hosted` chooses a safe online managed namespace and otherwise
+  falls back hosted; and
+- `self-hosted-only` permits only its reviewed managed label and never falls
+  back to paid hosted capacity.
 
-The selector's two-minute `ubuntu-slim` job is independent of downstream job
-timeouts. A selected build/test job can run longer than the selector and longer
-than `ubuntu-slim`'s 15-minute platform limit.
+Adaptive selection treats any matching online ephemeral runner as fleet
+liveness. A busy runner can therefore keep the managed route eligible, and
+GitHub queues the job until matching capacity is available. Security guards,
+invalid inventory, missing adaptive credentials, and API failures retain the
+selector's documented fail-open or fail-closed behavior for the chosen policy.
+
+A rerun is not an automatic hosted fallback. Recovery from unavailable local
+capacity first uses the audited
+[`github-iac` routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance)
+to make the affected repository's effective policy `hosted-only` and verify the
+readback. Then cancel the affected run and choose **Re-run all jobs** to
+guarantee that the selector executes again; confirm its output selects hosted
+capacity. Do not use a failed-job or single-job rerun for this recovery because
+partial-rerun dependency behavior does not guarantee a fresh selector decision.
+A `workflow_dispatch` creates a separate run with different event and ref
+context; it does not recover the original pull-request check. The hosted queue
+monitor reports the condition; it
+never changes policy, cancels, or replays work automatically. GitHub documents
+the distinct [full and partial rerun
+operations](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+and [`workflow_dispatch` event
+context](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
+
+The adaptive/hosted selector's two-minute `ubuntu-slim` control job is
+independent of downstream job timeouts. Strict `self-hosted-only` selection
+keeps that control job on the reviewed managed label so it does not spend hosted
+minutes. A selected build/test job can outlive either selector control path.
 
 Authoritative behavior:
 
@@ -356,7 +380,8 @@ directory plus `current` junction and retains the latest three known-good pairs.
 
 Rollback order is: set routing `hosted-only`, drain without killing work,
 restore the prior immutable pair, restore the prior reusable-workflow SHA if
-needed, then rerun affected workflows hosted.
+needed, then use **Re-run all jobs** for affected workflows and confirm hosted
+selection.
 
 ## Further documentation
 
