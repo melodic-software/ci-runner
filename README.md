@@ -71,8 +71,17 @@ A rerun is not an automatic hosted fallback. Recovery from unavailable local
 capacity first uses the audited
 [`github-iac` routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance)
 to make the affected repository's effective policy `hosted-only` and verify the
-readback, then retries the workload. The hosted queue monitor reports the
-condition; it never changes policy, cancels, or replays work automatically.
+readback. Then cancel the affected run and choose **Re-run all jobs** so the
+selector executes again; confirm its output selects hosted capacity. A
+failed-job or single-job rerun does not recompute selector eligibility. Where a
+workflow explicitly supports `workflow_dispatch`, a fresh dispatch on the
+intended ref is also valid, but its event and ref context do not replace the
+original pull-request check. The hosted queue monitor reports the condition; it
+never changes policy, cancels, or replays work automatically. GitHub documents
+the distinct [full and partial rerun
+operations](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+and [`workflow_dispatch` event
+context](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
 
 The adaptive/hosted selector's two-minute `ubuntu-slim` control job is
 independent of downstream job timeouts. Strict `self-hosted-only` selection
@@ -370,7 +379,8 @@ directory plus `current` junction and retains the latest three known-good pairs.
 
 Rollback order is: set routing `hosted-only`, drain without killing work,
 restore the prior immutable pair, restore the prior reusable-workflow SHA if
-needed, then rerun affected workflows hosted.
+needed, then use **Re-run all jobs** for affected workflows (or a fresh supported
+manual dispatch) and confirm hosted selection.
 
 ## Further documentation
 

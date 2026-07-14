@@ -48,8 +48,12 @@ the monitor with direct links and this recovery instruction:
 
 > Follow the audited CI routing-control procedure to make the affected
 > repository's effective `CI_RUNNER_POLICY` value `hosted-only` and verify the
-> readback before cancelling and retrying the workload. A rerun alone does not
-> force hosted routing.
+> readback. Cancel the affected run, choose **Re-run all jobs** so the selector
+> executes again, and confirm that it selects hosted capacity. Do not use a
+> failed-job or single-job rerun because it does not recompute selector
+> eligibility. Where the workflow explicitly supports `workflow_dispatch`, a
+> fresh dispatch on the intended ref is also valid, but it is not a substitute
+> for the original pull-request check.
 
 The monitor never changes policy, cancels, reruns, dispatches, or mutates a
 workload. The central selector applies its policy-driven routing rules on every
@@ -58,8 +62,12 @@ overrides an organization variable with the same name, recovery verifies the
 effective value instead of assuming an organization update is sufficient. The
 canonical procedure is the
 [`github-iac` local-CI routing runbook](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance);
-GitHub documents the precedence rule in its
-[variables reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#configuration-variable-precedence).
+GitHub documents the [full and partial rerun
+operations](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs),
+the [`workflow_dispatch` event
+context](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch),
+and the precedence rule in its [variables
+reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#configuration-variable-precedence).
 
 Enable GitHub Actions failed-workflow email or web notifications for the account
 that owns the schedule. GitHub sends scheduled-workflow notifications to the

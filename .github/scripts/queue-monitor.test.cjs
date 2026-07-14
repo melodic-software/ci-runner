@@ -32,12 +32,15 @@ test('splitList accepts comma and newline separated configuration', () => {
   assert.deepEqual(splitList('medley, standards\nci-runner'), ['medley', 'standards', 'ci-runner']);
 });
 
-test('recovery requires a verified hosted-only cutoff before retry', () => {
+test('recovery requires a verified hosted-only cutoff and fresh selector evaluation', () => {
   assert.match(routingRecoverySummary, /audited CI routing-control procedure/);
   assert.match(routingRecoverySummary, /effective `CI_RUNNER_POLICY` value `hosted-only`/);
-  assert.match(routingRecoverySummary, /rerun alone does not force hosted routing/);
-  assert.match(routingRecoveryFailure, /verify it before retrying/);
-  assert.doesNotMatch(routingRecoverySummary, /routes every rerun/i);
+  assert.match(routingRecoverySummary, /Re-run all jobs/);
+  assert.match(routingRecoverySummary, /selector executes again/);
+  assert.match(routingRecoverySummary, /fresh dispatch on the intended ref/);
+  assert.match(routingRecoveryFailure, /Re-run all jobs/);
+  assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
+  assert.doesNotMatch(routingRecoveryFailure, /retry(?:ing)? (?:the )?workload/i);
 });
 
 test('queries every GitHub nonterminal run status and deduplicates runs', async () => {
