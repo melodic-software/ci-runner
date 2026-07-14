@@ -63,13 +63,11 @@ paths, or Docker-socket access.
 
 ## Optional OTLP export
 
-Controller JSON Lines and archived runner diagnostics are the V1 observability
-contract. A future OpenTelemetry exporter belongs behind the existing log-sink
-boundary so scaling and lifecycle policy do not change. Redaction must occur
-before export, exporter failure must not block drain or cleanup, and credentials
-must remain controller-only.
+The controller now provides optional OTLP trace and metric export, disabled by
+default, alongside JSON Lines and archived runner diagnostics. Configuration,
+redaction, failure isolation, lifecycle behavior, and collector guidance are
+documented in [Observability](observability.md).
 
-- [OpenTelemetry logs data model](https://opentelemetry.io/docs/specs/otel/logs/data-model/)
 - [OpenTelemetry protocol specification](https://opentelemetry.io/docs/specs/otlp/)
 
 ## Independent monitor and cost evidence
