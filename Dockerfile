@@ -27,6 +27,7 @@ RUN apt-get update \
       unzip \
       zip \
       zlib1g-dev \
+      zstd \
  && curl --fail --location --proto '=https' --tlsv1.2 \
       --output /tmp/powershell.tar.gz \
       "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-x64.tar.gz" \
