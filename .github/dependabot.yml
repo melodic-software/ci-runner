@@ -56,6 +56,15 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
+    ignore:
+      # The runner-policy allowlist pins ci-workflows reusable-workflow refs to
+      # independently reviewed SHAs, so a Dependabot bump to an unreviewed main
+      # commit can only fail the Runner policy lane. Those pins move through
+      # deliberate reviewed PRs after a standards allowlist update. Composite
+      # actions (melodic-software/ci-workflows/.github/actions/*) are not
+      # SHA-allowlisted and stay Dependabot-managed.
+      # Pattern source: melodic-software/standards PR #102.
+      - dependency-name: "melodic-software/ci-workflows/.github/workflows/*"
     groups:
       github-actions:
         patterns:
