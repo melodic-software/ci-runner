@@ -159,8 +159,23 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				if ctx.Err() == nil {
 					result.checkpointErr = checkpointErr
 				}
-				if !sameCapacities(state.advertised, plan.AdvertisedCapacity) &&
-					(checkpointErr == nil || capacityDecreased(state.advertised, plan.AdvertisedCapacity)) {
+				// Restarting the poll is reserved for changes the open listener poll
+				// must not outlive: a withdrawal below the advertised capacity fails
+				// closed immediately, and a pool leaving zero restores availability
+				// without waiting out the long poll. A nonzero capacity that merely
+				// grows tracks the memory-headroom slot estimate, which oscillates
+				// around worker-size boundaries; canceling for those moves restarts
+				// the poll faster than it can complete and starves the worker-start
+				// phase behind it, so the larger capacity waits for the next poll.
+				// Start admission re-verifies live memory before every container.
+				withdrawn := capacityDecreased(state.advertised, plan.AdvertisedCapacity)
+				restored := capacityRestoredFromZero(state.advertised, plan.AdvertisedCapacity)
+				if withdrawn || (restored && checkpointErr == nil) {
+					message := "open listener poll was restarted to advertise restored capacity"
+					if withdrawn {
+						message = "open listener poll was restarted to withdraw advertised capacity"
+					}
+					_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
 					cancel(errReconcileInputsChanged)
 					return result
 				}
@@ -205,6 +220,15 @@ func sameCapacities(left, right map[string]int) bool {
 func capacityDecreased(previous, current map[string]int) bool {
 	for poolID, capacity := range previous {
 		if current[poolID] < capacity {
+			return true
+		}
+	}
+	return false
+}
+
+func capacityRestoredFromZero(previous, current map[string]int) bool {
+	for poolID, capacity := range current {
+		if capacity > 0 && previous[poolID] == 0 {
 			return true
 		}
 	}
