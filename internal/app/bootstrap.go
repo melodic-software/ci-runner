@@ -29,7 +29,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	}
 	configPath, commandArgs, err := resolveConfigArgument(args)
 	if err != nil {
-		fmt.Fprintln(errOut, err)
+		writeln(errOut, err)
 		return ExitUsage
 	}
 	file, err := os.Open(configPath)
@@ -41,7 +41,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 				Error         string `json:"error"`
 			}{SchemaVersion: 1, Valid: false, Error: err.Error()})
 		} else {
-			fmt.Fprintf(errOut, "open configuration %q: %v\n", configPath, err)
+			writef(errOut, "open configuration %q: %v\n", configPath, err)
 		}
 		return ExitInvalidConfig
 	}
@@ -55,7 +55,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 				Error         string `json:"error"`
 			}{SchemaVersion: 1, Valid: false, Error: err.Error()})
 		} else {
-			fmt.Fprintf(errOut, "load configuration %q: %v\n", configPath, err)
+			writef(errOut, "load configuration %q: %v\n", configPath, err)
 		}
 		return ExitInvalidConfig
 	}
@@ -68,23 +68,23 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		"logs": cfg.Paths.Logs, "diagnostics": cfg.Paths.Diagnostics,
 	} {
 		if err := ensureNoReparsePoints(path); err != nil {
-			fmt.Fprintf(errOut, "unsafe %s runtime path: %v\n", name, err)
+			writef(errOut, "unsafe %s runtime path: %v\n", name, err)
 			return ExitInvalidConfig
 		}
 	}
 	locker, err := statefs.NewPlatformLocker(cfg.Paths.State)
 	if err != nil {
-		fmt.Fprintf(errOut, "create state mutex: %v\n", err)
+		writef(errOut, "create state mutex: %v\n", err)
 		return ExitInvalidConfig
 	}
 	store, err := statefs.New(cfg.Paths.State, locker, acl)
 	if err != nil {
-		fmt.Fprintf(errOut, "create state store: %v\n", err)
+		writef(errOut, "create state store: %v\n", err)
 		return ExitInvalidConfig
 	}
 	jobs, err := jobindex.NewFileStore(cfg.Paths.State, locker, acl)
 	if err != nil {
-		fmt.Fprintf(errOut, "create job index: %v\n", err)
+		writef(errOut, "create job index: %v\n", err)
 		return ExitInvalidConfig
 	}
 	protector := secret.NewDPAPIProtector()
@@ -93,7 +93,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	secretStore := secret.Store{Protector: protector, Directory: cfg.Paths.Secrets}
 	controlClient, err := control.NewCurrentUserClient()
 	if err != nil {
-		fmt.Fprintf(errOut, "create current-user controller client: %v\n", err)
+		writef(errOut, "create current-user controller client: %v\n", err)
 		return ExitInvalidConfig
 	}
 	application, err := New(Dependencies{
@@ -128,7 +128,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		RestartReceipts: store,
 	}, in, out, errOut)
 	if err != nil {
-		fmt.Fprintf(errOut, "initialize application: %v\n", err)
+		writef(errOut, "initialize application: %v\n", err)
 		return ExitInvalidConfig
 	}
 	return application.Run(ctx, commandArgs)
@@ -136,7 +136,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 
 func runConfigCommand(cfg config.Config, args []string, out, errOut io.Writer) int {
 	if len(args) == 0 || args[0] != "validate" {
-		fmt.Fprintln(errOut, "usage: ci-runner [--config PATH] config validate [--json]")
+		writeln(errOut, "usage: ci-runner [--config PATH] config validate [--json]")
 		return ExitUsage
 	}
 	flags := flag.NewFlagSet("config validate", flag.ContinueOnError)
@@ -148,15 +148,15 @@ func runConfigCommand(cfg config.Config, args []string, out, errOut io.Writer) i
 	if *jsonOutput {
 		result, err := newConfigValidationResult(cfg)
 		if err != nil {
-			fmt.Fprintf(errOut, "normalize validated configuration: %v\n", err)
+			writef(errOut, "normalize validated configuration: %v\n", err)
 			return ExitInvalidConfig
 		}
 		if err := json.NewEncoder(out).Encode(result); err != nil {
-			fmt.Fprintf(errOut, "write validation result: %v\n", err)
+			writef(errOut, "write validation result: %v\n", err)
 			return ExitRuntime
 		}
 	} else {
-		fmt.Fprintf(out, "Configuration is valid (schema %d, host %s, %d target(s)).\n", cfg.SchemaVersion, cfg.Host.ID, len(cfg.GitHub.Targets))
+		writef(out, "Configuration is valid (schema %d, host %s, %d target(s)).\n", cfg.SchemaVersion, cfg.Host.ID, len(cfg.GitHub.Targets))
 	}
 	return ExitOK
 }

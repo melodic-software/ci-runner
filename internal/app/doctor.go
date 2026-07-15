@@ -31,7 +31,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		return ExitUsage
 	}
 	if *includeElevated {
-		fmt.Fprintln(a.errOut, "WARNING: --include-elevated may open an Administrator UAC prompt while verifying BitLocker; continue only when that prompt is expected.")
+		writeln(a.errOut, "WARNING: --include-elevated may open an Administrator UAC prompt while verifying BitLocker; continue only when that prompt is expected.")
 	}
 	checks := []DoctorCheck{{Name: "configuration", Healthy: true, Detail: "strict configuration loaded and validated"}}
 
@@ -151,7 +151,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		if err := encoder.Encode(struct {
 			Checks []DoctorCheck `json:"checks"`
 		}{Checks: checks}); err != nil {
-			fmt.Fprintf(a.errOut, "write doctor output: %v\n", err)
+			writef(a.errOut, "write doctor output: %v\n", err)
 			return ExitRuntime
 		}
 	} else {
@@ -162,7 +162,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 			} else if !check.Healthy {
 				status = "FAIL"
 			}
-			fmt.Fprintf(a.out, "[%s] %s: %s\n", status, check.Name, check.Detail)
+			writef(a.out, "[%s] %s: %s\n", status, check.Name, check.Detail)
 		}
 	}
 	for _, check := range checks {
