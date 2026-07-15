@@ -50,12 +50,23 @@ The derived layer contains only:
 - sudo, retaining the upstream passwordless-sudo behavior used by Actions
   runner containers;
 - PowerShell;
-- clang and zlib headers for native compilation.
+- clang and zlib headers for native compilation;
+- zstd, so `actions/cache` selects the same compression method as
+  GitHub-hosted runners and cross-environment cache entries can match.
 
 .NET, Node.js, Python, and other versioned toolchains are deliberately absent.
 Workflows install them with their official setup actions exactly as hosted jobs
 do. The image provides writable installation locations, not a second, silently
 drifting toolchain or toolcache.
+
+Parity with the hosted Ubuntu 24.04 manifest is case-by-case, never wholesale:
+a hosted-default tool joins this layer only when a governed lane empirically
+needs it. zstd earned its place when the canary's hosted-to-self cache proof
+could not match versions against a gzip-only image; a medley lane's `pipx`
+dependency was instead removed by invoking pip directly. Before migrating a
+hosted lane to the fleet, verify the lane's tool dependencies against this
+image; a real gap is a reviewed Dockerfile addition and release, never an
+in-lane workaround.
 
 ## Rootless .NET setup contract
 
