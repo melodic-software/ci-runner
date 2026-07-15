@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -648,6 +649,7 @@ func (f *defaultOfficialFactory) New(_ context.Context, definition Definition, k
 	retryClient.RetryMax = 0
 	retryClient.Logger = nil
 	retryClient.ErrorHandler = officialRetryErrorHandler
+	hardenListenerTransport(retryClient.HTTPClient)
 	client, err := actionsscale.NewClientWithGitHubApp(actionsscale.ClientWithGitHubAppConfig{
 		GitHubConfigURL: definition.URL,
 		GitHubAppAuth: actionsscale.GitHubAppAuth{
@@ -661,6 +663,29 @@ func (f *defaultOfficialFactory) New(_ context.Context, definition Definition, k
 		return nil, err
 	}
 	return &officialAPIWrapper{Client: client}, nil
+}
+
+// hardenListenerTransport arms the shared scale-set HTTP transport against a
+// half-open poll socket. A home-network blip can leave the listener long poll's
+// TCP connection half-open with no server RST; a blocked read would otherwise
+// wait out the OS default keepalive window (hours). It tightens TCP keepalive and
+// enables HTTP/2 health-check pings so a dead peer surfaces in well under a
+// minute. Both are inert on a healthy connection: an idle-but-live long poll
+// answers keepalive probes and PING frames, and neither shortens a legitimately
+// fast JIT request, which the shared per-request timeout continues to bound.
+func hardenListenerTransport(client *http.Client) {
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return
+	}
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 15 * time.Second,
+	}).DialContext
+	transport.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: 30 * time.Second,
+		PingTimeout:     15 * time.Second,
+	}
 }
 
 func officialRetryErrorHandler(response *http.Response, err error, _ int) (*http.Response, error) {

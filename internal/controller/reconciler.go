@@ -268,7 +268,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		observationFailed = true
 		record("power-monitor-error", "power observation failed; new work is blocked", "", true, powerErr)
 	}
-	watchContext, stopWatch := context.WithCancel(ctx)
+	// Bound the safety-input watcher to the per-request timeout that also caps the
+	// listener poll it runs beside. In a healthy step it is cancelled when the poll
+	// returns, well inside this deadline; on a wedged poll the deadline stops it
+	// instead of letting it tick until the outer step watchdog. Worker admission
+	// still re-verifies desired and power state before every container start.
+	watchContext, stopWatch := context.WithTimeout(ctx, r.config.GitHub.RequestTimeout.Duration)
 	watchDone := make(chan struct{})
 	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
 		defer close(watchDone)
@@ -387,7 +392,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	)
 	if containsReadyPool(pools) {
 		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
-		pollWatchContext, stop := context.WithCancel(ctx)
+		// Bound the poll-cadence watcher to the same per-request timeout as the
+		// listener poll it shadows; a wedged poll then cannot keep refreshing the
+		// heartbeat checkpoint and masking the stall from liveness monitoring.
+		pollWatchContext, stop := context.WithTimeout(ctx, r.config.GitHub.RequestTimeout.Duration)
 		stopPollWatch = stop
 		pollWatchDone = make(chan pollCadenceResult, 1)
 		cadenceState := pollCadenceState{

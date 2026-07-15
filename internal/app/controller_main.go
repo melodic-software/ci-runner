@@ -194,6 +194,19 @@ func loadConfiguration(path string) (config.Config, error) {
 	return cfg, nil
 }
 
+// reconcileStepTimeoutFactor bounds a single reconcile Step at a small multiple
+// of the per-request GitHub timeout. A healthy Step is dominated by one listener
+// long poll, which the scale-set client already caps at GitHub.RequestTimeout;
+// the multiple leaves room for a single call's full bounded retry budget
+// (Retry.MaxAttempts requests) so the watchdog fires only on a genuine wedge and
+// never on legitimate retries, while still bounding a stall to minutes instead
+// of the multi-hour park a deadline-less Step allowed.
+const reconcileStepTimeoutFactor = 8
+
+func reconcileStepTimeout(cfg config.Config) time.Duration {
+	return reconcileStepTimeoutFactor * cfg.GitHub.RequestTimeout.Duration
+}
+
 func runControllerLoop(
 	ctx context.Context,
 	cfg config.Config,
@@ -230,8 +243,9 @@ func runControllerLoop(
 		return completeControllerShutdown(context.Background(), result, signal, restartReceipts, processID, version)
 	}
 
+	stepTimeout := reconcileStepTimeout(cfg)
 	for {
-		stepContext, cancelStep := context.WithCancel(context.Background())
+		stepContext, cancelStep := context.WithTimeout(context.Background(), stepTimeout)
 		stepDone := make(chan error, 1)
 		go func() {
 			_, stepErr := reconciler.Step(stepContext)
@@ -253,6 +267,15 @@ func runControllerLoop(
 				serveErr = errors.New("control server exited unexpectedly")
 			}
 			return errors.Join(serveErr, shutdown(controller.ShutdownSignal{Reason: "control server exited unexpectedly"}, false))
+		case <-stepContext.Done():
+			// The step overran its watchdog deadline. Cancel it, surface the stall,
+			// and continue to the next reconcile rather than blocking on stepDone: a
+			// wedged Step (for example a half-open listener long poll) must not park
+			// the controller and let the warm pool decay. The deadline has already
+			// cancelled stepContext, so the goroutine unwinds and reports to the
+			// buffered stepDone channel on its own without leaking.
+			cancelStep()
+			_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-timeout", Message: fmt.Sprintf("reconcile step exceeded its %s watchdog deadline and was cancelled", stepTimeout)})
 		case stepErr := <-stepDone:
 			cancelStep()
 			if stepErr != nil {
