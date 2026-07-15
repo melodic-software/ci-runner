@@ -215,6 +215,119 @@ func TestWorkerExitInterruptsLongPollAndStartsAssignedReplacements(t *testing.T)
 	}
 }
 
+func TestMemorySlotFlapDoesNotRestartNonzeroLongPoll(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	now := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseDegraded, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org",
+			TotalAssignedJobs: 3, MaxCapacity: 2, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+	harness.controller.deps.State = notifying
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := harness.controller.Step(ctx)
+		done <- err
+	}()
+	waitForSignal(t, blocking.entered, "memory-clamped listener poll did not begin")
+
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 41 << 30, CPUUtilizationPercent: 10})
+	waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+		return len(observed.Pools) == 1 && observed.Pools[0].DesiredWorkers == 3
+	}, "raised memory affordability was not checkpointed during the open poll")
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
+	waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+		return len(observed.Pools) == 1 && observed.Pools[0].DesiredWorkers == 2
+	}, "lowered memory affordability was not checkpointed during the open poll")
+
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[2]" {
+		t.Fatalf("memory slot flap restarted the open listener poll: capacities=%v", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("canceled listener poll did not stop")
+	}
+}
+
+func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	now := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org",
+			TotalAssignedJobs: 3, MaxCapacity: 3, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 3}
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 41 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan ReconcileResult, 1)
+	go func() {
+		result, _ := harness.controller.Step(context.Background())
+		done <- result
+	}()
+	waitForSignal(t, blocking.entered, "memory-funded listener poll did not begin")
+
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
+
+	select {
+	case result := <-done:
+		if harness.runtime.startCount() != 2 {
+			t.Fatalf("serviceable assigned jobs were not started after the withdrawal restart: starts=%d", harness.runtime.startCount())
+		}
+		if len(result.Observed.Pools) != 1 || result.Observed.Pools[0].TotalAssignedJobs != 3 {
+			t.Fatalf("authoritative assignments were not observed after the restart: %#v", result.Observed.Pools)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("memory withdrawal did not restart the listener poll")
+	}
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 2]" {
+		t.Fatalf("advertised capacities = %v, want [3 2]", got)
+	}
+	if !logs.contains("listener-poll-superseded") {
+		t.Fatalf("poll restart was not durably logged: %s", logs)
+	}
+}
+
+func TestCapacityRestoredFromZeroDetectsOnlyZeroToPositiveTransitions(t *testing.T) {
+	t.Parallel()
+	if capacityRestoredFromZero(map[string]int{"org": 2}, map[string]int{"org": 3}) {
+		t.Fatal("nonzero growth was classified as a zero-capacity restoration")
+	}
+	if !capacityRestoredFromZero(map[string]int{"org": 0}, map[string]int{"org": 2}) {
+		t.Fatal("zero-to-positive transition was not detected")
+	}
+	if !capacityRestoredFromZero(map[string]int{}, map[string]int{"org": 1}) {
+		t.Fatal("missing prior pool capacity was not treated as zero")
+	}
+	if capacityRestoredFromZero(map[string]int{"org": 2}, map[string]int{"org": 0}) {
+		t.Fatal("withdrawal was classified as a restoration")
+	}
+}
+
 func TestSameWorkerInventoryIgnoresOrderingButDetectsLifecycleChanges(t *testing.T) {
 	t.Parallel()
 	left := []model.Worker{
@@ -311,6 +424,17 @@ type mutableResources struct {
 	mu       sync.Mutex
 	snapshot model.ResourceSnapshot
 	err      error
+}
+
+func (s *testLogSink) contains(code string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range s.events {
+		if event.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 type blockingPollFailure struct {
