@@ -35,10 +35,6 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
-    ignore:
-      # Legacy Compose is retained only until the canary proves the new
-      # controller. It must never drive a mutable deployment update.
-      - dependency-name: ghcr.io/melodic-software/ci-runner
     groups:
       worker-image:
         patterns:
