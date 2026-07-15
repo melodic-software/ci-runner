@@ -354,10 +354,21 @@ and [Docker resource constraints](https://docs.docker.com/engine/containers/reso
 
 ## Build, release, and rollback
 
-Local gates include module verification, vet, unit and race tests, Windows and
-Linux builds, `govulncheck`, Actionlint, Zizmor, strict configuration tests, and
-the live worker-image verifier. Release tags first run the complete read-only
-gate against the exact tagged source. Only the dependent publication job
+Pull requests and pushes delegate Go quality to the exact-SHA-pinned reusable
+workflow in `melodic-software/ci-workflows`. It runs the reviewed analyzer set
+on native Linux and Windows, [module tidiness and verification](https://go.dev/ref/mod)
+plus
+[race-enabled tests](https://go.dev/doc/articles/race_detector) on Linux,
+ordinary tests on Windows, and authenticated
+[`govulncheck`](https://go.dev/doc/security/vuln/) analysis. The repository-local
+Go build lane only cross-compiles the two Windows executables on Ubuntu; it does
+not repeat those checks. Committed fuzz seeds run in ordinary tests, while the
+weekly schedule and manual dispatch actively [fuzz](https://go.dev/doc/tutorial/fuzz)
+both targets for 30 seconds each.
+
+Other gates include Actionlint, Zizmor, strict configuration tests, and the live
+worker-image verifier. Release tags first rerun the complete read-only gate
+against the exact tagged source. Only the dependent publication job
 receives the combined job-scoped `contents:write`, `packages:write`,
 `attestations:write`, `artifact-metadata:write`, and `id-token:write` grant; the
 later image-promotion job retains only `contents:read` and `packages:write`.
