@@ -194,17 +194,28 @@ func loadConfiguration(path string) (config.Config, error) {
 	return cfg, nil
 }
 
-// reconcileStepTimeoutFactor bounds a single reconcile Step at a small multiple
-// of the per-request GitHub timeout. A healthy Step is dominated by one listener
-// long poll, which the scale-set client already caps at GitHub.RequestTimeout;
-// the multiple leaves room for a single call's full bounded retry budget
-// (Retry.MaxAttempts requests) so the watchdog fires only on a genuine wedge and
-// never on legitimate retries, while still bounding a stall to minutes instead
-// of the multi-hour park a deadline-less Step allowed.
-const reconcileStepTimeoutFactor = 8
+// reconcileStepMinRetryAttempts floors the configured retry count used to size
+// the Step watchdog so a pathological maxAttempts of 0 or 1 cannot collapse the
+// deadline toward a single request.
+const reconcileStepMinRetryAttempts = 3
 
+// reconcileStepTimeout bounds one reconcile Step generously enough never to
+// interrupt a legitimate retry sequence, yet tightly enough that a wedged
+// operation cannot park the controller. The Step's dominant cost is the listener
+// long poll, which RetryValue runs for up to Retry.MaxAttempts attempts, each
+// capped at RequestTimeout and separated by backoff waits capped at
+// Retry.Maximum; a flat multiple of RequestTimeout would ignore maxAttempts and
+// trip on healthy retries when it is configured high. attempts x (RequestTimeout
+// + Retry.Maximum) upper bounds that full retry budget (the Retry.Maximum term
+// over-bounds the real geometric backoff), and the added 50% margin leaves room
+// for the Step's other GitHub calls and worker provisioning.
 func reconcileStepTimeout(cfg config.Config) time.Duration {
-	return reconcileStepTimeoutFactor * cfg.GitHub.RequestTimeout.Duration
+	attempts := cfg.GitHub.Retry.MaxAttempts
+	if attempts < reconcileStepMinRetryAttempts {
+		attempts = reconcileStepMinRetryAttempts
+	}
+	retryBudget := time.Duration(attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
+	return retryBudget + retryBudget/2
 }
 
 func runControllerLoop(

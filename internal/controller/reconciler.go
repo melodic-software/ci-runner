@@ -268,12 +268,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		observationFailed = true
 		record("power-monitor-error", "power observation failed; new work is blocked", "", true, powerErr)
 	}
-	// Bound the safety-input watcher to the per-request timeout that also caps the
-	// listener poll it runs beside. In a healthy step it is cancelled when the poll
-	// returns, well inside this deadline; on a wedged poll the deadline stops it
-	// instead of letting it tick until the outer step watchdog. Worker admission
-	// still re-verifies desired and power state before every container start.
-	watchContext, stopWatch := context.WithTimeout(ctx, r.config.GitHub.RequestTimeout.Duration)
+	// This watcher is a child of the Step context, which the reconcileStepTimeout
+	// watchdog already bounds, so it needs no deadline of its own. A per-request
+	// deadline here would wrongly expire it during a normal multi-attempt listener
+	// poll: r.statistics runs through RetryValue for up to Retry.MaxAttempts
+	// attempts, so the poll it shadows can legitimately span minutes.
+	watchContext, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
 		defer close(watchDone)
@@ -392,10 +392,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	)
 	if containsReadyPool(pools) {
 		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
-		// Bound the poll-cadence watcher to the same per-request timeout as the
-		// listener poll it shadows; a wedged poll then cannot keep refreshing the
-		// heartbeat checkpoint and masking the stall from liveness monitoring.
-		pollWatchContext, stop := context.WithTimeout(ctx, r.config.GitHub.RequestTimeout.Duration)
+		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
+		// separate per-request deadline would expire this cadence watcher during a
+		// normal multi-attempt poll retry sequence, so none is set here.
+		pollWatchContext, stop := context.WithCancel(ctx)
 		stopPollWatch = stop
 		pollWatchDone = make(chan pollCadenceResult, 1)
 		cadenceState := pollCadenceState{
