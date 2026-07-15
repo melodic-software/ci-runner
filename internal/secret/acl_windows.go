@@ -3,6 +3,7 @@
 package secret
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -75,7 +76,7 @@ func (WindowsAccessController) Verify(path string) error {
 	return verifyFileDACL(path, current.Uid, info.IsDir())
 }
 
-func setFileDACL(path, sddl string) error {
+func setFileDACL(path, sddl string) (resultErr error) {
 	sddlPointer, err := syscall.UTF16PtrFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("encode ACL descriptor: %w", err)
@@ -90,7 +91,9 @@ func setFileDACL(path, sddl string) error {
 	if result == 0 {
 		return fmt.Errorf("convert ACL descriptor: %w", callError(callErr))
 	}
-	defer procLocalFree.Call(descriptor)
+	defer func() {
+		resultErr = errors.Join(resultErr, freeLocalMemory(descriptor))
+	}()
 	pathPointer, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return fmt.Errorf("encode ACL path: %w", err)
@@ -126,7 +129,7 @@ type windowsAccessAllowedACE struct {
 	SIDStart uint32
 }
 
-func verifyFileDACL(path, currentSID string, directory bool) error {
+func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 	descriptor, err := readFileSecurityDescriptor(path)
 	if err != nil {
 		return err
@@ -167,12 +170,16 @@ func verifyFileDACL(path, currentSID string, directory bool) error {
 	if err != nil {
 		return err
 	}
-	defer procLocalFree.Call(uintptr(currentPointer))
+	defer func() {
+		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(currentPointer)))
+	}()
 	systemPointer, err := sidFromString("S-1-5-18")
 	if err != nil {
 		return err
 	}
-	defer procLocalFree.Call(uintptr(systemPointer))
+	defer func() {
+		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(systemPointer)))
+	}()
 
 	expectedFlags := byte(0)
 	if directory {
@@ -212,7 +219,7 @@ func readFileSecurityDescriptor(path string) ([]byte, error) {
 		return nil, err
 	}
 	var required uint32
-	procGetFileSecurity.Call(
+	_, _, callErr := procGetFileSecurity.Call(
 		uintptr(unsafe.Pointer(pointer)),
 		daclSecurityInformation,
 		0,
@@ -220,7 +227,7 @@ func readFileSecurityDescriptor(path string) ([]byte, error) {
 		uintptr(unsafe.Pointer(&required)),
 	)
 	if required == 0 {
-		return nil, fmt.Errorf("query security descriptor size failed")
+		return nil, fmt.Errorf("query security descriptor size: %w", callError(callErr))
 	}
 	descriptor := make([]byte, required)
 	result, _, callErr := procGetFileSecurity.Call(

@@ -102,7 +102,11 @@ func TestTransportRejectsRestartAcceptanceWithoutRequestID(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer server.Close()
+	defer func() {
+		if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			t.Errorf("close server: %v", closeErr)
+		}
+	}()
 	go func() { _ = server.Serve(ctx) }()
 	client, err := NewClient(func(context.Context) (net.Conn, error) { return clientConnection, nil })
 	if err != nil {
@@ -141,7 +145,7 @@ func TestStopForUpdateFallsBackToV017ShutdownShape(t *testing.T) {
 		attempt := attempts
 		attempts++
 		go func() {
-			defer serverConnection.Close()
+			defer func() { _ = serverConnection.Close() }()
 			decoder := json.NewDecoder(serverConnection)
 			decoder.DisallowUnknownFields()
 			var request v017Request
@@ -242,7 +246,7 @@ func TestShutdownNeverFallsBackOutsideExactV017StopHandshake(t *testing.T) {
 				serverConnection, clientConnection := net.Pipe()
 				attempts++
 				go func() {
-					defer serverConnection.Close()
+					defer func() { _ = serverConnection.Close() }()
 					var request Request
 					if decodeErr := json.NewDecoder(serverConnection).Decode(&request); decodeErr != nil {
 						return
@@ -269,7 +273,11 @@ func TestShutdownNeverFallsBackOutsideExactV017StopHandshake(t *testing.T) {
 
 func TestServerCloseInterruptsClientThatNeverFinishesRequest(t *testing.T) {
 	serverConnection, clientConnection := net.Pipe()
-	defer clientConnection.Close()
+	defer func() {
+		if closeErr := clientConnection.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			t.Errorf("close client connection: %v", closeErr)
+		}
+	}()
 	server, err := NewServer(&singleConnectionListener{connection: serverConnection}, &testHandler{})
 	if err != nil {
 		t.Fatal(err)

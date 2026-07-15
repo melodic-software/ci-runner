@@ -79,21 +79,21 @@ func (m GamingManager) Verify(ctx context.Context) (GamingVerification, error) {
 
 	status, err := m.Desktop.Status(ctx)
 	if err != nil {
-		failures = append(failures, fmt.Errorf("Docker Desktop status: %w", err))
+		failures = append(failures, fmt.Errorf("query Docker Desktop status: %w", err))
 	} else {
 		verification.DesktopStopped = status == DesktopStatusStopped
 		if !verification.DesktopStopped {
-			failures = append(failures, fmt.Errorf("Docker Desktop is %s", status))
+			failures = append(failures, fmt.Errorf("unexpected Docker Desktop status %s", status))
 		}
 	}
 
 	reachable, err := m.Docker.EngineReachable(ctx)
 	if err != nil {
-		failures = append(failures, fmt.Errorf("Docker engine status: %w", err))
+		failures = append(failures, fmt.Errorf("query Docker engine status: %w", err))
 	} else {
 		verification.DockerUnreachable = !reachable
 		if reachable {
-			failures = append(failures, errors.New("Docker engine is still reachable"))
+			failures = append(failures, errors.New("docker engine is still reachable"))
 		}
 	}
 

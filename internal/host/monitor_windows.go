@@ -42,7 +42,7 @@ func (WindowsPowerMonitor) Snapshot(ctx context.Context) (model.PowerSnapshot, e
 		return model.PowerSnapshot{}, fmt.Errorf("GetSystemPowerStatus: %w", monitorCallError(callErr))
 	}
 	if status.ACLineStatus != 0 && status.ACLineStatus != 1 {
-		return model.PowerSnapshot{}, fmt.Errorf("Windows reported unknown AC line status %#x", status.ACLineStatus)
+		return model.PowerSnapshot{}, fmt.Errorf("operating system reported unknown AC line status %#x", status.ACLineStatus)
 	}
 	return model.PowerSnapshot{ACConnected: status.ACLineStatus == 1, ObservedAt: time.Now().UTC()}, nil
 }
@@ -136,7 +136,7 @@ func readSystemTimes() (systemTimes, error) {
 
 func monitorCallError(err error) error {
 	if err == nil || errors.Is(err, syscall.Errno(0)) {
-		return errors.New("Windows API call failed")
+		return errors.New("call Windows API")
 	}
 	return err
 }

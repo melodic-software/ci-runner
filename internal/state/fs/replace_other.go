@@ -2,7 +2,10 @@
 
 package statefs
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 func atomicReplace(source, target string) error { return os.Rename(source, target) }
 
@@ -11,6 +14,5 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	return errors.Join(directory.Sync(), directory.Close())
 }

@@ -181,7 +181,11 @@ func (s *Store) load(ctx context.Context, name string, destination any) (resultE
 	if err != nil {
 		return fmt.Errorf("open %s: %w", name, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close %s: %w", name, closeErr))
+		}
+	}()
 	limited := io.LimitReader(file, maximumStateSize+1)
 	contents, err := io.ReadAll(limited)
 	if err != nil {
