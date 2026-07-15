@@ -205,18 +205,6 @@ func containsReadyPool(pools []PoolSnapshot) bool {
 	return false
 }
 
-func sameCapacities(left, right map[string]int) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for poolID, capacity := range left {
-		if right[poolID] != capacity {
-			return false
-		}
-	}
-	return true
-}
-
 func capacityDecreased(previous, current map[string]int) bool {
 	for poolID, capacity := range previous {
 		if current[poolID] < capacity {
