@@ -55,7 +55,7 @@ func (p DPAPIProtector) Protect(plaintext []byte, description string) ([]byte, e
 	if result == 0 {
 		return nil, fmt.Errorf("CryptProtectData: %w", callError(callErr))
 	}
-	return copyAndFree(output, false), nil
+	return copyAndFree(output, false)
 }
 
 func (p DPAPIProtector) Unprotect(ciphertext []byte) ([]byte, error) {
@@ -77,7 +77,7 @@ func (p DPAPIProtector) Unprotect(ciphertext []byte) ([]byte, error) {
 	if result == 0 {
 		return nil, fmt.Errorf("CryptUnprotectData: %w", callError(callErr))
 	}
-	return copyAndFree(output, true), nil
+	return copyAndFree(output, true)
 }
 
 func blob(value []byte) dataBlob {
@@ -87,25 +87,45 @@ func blob(value []byte) dataBlob {
 	return dataBlob{Size: uint32(len(value)), Data: &value[0]}
 }
 
-func copyAndFree(value dataBlob, clearBeforeFree bool) []byte {
-	defer procLocalFree.Call(uintptr(unsafe.Pointer(value.Data)))
-	if value.Size == 0 || value.Data == nil {
-		return nil
+func copyAndFree(value dataBlob, clearBeforeFree bool) ([]byte, error) {
+	return copyAndFreeWith(value, clearBeforeFree, freeLocalMemory)
+}
+
+func copyAndFreeWith(value dataBlob, clearBeforeFree bool, free func(uintptr) error) ([]byte, error) {
+	if value.Data == nil {
+		return nil, nil
 	}
-	result := make([]byte, int(value.Size))
-	unmanaged := unsafe.Slice(value.Data, int(value.Size))
-	copy(result, unmanaged)
-	if clearBeforeFree {
-		for index := range unmanaged {
-			unmanaged[index] = 0
+	var result []byte
+	if value.Size > 0 {
+		result = make([]byte, int(value.Size))
+		unmanaged := unsafe.Slice(value.Data, int(value.Size))
+		copy(result, unmanaged)
+		if clearBeforeFree {
+			for index := range unmanaged {
+				unmanaged[index] = 0
+			}
 		}
 	}
-	return result
+	if err := free(uintptr(unsafe.Pointer(value.Data))); err != nil {
+		if clearBeforeFree {
+			zero(result)
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+func freeLocalMemory(pointer uintptr) error {
+	result, _, _ := procLocalFree.Call(pointer)
+	if result != 0 {
+		return errors.New("free Windows local memory: LocalFree returned a non-NULL handle")
+	}
+	return nil
 }
 
 func callError(err error) error {
 	if err == nil || errors.Is(err, syscall.Errno(0)) {
-		return errors.New("Windows API call failed")
+		return errors.New("call Windows API")
 	}
 	return err
 }

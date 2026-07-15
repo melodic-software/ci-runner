@@ -24,7 +24,7 @@ type releaseValidationResult struct {
 
 func runReleaseCommand(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 || args[0] != "validate" {
-		fmt.Fprintln(errOut, "usage: ci-runner release validate --manifest ABSOLUTE_PATH --version VERSION")
+		writeln(errOut, "usage: ci-runner release validate --manifest ABSOLUTE_PATH --version VERSION")
 		return ExitUsage
 	}
 	flags := flag.NewFlagSet("release validate", flag.ContinueOnError)
@@ -33,7 +33,7 @@ func runReleaseCommand(args []string, out, errOut io.Writer) int {
 	version := flags.String("version", "", "expected candidate executable version")
 	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || !filepath.IsAbs(*manifestPath) || strings.TrimSpace(*version) == "" {
 		if err == nil {
-			fmt.Fprintln(errOut, "--manifest must be absolute and --version is required")
+			writeln(errOut, "--manifest must be absolute and --version is required")
 		}
 		return ExitUsage
 	}
@@ -44,7 +44,7 @@ func runReleaseCommand(args []string, out, errOut io.Writer) int {
 		return ExitInvalidConfig
 	}
 	if err := json.NewEncoder(out).Encode(result); err != nil {
-		fmt.Fprintf(errOut, "write release validation result: %v\n", err)
+		writef(errOut, "write release validation result: %v\n", err)
 		return ExitRuntime
 	}
 	return ExitOK

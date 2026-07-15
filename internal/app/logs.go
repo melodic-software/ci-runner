@@ -26,29 +26,29 @@ func (a *Application) logs(ctx context.Context, args []string) int {
 	cleanup := flags.Bool("cleanup", false, "run finalized worker-artifact retention now")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || boolCount(*follow, *jobID != "", *cleanup) > 1 {
 		if boolCount(*follow, *jobID != "", *cleanup) > 1 {
-			fmt.Fprintln(a.errOut, "--follow, --job, and --cleanup are mutually exclusive")
+			writeln(a.errOut, "--follow, --job, and --cleanup are mutually exclusive")
 		}
 		return ExitUsage
 	}
 	if a.dependencies.Logs == nil {
-		fmt.Fprintln(a.errOut, "log reader is unavailable")
+		writeln(a.errOut, "log reader is unavailable")
 		return ExitInvalidConfig
 	}
 	if *cleanup {
 		cleaner, ok := a.dependencies.Logs.(interface{ Cleanup(context.Context) error })
 		if !ok {
-			fmt.Fprintln(a.errOut, "artifact cleanup is unavailable")
+			writeln(a.errOut, "artifact cleanup is unavailable")
 			return ExitInvalidConfig
 		}
 		if err := cleaner.Cleanup(ctx); err != nil {
-			fmt.Fprintf(a.errOut, "clean up worker artifacts: %v\n", err)
+			writef(a.errOut, "clean up worker artifacts: %v\n", err)
 			return ExitRuntime
 		}
-		fmt.Fprintln(a.out, "Finalized worker-artifact retention cleanup completed.")
+		writeln(a.out, "Finalized worker-artifact retention cleanup completed.")
 		return ExitOK
 	}
 	if err := a.dependencies.Logs.Write(ctx, a.out, *follow, *jobID); err != nil {
-		fmt.Fprintf(a.errOut, "read logs: %v\n", err)
+		writef(a.errOut, "read logs: %v\n", err)
 		return ExitRuntime
 	}
 	return ExitOK
@@ -178,7 +178,7 @@ func (f FileLogs) writeJobArtifacts(ctx context.Context, destination io.Writer, 
 			return statErr
 		}
 		if info.Mode().IsRegular() {
-			fmt.Fprintln(destination, artifact.path)
+			writeln(destination, artifact.path)
 			written++
 		}
 	}

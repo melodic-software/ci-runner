@@ -21,6 +21,17 @@ type windowsPrivateKeySource struct {
 	info os.FileInfo
 }
 
+func verifySourcePathIdentity(path string, expected os.FileInfo) error {
+	current, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("source pathname no longer identifies the opened file: %w", err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
+		return errors.New("source pathname identity changed after the file was opened")
+	}
+	return nil
+}
+
 func openPrivateKeySource(path string) (privateKeySource, error) {
 	before, err := os.Lstat(path)
 	if err != nil {

@@ -334,7 +334,8 @@ func parseRSAPrivateKey(value []byte) (*rsa.PrivateKey, error) {
 	if len(bytes.TrimSpace(rest)) != 0 {
 		return nil, errors.New("private key file contains trailing data")
 	}
-	if x509.IsEncryptedPEMBlock(block) || strings.Contains(block.Type, "ENCRYPTED") {
+	_, legacyEncrypted := block.Headers["DEK-Info"]
+	if legacyEncrypted || strings.Contains(block.Type, "ENCRYPTED") {
 		return nil, errors.New("encrypted PEM private keys are not supported")
 	}
 
@@ -478,10 +479,11 @@ func clearRSAPrivateKey(key *rsa.PrivateKey) {
 	clearBigInt(key.Precomputed.Dp)
 	clearBigInt(key.Precomputed.Dq)
 	clearBigInt(key.Precomputed.Qinv)
-	for index := range key.Precomputed.CRTValues {
-		clearBigInt(key.Precomputed.CRTValues[index].Exp)
-		clearBigInt(key.Precomputed.CRTValues[index].Coeff)
-		clearBigInt(key.Precomputed.CRTValues[index].R)
+	crtValues := key.Precomputed.CRTValues //nolint:staticcheck // Go still populates these deprecated values; zero them with the rest of the private key.
+	for index := range crtValues {
+		clearBigInt(crtValues[index].Exp)
+		clearBigInt(crtValues[index].Coeff)
+		clearBigInt(crtValues[index].R)
 	}
 }
 

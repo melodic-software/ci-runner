@@ -14,4 +14,4 @@ jobs:
   pr-title:
     permissions:
       pull-requests: read # Reusable semantic-title gate requires no write permission.
-    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0

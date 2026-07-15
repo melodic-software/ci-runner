@@ -101,16 +101,16 @@ func (o *Options) defaults() {
 
 func (o Options) validate() error {
 	if o.HostID == "" || o.ControllerVersion == "" {
-		return errors.New("Docker runtime host ID and controller version are required")
+		return errors.New("docker runtime host ID and controller version are required")
 	}
 	if !digestPinnedImage.MatchString(o.Image) {
-		return errors.New("Docker worker image must be pinned to an exact sha256 manifest digest")
+		return errors.New("docker worker image must be pinned to an exact sha256 manifest digest")
 	}
 	if !strings.HasPrefix(o.StatePath, "/") || !strings.HasPrefix(o.DiagnosticPath, "/") || !strings.HasPrefix(o.ResourceEvidencePath, "/") {
 		return errors.New("worker state, diagnostic, and resource-evidence paths must be absolute Linux paths")
 	}
 	if o.DockerLogMaxSizeBytes == 0 || o.DockerLogMaxFiles <= 0 {
-		return errors.New("Docker local log size and file count must be positive")
+		return errors.New("docker local log size and file count must be positive")
 	}
 	if o.IdleConfirmationWindow <= 0 || o.FinalizationTimeout <= 0 {
 		return errors.New("idle confirmation and finalization timeouts must be positive")
@@ -141,7 +141,7 @@ type containerWatch struct {
 
 func New(engine Engine, options Options) (*Runtime, error) {
 	if engine == nil {
-		return nil, errors.New("Docker engine client is required")
+		return nil, errors.New("docker engine client is required")
 	}
 	options.defaults()
 	if err := options.validate(); err != nil {
@@ -337,7 +337,7 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	}
 	if len(created.Warnings) > 0 {
 		_, _ = r.engine.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-		return model.Worker{}, safeWorkerStartError(fmt.Errorf("Docker rejected part of the worker configuration: %s", strings.Join(created.Warnings, "; ")))
+		return model.Worker{}, safeWorkerStartError(fmt.Errorf("worker configuration was rejected by Docker: %s", strings.Join(created.Warnings, "; ")))
 	}
 	attached, err := r.engine.ContainerAttach(ctx, created.ID, client.ContainerAttachOptions{Stream: true, Stdin: true})
 	if err != nil {
@@ -473,11 +473,15 @@ func (r *Runtime) ensureImage(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("pull pinned worker image: %w", err)
 	}
-	defer pull.Close()
-	if err := pull.Wait(ctx); err != nil {
-		return fmt.Errorf("pull pinned worker image: %w", err)
+	waitErr := pull.Wait(ctx)
+	closeErr := pull.Close()
+	if waitErr != nil {
+		return errors.Join(
+			fmt.Errorf("pull pinned worker image: %w", waitErr),
+			wrapIfError("close pinned worker image pull", closeErr),
+		)
 	}
-	return nil
+	return wrapIfError("close pinned worker image pull", closeErr)
 }
 
 func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map[string]string, containerState string, created int64) (model.Worker, error) {
@@ -509,12 +513,14 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 	return worker, nil
 }
 
-func (r *Runtime) readWorkerState(ctx context.Context, id string) (string, error) {
+func (r *Runtime) readWorkerState(ctx context.Context, id string) (_ string, resultErr error) {
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.StatePath})
 	if err != nil {
 		return "", err
 	}
-	defer result.Content.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, wrapIfError("close worker state archive", result.Content.Close()))
+	}()
 	tarReader := tar.NewReader(io.LimitReader(result.Content, 64*1024))
 	header, err := tarReader.Next()
 	if err != nil {
@@ -730,12 +736,14 @@ func (r *Runtime) captureLogs(ctx context.Context, id string) error {
 	)
 }
 
-func (r *Runtime) captureDiagnostics(ctx context.Context, id string) error {
+func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr error) {
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.DiagnosticPath})
 	if err != nil {
 		return fmt.Errorf("copy worker diagnostics: %w", err)
 	}
-	defer result.Content.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, wrapIfError("close worker diagnostics archive", result.Content.Close()))
+	}()
 	if err := r.opts.Artifacts.WriteDiagnostics(ctx, r.metadata(ctx, id), result.Content); err != nil {
 		return err
 	}

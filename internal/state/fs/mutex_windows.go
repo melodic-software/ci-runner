@@ -129,7 +129,6 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 		result <- windowsMutexAcquisition{err: err}
 		return
 	}
-	defer procMutexLocalFree.Call(descriptor)
 	attributes := securityAttributes{
 		Length:             uint32(unsafe.Sizeof(securityAttributes{})),
 		SecurityDescriptor: descriptor,
@@ -144,8 +143,13 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 		0,
 		uintptr(unsafe.Pointer(name)),
 	)
+	freeErr := freeMutexSecurityDescriptor(descriptor)
 	if handle == 0 {
-		result <- windowsMutexAcquisition{err: fmt.Errorf("CreateMutexW: %w", windowsCallError(callErr))}
+		result <- windowsMutexAcquisition{err: errors.Join(fmt.Errorf("CreateMutexW: %w", windowsCallError(callErr)), freeErr)}
+		return
+	}
+	if freeErr != nil {
+		result <- windowsMutexAcquisition{err: errors.Join(freeErr, closeWindowsHandle(handle))}
 		return
 	}
 	for {
@@ -208,9 +212,17 @@ func mutexSecurityDescriptor(sid string) (uintptr, error) {
 	return descriptor, nil
 }
 
+func freeMutexSecurityDescriptor(descriptor uintptr) error {
+	result, _, _ := procMutexLocalFree.Call(descriptor)
+	if result != 0 {
+		return errors.New("free mutex security descriptor: LocalFree returned a non-NULL handle")
+	}
+	return nil
+}
+
 func windowsCallError(err error) error {
 	if err == nil || errors.Is(err, syscall.Errno(0)) {
-		return errors.New("Windows API call failed")
+		return errors.New("call Windows API")
 	}
 	return err
 }

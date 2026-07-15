@@ -88,9 +88,9 @@ func LoadCompatibilityManifest(path, expectedControllerVersion string) (Compatib
 	if err != nil {
 		return CompatibilityManifest{}, fmt.Errorf("open compatibility manifest: %w", err)
 	}
-	defer file.Close()
-	contents, err := io.ReadAll(io.LimitReader(file, compatibilityMaximumSize+1))
-	if err != nil {
+	contents, readErr := io.ReadAll(io.LimitReader(file, compatibilityMaximumSize+1))
+	closeErr := file.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
 		return CompatibilityManifest{}, fmt.Errorf("read compatibility manifest: %w", err)
 	}
 	if len(contents) > compatibilityMaximumSize {

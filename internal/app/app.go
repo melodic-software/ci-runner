@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"path/filepath"
 	"sort"
@@ -127,7 +126,7 @@ func (a *Application) Run(ctx context.Context, args []string) int {
 		a.usage()
 		return ExitOK
 	default:
-		fmt.Fprintf(a.errOut, "unknown command %q\n", args[0])
+		writef(a.errOut, "unknown command %q\n", args[0])
 		a.usage()
 		return ExitUsage
 	}
@@ -155,7 +154,7 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 	case "controller":
 		return a.controllerCommand(ctx, args[1:])
 	default:
-		fmt.Fprintf(a.errOut, "unknown host command %q\n", args[0])
+		writef(a.errOut, "unknown host command %q\n", args[0])
 		return ExitUsage
 	}
 }
@@ -171,11 +170,11 @@ func (a *Application) status(ctx context.Context, args []string) int {
 	observed, observedErr := a.dependencies.Store.LoadObserved(ctx)
 	controlHealthy := true
 	if desiredErr != nil && !errors.Is(desiredErr, state.ErrNotFound) {
-		fmt.Fprintf(a.errOut, "read desired state: %v\n", desiredErr)
+		writef(a.errOut, "read desired state: %v\n", desiredErr)
 		return ExitRuntime
 	}
 	if observedErr != nil && !errors.Is(observedErr, state.ErrNotFound) {
-		fmt.Fprintf(a.errOut, "read observed state: %v\n", observedErr)
+		writef(a.errOut, "read observed state: %v\n", observedErr)
 		return ExitRuntime
 	}
 	if *jsonOutput {
@@ -216,7 +215,7 @@ func (a *Application) status(ctx context.Context, args []string) int {
 		encoder := json.NewEncoder(a.out)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(value); err != nil {
-			fmt.Fprintf(a.errOut, "write status: %v\n", err)
+			writef(a.errOut, "write status: %v\n", err)
 			return ExitRuntime
 		}
 	} else {
@@ -227,7 +226,7 @@ func (a *Application) status(ctx context.Context, args []string) int {
 			cancelProbe()
 			if err != nil {
 				controlHealthy = false
-				fmt.Fprintf(a.errOut, "Controller control plane: %v\n", err)
+				writef(a.errOut, "Controller control plane: %v\n", err)
 			}
 		}
 	}
@@ -282,7 +281,7 @@ func (a *Application) game(ctx context.Context, args []string) int {
 		return ExitUsage
 	}
 	if a.dependencies.Gaming == nil {
-		fmt.Fprintln(a.errOut, "gaming host inventory is unavailable")
+		writeln(a.errOut, "gaming host inventory is unavailable")
 		return ExitInvalidConfig
 	}
 	observed, _ := a.dependencies.Store.LoadObserved(ctx)
@@ -290,11 +289,11 @@ func (a *Application) game(ctx context.Context, args []string) int {
 	a.writeGamingInventory(observed, inventory)
 	confirmed, err := a.confirm("Enter gaming mode after active CI work drains? [y/N]: ", "y", "yes")
 	if err != nil {
-		fmt.Fprintf(a.errOut, "read confirmation: %v\n", err)
+		writef(a.errOut, "read confirmation: %v\n", err)
 		return ExitRuntime
 	}
 	if !confirmed {
-		fmt.Fprintln(a.out, "Gaming mode was not requested.")
+		writeln(a.out, "Gaming mode was not requested.")
 		return ExitOK
 	}
 	return a.requestMode(ctx, model.ModeGaming, wait, true)
@@ -305,17 +304,17 @@ func (a *Application) requestMode(ctx context.Context, mode model.Mode, wait, de
 	if errors.Is(err, state.ErrNotFound) {
 		desired = model.DesiredState{SchemaVersion: 1}
 	} else if err != nil {
-		fmt.Fprintf(a.errOut, "read desired state: %v\n", err)
+		writef(a.errOut, "read desired state: %v\n", err)
 		return ExitRuntime
 	}
 	desired.SchemaVersion = 1
 	desired.Mode = mode
 	desired.UpdatedAt = a.dependencies.Now().UTC()
 	if err := a.dependencies.Store.SaveDesired(ctx, desired); err != nil {
-		fmt.Fprintf(a.errOut, "write desired state: %v\n", err)
+		writef(a.errOut, "write desired state: %v\n", err)
 		return ExitRuntime
 	}
-	fmt.Fprintf(a.out, "Requested %s mode.\n", mode)
+	writef(a.out, "Requested %s mode.\n", mode)
 	if !wait {
 		return ExitOK
 	}
@@ -329,7 +328,7 @@ func parseWaitDetach(name string, args []string, errOut io.Writer) (bool, bool) 
 	detach := flags.Bool("detach", false, "return after recording desired state")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*wait && *detach) {
 		if *wait && *detach {
-			fmt.Fprintln(errOut, "--wait and --detach are mutually exclusive")
+			writeln(errOut, "--wait and --detach are mutually exclusive")
 		}
 		return false, false
 	}
@@ -347,24 +346,24 @@ func (a *Application) waitForMode(ctx context.Context, mode model.Mode, detachOn
 		if err == nil {
 			if observed.Phase == model.PhaseDegraded {
 				for _, problem := range observed.Problems {
-					fmt.Fprintf(a.errOut, "%s: %s\n", problem.Code, problem.Message)
+					writef(a.errOut, "%s: %s\n", problem.Code, problem.Message)
 				}
 				return classifyProblems(observed.Problems)
 			}
 			if modeReached(mode, observed.Phase) {
-				fmt.Fprintf(a.out, "Host reached %s phase.\n", observed.Phase)
+				writef(a.out, "Host reached %s phase.\n", observed.Phase)
 				return ExitOK
 			}
 		} else if detachOnCancel && errors.Is(err, context.Canceled) {
-			fmt.Fprintln(a.out, "Detached; the controller will continue the requested transition.")
+			writeln(a.out, "Detached; the controller will continue the requested transition.")
 			return ExitOK
 		} else if !errors.Is(err, state.ErrNotFound) {
-			fmt.Fprintf(a.errOut, "read observed state: %v\n", err)
+			writef(a.errOut, "read observed state: %v\n", err)
 			return ExitRuntime
 		}
 		if !warned && (mode == model.ModeDisabled || mode == model.ModeGaming) && a.dependencies.Config.Drain.WarningAfter.Duration > 0 && a.dependencies.Now().Sub(started) >= a.dependencies.Config.Drain.WarningAfter.Duration {
 			warned = true
-			fmt.Fprintf(a.errOut, "Drain has exceeded %s; active jobs will continue and will not be terminated automatically.\n", a.dependencies.Config.Drain.WarningAfter.Duration)
+			writef(a.errOut, "Drain has exceeded %s; active jobs will continue and will not be terminated automatically.\n", a.dependencies.Config.Drain.WarningAfter.Duration)
 		}
 		timer := time.NewTimer(a.dependencies.PollInterval)
 		select {
@@ -373,10 +372,10 @@ func (a *Application) waitForMode(ctx context.Context, mode model.Mode, detachOn
 				<-timer.C
 			}
 			if detachOnCancel {
-				fmt.Fprintln(a.out, "Detached; the controller will continue the requested transition.")
+				writeln(a.out, "Detached; the controller will continue the requested transition.")
 				return ExitOK
 			}
-			fmt.Fprintf(a.errOut, "wait interrupted: %v\n", ctx.Err())
+			writef(a.errOut, "wait interrupted: %v\n", ctx.Err())
 			return ExitRuntime
 		case <-timer.C:
 		}
@@ -411,7 +410,7 @@ func classifyProblems(problems []model.Problem) int {
 
 func (a *Application) runSecret(ctx context.Context, args []string) int {
 	if len(args) == 0 || args[0] != "import" {
-		fmt.Fprintln(a.errOut, "usage: ci-runner secret import --file PATH")
+		writeln(a.errOut, "usage: ci-runner secret import --file PATH")
 		return ExitUsage
 	}
 	flags := flag.NewFlagSet("secret import", flag.ContinueOnError)
@@ -422,7 +421,7 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 		return ExitUsage
 	}
 	if a.dependencies.Secrets == nil {
-		fmt.Fprintln(a.errOut, "secret importer is unavailable")
+		writeln(a.errOut, "secret importer is unavailable")
 		return ExitInvalidConfig
 	}
 	configuredIDs := make(map[string]struct{})
@@ -439,25 +438,25 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 		selectedID = ids[0]
 	}
 	if selectedID == "" && len(ids) > 1 {
-		fmt.Fprintf(a.out, "Configured credential IDs: %s\nSecret ID: ", strings.Join(ids, ", "))
+		writef(a.out, "Configured credential IDs: %s\nSecret ID: ", strings.Join(ids, ", "))
 		selection, readErr := a.readLine()
 		if readErr != nil {
-			fmt.Fprintf(a.errOut, "read secret ID: %v\n", readErr)
+			writef(a.errOut, "read secret ID: %v\n", readErr)
 			return ExitRuntime
 		}
 		selectedID = selection
 	}
 	if _, configured := configuredIDs[selectedID]; !configured || selectedID == "" {
-		fmt.Fprintf(a.errOut, "secret ID %q is not configured for this host\n", selectedID)
+		writef(a.errOut, "secret ID %q is not configured for this host\n", selectedID)
 		return ExitInvalidConfig
 	}
 	destination := filepath.Join(a.dependencies.Config.Paths.Secrets, selectedID+".dpapi")
 	result, err := a.dependencies.Secrets.Import(ctx, *file, destination)
 	if err != nil {
-		fmt.Fprintf(a.errOut, "import secret: %v\n", err)
+		writef(a.errOut, "import secret: %v\n", err)
 		return ExitCredential
 	}
-	fmt.Fprintf(a.out, "Imported GitHub App key\nPlaintext source PEM removed with identity-bound ordinary filesystem deletion (not media sanitization): %s\nGitHub App fingerprint (Base64 SHA-256): %s\nProtected path: %s\nImported: %s\n", *file, result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
+	writef(a.out, "Imported GitHub App key\nPlaintext source PEM removed with identity-bound ordinary filesystem deletion (not media sanitization): %s\nGitHub App fingerprint (Base64 SHA-256): %s\nProtected path: %s\nImported: %s\n", *file, result.Fingerprint, result.Path, result.ImportedAt.Format(time.RFC3339))
 	return ExitOK
 }
 
@@ -466,7 +465,7 @@ func (a *Application) forceStop(ctx context.Context, args []string) int {
 		return ExitUsage
 	}
 	if a.dependencies.ForceStop == nil {
-		fmt.Fprintln(a.errOut, "force-stop runtime is unavailable")
+		writeln(a.errOut, "force-stop runtime is unavailable")
 		return ExitInvalidConfig
 	}
 	if code := a.requestMode(ctx, model.ModeDisabled, false, false); code != ExitOK {
@@ -474,7 +473,7 @@ func (a *Application) forceStop(ctx context.Context, args []string) int {
 	}
 	desired, err := a.dependencies.Store.LoadDesired(ctx)
 	if err != nil {
-		fmt.Fprintf(a.errOut, "read force-stop desired state: %v\n", err)
+		writef(a.errOut, "read force-stop desired state: %v\n", err)
 		return ExitRuntime
 	}
 	if code := a.waitForZeroCapacity(ctx, desired.UpdatedAt); code != ExitOK {
@@ -482,37 +481,37 @@ func (a *Application) forceStop(ctx context.Context, args []string) int {
 	}
 	preview, err := a.dependencies.ForceStop.Preview(ctx)
 	if err != nil {
-		fmt.Fprintf(a.errOut, "inventory force-stop targets: %v\n", err)
+		writef(a.errOut, "inventory force-stop targets: %v\n", err)
 		return ExitRuntime
 	}
 	if len(preview) == 0 {
-		fmt.Fprintln(a.out, "No active managed workers require force-stop.")
+		writeln(a.out, "No active managed workers require force-stop.")
 		return ExitOK
 	}
-	fmt.Fprintln(a.out, "Force-stop will terminate these managed workers and any jobs they are running:")
+	writeln(a.out, "Force-stop will terminate these managed workers and any jobs they are running:")
 	for _, target := range preview {
-		fmt.Fprintf(a.out, "- %s pool=%s state=%s job=%s\n", target.Name, target.PoolID, target.State, displayValue(target.JobID))
+		writef(a.out, "- %s pool=%s state=%s job=%s\n", target.Name, target.PoolID, target.State, displayValue(target.JobID))
 	}
-	fmt.Fprint(a.out, "Type FORCE STOP to continue: ")
+	write(a.out, "Type FORCE STOP to continue: ")
 	confirmation, err := a.readLine()
 	if err != nil {
-		fmt.Fprintf(a.errOut, "read confirmation: %v\n", err)
+		writef(a.errOut, "read confirmation: %v\n", err)
 		return ExitRuntime
 	}
 	if confirmation != "FORCE STOP" {
-		fmt.Fprintln(a.out, "Force-stop was not executed; disabled mode remains requested.")
+		writeln(a.out, "Force-stop was not executed; disabled mode remains requested.")
 		return ExitOK
 	}
 	stopped, err := a.dependencies.ForceStop.Execute(ctx, preview)
 	if errors.Is(err, controller.ErrForceStopStateChanged) {
-		fmt.Fprintln(a.errOut, "Worker state changed after confirmation; nothing was force-stopped. Review the new inventory and try again.")
+		writeln(a.errOut, "Worker state changed after confirmation; nothing was force-stopped. Review the new inventory and try again.")
 		return ExitStateChanged
 	}
 	if err != nil {
-		fmt.Fprintf(a.errOut, "force-stop workers: %v\n", err)
+		writef(a.errOut, "force-stop workers: %v\n", err)
 		return ExitRuntime
 	}
-	fmt.Fprintf(a.out, "Force-stopped %d managed worker(s).\n", len(stopped))
+	writef(a.out, "Force-stopped %d managed worker(s).\n", len(stopped))
 	return ExitOK
 }
 
@@ -540,7 +539,7 @@ func (a *Application) waitForZeroCapacity(ctx context.Context, requestedAt time.
 				return classifyProblems(observed.Problems)
 			}
 		} else if !errors.Is(err, state.ErrNotFound) {
-			fmt.Fprintf(a.errOut, "read observed state: %v\n", err)
+			writef(a.errOut, "read observed state: %v\n", err)
 			return ExitRuntime
 		}
 		timer := time.NewTimer(a.dependencies.PollInterval)
@@ -549,7 +548,7 @@ func (a *Application) waitForZeroCapacity(ctx context.Context, requestedAt time.
 			if !timer.Stop() {
 				<-timer.C
 			}
-			fmt.Fprintln(a.errOut, "force-stop canceled while waiting for listeners to advertise zero capacity")
+			writeln(a.errOut, "force-stop canceled while waiting for listeners to advertise zero capacity")
 			return ExitRuntime
 		case <-timer.C:
 		}
@@ -557,7 +556,7 @@ func (a *Application) waitForZeroCapacity(ctx context.Context, requestedAt time.
 }
 
 func (a *Application) confirm(prompt string, accepted ...string) (bool, error) {
-	fmt.Fprint(a.out, prompt)
+	write(a.out, prompt)
 	value, err := a.readLine()
 	if err != nil {
 		return false, err
@@ -582,7 +581,7 @@ func (a *Application) readLine() (string, error) {
 }
 
 func (a *Application) usage() {
-	fmt.Fprintln(a.out, `Usage:
+	writeln(a.out, `Usage:
   ci-runner host
   ci-runner host status [--json]
   ci-runner host enable [--wait]

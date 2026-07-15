@@ -21,6 +21,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv/v1.26.0"
 	apiTrace "go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -125,7 +126,7 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 		semconv.HostName(options.HostID),
 	)
 
-	var tracerProvider apiTrace.TracerProvider = apiTrace.NewNoopTracerProvider()
+	var tracerProvider apiTrace.TracerProvider = tracenoop.NewTracerProvider()
 	if traceEnabled {
 		protocol, protocolErr := traceProtocol, error(nil)
 		if options.Export == nil {

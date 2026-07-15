@@ -679,10 +679,10 @@ func officialRetryErrorHandler(response *http.Response, err error, _ int) (*http
 type officialAPIWrapper struct{ *actionsscale.Client }
 
 func (c *officialAPIWrapper) MessageSession(ctx context.Context, scaleSetID int, owner string) (officialSession, error) {
-	return c.Client.MessageSessionClient(ctx, scaleSetID, owner, actionsscale.WithRetryMax(0))
+	return c.MessageSessionClient(ctx, scaleSetID, owner, actionsscale.WithRetryMax(0))
 }
 func (c *officialAPIWrapper) GenerateJITConfig(ctx context.Context, setting *actionsscale.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error) {
-	return c.Client.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
+	return c.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
 }
 func (c *officialAPIWrapper) GetRunner(ctx context.Context, runnerID int) (*actionsscale.RunnerReference, error) {
 	return c.Client.GetRunner(ctx, runnerID)

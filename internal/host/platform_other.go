@@ -7,7 +7,7 @@ import (
 	"errors"
 )
 
-var errWindowsHostRequired = errors.New("Docker Desktop and WSL host operations require Windows")
+var errWindowsHostRequired = errors.New("host operations for Docker Desktop and WSL require Windows")
 
 type unsupportedGamingHost struct{}
 

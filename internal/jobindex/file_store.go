@@ -182,7 +182,7 @@ func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, res
 	return merged, nil
 }
 
-func (s *FileStore) loadUnlocked() (Catalog, error) {
+func (s *FileStore) loadUnlocked() (_ Catalog, resultErr error) {
 	file, err := os.Open(filepath.Join(s.directory, jobsFilename))
 	if errors.Is(err, os.ErrNotExist) {
 		return Catalog{}, ErrNotFound
@@ -190,7 +190,11 @@ func (s *FileStore) loadUnlocked() (Catalog, error) {
 	if err != nil {
 		return Catalog{}, fmt.Errorf("open jobs.json: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close jobs.json: %w", closeErr))
+		}
+	}()
 	contents, err := io.ReadAll(io.LimitReader(file, maximumJobState+1))
 	if err != nil {
 		return Catalog{}, fmt.Errorf("read jobs.json: %w", err)

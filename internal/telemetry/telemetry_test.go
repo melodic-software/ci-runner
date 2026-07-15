@@ -356,8 +356,9 @@ func assertLowCardinality(t *testing.T, resourceMetrics metricdata.ResourceMetri
 					if _, ok := allowed[string(item.Key)]; !ok {
 						t.Errorf("metric %q contains unreviewed attribute key %q", current.Name, item.Key)
 					}
-					if strings.Contains(item.Value.Emit(), "runner-") || strings.Contains(item.Value.Emit(), "job-") {
-						t.Errorf("metric %q contains high-cardinality identity %q", current.Name, item.Value.Emit())
+					value := item.Value.String()
+					if strings.Contains(value, "runner-") || strings.Contains(value, "job-") {
+						t.Errorf("metric %q contains high-cardinality identity %q", current.Name, value)
 					}
 				}
 			}

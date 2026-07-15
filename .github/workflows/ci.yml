@@ -26,7 +26,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdown@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/markdown@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -40,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           rcfile: .shellcheckrc
 
@@ -54,7 +54,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
 
   typos:
     name: Spelling
@@ -66,7 +66,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/typos@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           config: _typos.toml
 
@@ -80,7 +80,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           config: .editorconfig-checker.json
 
@@ -95,7 +95,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           config: .gitleaks.toml
 
@@ -109,7 +109,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           config: lychee.toml
 
@@ -123,7 +123,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
 
   actionlint:
     name: Actionlint
@@ -135,7 +135,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
 
   jsonschema:
     name: JSON schemas
@@ -147,12 +147,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
@@ -167,7 +167,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
 
   machine-specific-paths:
     name: Machine-specific paths
@@ -179,7 +179,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
@@ -201,13 +201,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
 
   zizmor:
     name: Zizmor
     permissions:
       contents: read # Reusable advisory audit reads the checked-in workflow graph.
-    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@d87a5909b2d824320a019481a23324b83e73714c # v0.2.0
+    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
     with:
       paths: .
 
@@ -223,7 +223,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: 1.26.5
+          go-version-file: go.mod
           cache: true
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -236,8 +236,15 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-ReleasePins.ps1
 
-  go:
-    name: Go
+  go-quality:
+    permissions:
+      contents: read
+    uses: melodic-software/ci-workflows/.github/workflows/go-quality.yml@9eb22acf1a9235c352779325d24615b7b492d44d # v0.3.0
+    with:
+      config: .golangci.yml
+
+  go-windows-build:
+    name: Go Windows builds
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -248,19 +255,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: 1.26.5
+          go-version-file: go.mod
           cache: true
-      - name: Verify module graph
-        run: |
-          go mod tidy -diff
-          go mod verify
-      - name: Vet and test
-        run: |
-          go vet ./...
-          go test ./...
-          go test -race ./...
-      - name: Scan called code for known vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - name: Compile Windows executables
         env:
           CGO_ENABLED: '0'
@@ -269,6 +265,69 @@ jobs:
         run: |
           go build -trimpath -o /tmp/ci-runner.exe ./cmd/ci-runner
           go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
+
+  go-fuzz:
+    name: Go fuzz
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz control request decoding
+        id: fuzz_control
+        continue-on-error: true
+        run: >-
+          go test ./internal/control -run='^$'
+          -fuzz='^FuzzReadRequest$' -fuzztime=30s
+      - name: Fuzz Docker archive validation
+        id: fuzz_docker_archive
+        continue-on-error: true
+        run: >-
+          go test ./internal/runtime/docker -run='^$'
+          -fuzz='^FuzzReadSingleRegularArchive$' -fuzztime=30s
+      - name: Collect newly generated failing inputs
+        if: >-
+          steps.fuzz_control.outcome == 'failure' ||
+          steps.fuzz_docker_archive.outcome == 'failure'
+        env:
+          FUZZ_FAILURES: ${{ runner.temp }}/go-fuzz-failures
+        run: |
+          mkdir -p "$FUZZ_FAILURES"
+          git ls-files --others --exclude-standard -- \
+            internal/control/testdata/fuzz/FuzzReadRequest \
+            internal/runtime/docker/testdata/fuzz/FuzzReadSingleRegularArchive \
+            | while IFS= read -r file; do
+              cp --parents "$file" "$FUZZ_FAILURES"
+            done
+      - name: Upload minimized failing inputs
+        if: >-
+          steps.fuzz_control.outcome == 'failure' ||
+          steps.fuzz_docker_archive.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-fuzz-failures-${{ github.run_id }}
+          path: ${{ runner.temp }}/go-fuzz-failures
+          if-no-files-found: ignore
+      - name: Report fuzz failures
+        if: >-
+          always() &&
+          (steps.fuzz_control.outcome == 'failure' ||
+          steps.fuzz_docker_archive.outcome == 'failure')
+        env:
+          CONTROL_OUTCOME: ${{ steps.fuzz_control.outcome }}
+          DOCKER_ARCHIVE_OUTCOME: ${{ steps.fuzz_docker_archive.outcome }}
+        run: |
+          echo "Control request fuzz outcome: $CONTROL_OUTCOME"
+          echo "Docker archive fuzz outcome: $DOCKER_ARCHIVE_OUTCOME"
+          exit 1
 
   worker-image:
     name: Worker image
@@ -332,7 +391,9 @@ jobs:
       - eol-renormalize
       - zizmor
       - policy
-      - go
+      - go-quality
+      - go-windows-build
+      - go-fuzz
       - worker-image
       - dependency-review
     runs-on: ubuntu-24.04
@@ -356,7 +417,9 @@ jobs:
             ${{ needs.eol-renormalize.result }}
             ${{ needs.zizmor.result }}
             ${{ needs.policy.result }}
-            ${{ needs.go.result }}
+            ${{ needs.go-quality.result }}
+            ${{ needs.go-windows-build.result }}
+            ${{ needs.go-fuzz.result }}
             ${{ needs.worker-image.result }}
             ${{ needs.dependency-review.result }}
         run: |

@@ -66,7 +66,11 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 	if err != nil {
 		return err
 	}
-	defer logs.Close()
+	defer func() {
+		// The controller cannot report a final sink-close failure through the
+		// same sink, and shutdown behavior must remain independent of logging.
+		_ = logs.Close()
+	}()
 	logEvent := func(code, message string) {
 		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: code, Message: message})
 	}

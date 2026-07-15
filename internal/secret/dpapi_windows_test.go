@@ -5,7 +5,27 @@ package secret
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
+
+func TestCopyAndFreeReleasesZeroLengthAllocation(t *testing.T) {
+	allocation := byte(0)
+	pointer := uintptr(unsafe.Pointer(&allocation))
+	freed := uintptr(0)
+	result, err := copyAndFreeWith(dataBlob{Data: &allocation}, true, func(value uintptr) error {
+		freed = value
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("copyAndFreeWith: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
+	}
+	if freed != pointer {
+		t.Fatalf("freed pointer = %#x, want %#x", freed, pointer)
+	}
+}
 
 func TestDPAPIProtectorRoundTripUsesCurrentIdentity(t *testing.T) {
 	protector := NewDPAPIProtector()

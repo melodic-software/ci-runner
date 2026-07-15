@@ -2,7 +2,6 @@ package secret
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -25,5 +24,3 @@ func parseBitLockerStatus(value []byte) error {
 	}
 	return nil
 }
-
-var errBitLockerRequiresWindows = errors.New("BitLocker verification requires Windows")

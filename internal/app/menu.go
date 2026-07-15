@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
@@ -11,7 +10,7 @@ import (
 
 func (a *Application) menu(ctx context.Context) int {
 	for {
-		fmt.Fprintln(a.out, `
+		writeln(a.out, `
 ci-runner host
   1. Status and health
   2. Enable/resume CI
@@ -22,13 +21,13 @@ ci-runner host
   7. Temporary capacity
   8. Force stop
   9. Exit`)
-		fmt.Fprint(a.out, "Select an option: ")
+		write(a.out, "Select an option: ")
 		choice, err := a.readLine()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return ExitOK
 			}
-			fmt.Fprintf(a.errOut, "read menu selection: %v\n", err)
+			writef(a.errOut, "read menu selection: %v\n", err)
 			return ExitRuntime
 		}
 		switch choice {
@@ -51,7 +50,7 @@ ci-runner host
 		case "9", "q", "quit", "exit":
 			return ExitOK
 		default:
-			fmt.Fprintln(a.errOut, "Choose a number from 1 through 9.")
+			writeln(a.errOut, "Choose a number from 1 through 9.")
 		}
 	}
 }
@@ -61,35 +60,35 @@ func (a *Application) temporaryCapacity(ctx context.Context) int {
 	if errors.Is(err, state.ErrNotFound) {
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled}
 	} else if err != nil {
-		fmt.Fprintf(a.errOut, "read desired state: %v\n", err)
+		writef(a.errOut, "read desired state: %v\n", err)
 		return ExitRuntime
 	}
 	if desired.TemporaryCapacityOverride == nil {
-		fmt.Fprintln(a.out, "Temporary capacity currently uses the checked-in configuration.")
+		writeln(a.out, "Temporary capacity currently uses the checked-in configuration.")
 	} else {
-		fmt.Fprintf(a.out, "Temporary capacity is %d.\n", *desired.TemporaryCapacityOverride)
+		writef(a.out, "Temporary capacity is %d.\n", *desired.TemporaryCapacityOverride)
 	}
-	fmt.Fprint(a.out, "Enter a non-negative capacity, or reset: ")
+	write(a.out, "Enter a non-negative capacity, or reset: ")
 	value, err := a.readLine()
 	if err != nil {
-		fmt.Fprintf(a.errOut, "read capacity: %v\n", err)
+		writef(a.errOut, "read capacity: %v\n", err)
 		return ExitRuntime
 	}
 	capacity, err := parseCapacity(value)
 	if err != nil {
-		fmt.Fprintln(a.errOut, err)
+		writeln(a.errOut, err)
 		return ExitUsage
 	}
 	desired.TemporaryCapacityOverride = capacity
 	desired.UpdatedAt = a.dependencies.Now().UTC()
 	if err := a.dependencies.Store.SaveDesired(ctx, desired); err != nil {
-		fmt.Fprintf(a.errOut, "write desired state: %v\n", err)
+		writef(a.errOut, "write desired state: %v\n", err)
 		return ExitRuntime
 	}
 	if capacity == nil {
-		fmt.Fprintln(a.out, "Temporary capacity reset to the checked-in value.")
+		writeln(a.out, "Temporary capacity reset to the checked-in value.")
 	} else {
-		fmt.Fprintf(a.out, "Temporary capacity set to %d; admission and pressure gates still apply.\n", *capacity)
+		writef(a.out, "Temporary capacity set to %d; admission and pressure gates still apply.\n", *capacity)
 	}
 	return ExitOK
 }

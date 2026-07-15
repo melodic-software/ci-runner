@@ -2,7 +2,12 @@
 
 package secret
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var errBitLockerRequiresWindows = errors.New("verify BitLocker protection: Windows is required")
 
 type UnsupportedBitLockerVerifier struct{}
 

@@ -31,12 +31,19 @@ import (
 
 const pinnedTestImage = "ghcr.io/actions/actions-runner:2.335.1@sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29"
 
+func closeRuntime(t *testing.T, runtime *Runtime) {
+	t.Helper()
+	if err := runtime.Close(); err != nil {
+		t.Errorf("close runtime: %v", err)
+	}
+}
+
 func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
 	sink := &memoryArtifacts{}
 	runtime := newTestRuntime(t, engine, sink)
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	request := controller.StartWorkerRequest{
 		PoolID: "org", Name: "melo-desk-001-worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("test-jit"), 99),
 		Limits: config.Worker{CPUs: 2, Memory: config.ByteSize(8 << 30), MemorySwap: config.ByteSize(8 << 30), PIDs: 4096},
@@ -87,10 +94,10 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	if host.Privileged || host.AutoRemove || host.PublishAllPorts || len(host.Binds) != 0 || len(host.Mounts) != 0 || len(host.VolumesFrom) != 0 {
 		t.Fatalf("unsafe host configuration = %#v", host)
 	}
-	if len(host.Resources.Devices) != 0 || len(host.Resources.DeviceRequests) != 0 || len(host.Resources.DeviceCgroupRules) != 0 {
+	if len(host.Devices) != 0 || len(host.DeviceRequests) != 0 || len(host.DeviceCgroupRules) != 0 {
 		t.Fatalf("worker received devices: %#v", host.Resources)
 	}
-	if host.Resources.NanoCPUs != 2_000_000_000 || host.Resources.Memory != 8<<30 || host.Resources.MemorySwap != 8<<30 || host.Resources.PidsLimit == nil || *host.Resources.PidsLimit != 4096 {
+	if host.NanoCPUs != 2_000_000_000 || host.Memory != 8<<30 || host.MemorySwap != 8<<30 || host.PidsLimit == nil || *host.PidsLimit != 4096 {
 		t.Fatalf("resource limits = %#v", host.Resources)
 	}
 	if host.LogConfig.Type != "local" || host.LogConfig.Config["max-size"] != "10485760" || host.LogConfig.Config["max-file"] != "3" {
@@ -112,7 +119,7 @@ func TestStartPullsOnlyWhenPinnedImageMissing(t *testing.T) {
 	engine := newFakeEngine()
 	engine.imagePresent = false
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	_, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
 		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
 		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
@@ -122,6 +129,22 @@ func TestStartPullsOnlyWhenPinnedImageMissing(t *testing.T) {
 	}
 	if engine.pullCount() != 1 || engine.pulledImage() != pinnedTestImage {
 		t.Fatalf("pull count/image = %d %q", engine.pullCount(), engine.pulledImage())
+	}
+}
+
+func TestStartReportsImagePullCloseFailure(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.imagePresent = false
+	engine.pullCloseErr = errors.New("test image pull close failure")
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+	_, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	if err == nil || !strings.Contains(err.Error(), "close pinned worker image pull") {
+		t.Fatalf("Start error = %v, want image pull close failure", err)
 	}
 }
 
@@ -135,7 +158,7 @@ func TestRuntimeEmitsBoundedWorkerLifecycleTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
 		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
 		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
@@ -169,7 +192,7 @@ func TestWatchCompletionFollowsFinalizationTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
 		PoolID: "org", Name: "worker", ResourceTier: "default",
 		JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
@@ -228,7 +251,7 @@ func TestControllerShutdownClassificationAcrossPostExitPhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer runtime.Close()
+			defer closeRuntime(t, runtime)
 			if _, err := runtime.List(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -259,7 +282,7 @@ func TestResourceEvidenceCopyFailurePersistsFallbackWithoutBlockingDiagnostics(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
 		PoolID: "org", Name: "worker", ResourceTier: "target_override",
 		JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
@@ -299,7 +322,7 @@ func TestStartRejectsMultilineJITAndNonLinuxEngine(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	request := controller.StartWorkerRequest{
 		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("line-one\nline-two"), 99),
 		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
@@ -332,7 +355,7 @@ func TestStartNeverForceRemovesAfterAmbiguousJITDelivery(t *testing.T) {
 			engine.attachWriteErrorAt = test.writeErrorAt
 			engine.attachCloseWriteErr = test.closeWriteErr
 			runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-			defer runtime.Close()
+			defer closeRuntime(t, runtime)
 			_, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
 				PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
 				Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
@@ -355,7 +378,7 @@ func TestNewLocalIgnoresDockerEnvironmentOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	apiClient, ok := runtime.engine.(*client.Client)
 	if !ok {
 		t.Fatalf("engine type = %T", runtime.engine)
@@ -370,7 +393,7 @@ func TestRemoveIfIdleRequiresTwoIdleObservationsAndNeverForces(t *testing.T) {
 	engine := newFakeEngine()
 	engine.addContainer("idle-worker", "idle", "running")
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	removed, err := runtime.RemoveIfIdle(context.Background(), "idle-worker")
 	if err != nil || !removed {
 		t.Fatalf("removed=%v error=%v", removed, err)
@@ -389,7 +412,7 @@ func TestRemoveIfIdlePreservesBusyOrChangingWorker(t *testing.T) {
 	engine := newFakeEngine()
 	engine.addContainer("busy-worker", "busy", "running")
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	removed, err := runtime.RemoveIfIdle(context.Background(), "busy-worker")
 	if err != nil || removed {
 		t.Fatalf("removed=%v error=%v", removed, err)
@@ -414,7 +437,7 @@ func TestForceStopUsesExplicitKillThenPreservesDiagnostics(t *testing.T) {
 	engine := newFakeEngine()
 	engine.addContainer("busy-worker", "busy", "running")
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if err := runtime.ForceStop(context.Background(), "busy-worker"); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +455,7 @@ func TestListReconstructsStateFromOfficialHookFile(t *testing.T) {
 	engine.addContainer("complete", "completed", "running")
 	engine.addContainer("exited", "completed", "exited")
 	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	workers, err := runtime.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -452,7 +475,7 @@ func TestListAdoptsAllContainersBeforeStartingFinalizers(t *testing.T) {
 	engine.addContainer("exited", "completed", "exited")
 	sink := &memoryArtifacts{}
 	runtime := newTestRuntime(t, engine, sink)
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +498,7 @@ func TestArtifactPersistenceFailureRetainsExitedContainerAndListRetries(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +546,7 @@ func TestWaitNotFoundIsBoundedMissingLifecycleEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +578,7 @@ func TestWaitFailureRecoversStoppedContainerExitCodeFromInspect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +606,7 @@ func TestStuckLogStreamIsCanceledBeforeWatchRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +653,7 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer closeRuntime(t, runtime)
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -782,6 +805,7 @@ type fakeEngine struct {
 	imagePresent        bool
 	pulls               int
 	pullImage           string
+	pullCloseErr        error
 	created             client.ContainerCreateOptions
 	containers          map[string]*fakeContainer
 	calls               []string
@@ -822,7 +846,7 @@ func (e *fakeEngine) ImagePull(_ context.Context, image string, _ client.ImagePu
 	e.pullImage = image
 	e.imagePresent = true
 	e.mu.Unlock()
-	return &fakePull{}, nil
+	return &fakePull{closeErr: e.pullCloseErr}, nil
 }
 
 func (e *fakeEngine) Info(context.Context, client.InfoOptions) (client.SystemInfoResult, error) {
@@ -1154,10 +1178,10 @@ func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {
 	}
 }
 
-type fakePull struct{}
+type fakePull struct{ closeErr error }
 
 func (*fakePull) Read([]byte) (int, error)   { return 0, io.EOF }
-func (*fakePull) Close() error               { return nil }
+func (p *fakePull) Close() error             { return p.closeErr }
 func (*fakePull) Wait(context.Context) error { return nil }
 func (*fakePull) JSONMessages(context.Context) iter.Seq2[jsonstream.Message, error] {
 	return func(func(jsonstream.Message, error) bool) {}

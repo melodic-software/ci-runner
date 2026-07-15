@@ -301,7 +301,7 @@ func (c *Client) roundTrip(ctx context.Context, request Request) (Response, erro
 	return c.roundTripMessage(ctx, request.RequestID, request)
 }
 
-func (c *Client) roundTripMessage(ctx context.Context, requestID string, request any) (Response, error) {
+func (c *Client) roundTripMessage(ctx context.Context, requestID string, request any) (_ Response, resultErr error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -315,7 +315,11 @@ func (c *Client) roundTripMessage(ctx context.Context, requestID string, request
 		}
 	}()
 	defer close(done)
-	defer connection.Close()
+	defer func() {
+		if closeErr := connection.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close control connection: %w", closeErr))
+		}
+	}()
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return Response{}, fmt.Errorf("write control request: %w", err)
 	}
