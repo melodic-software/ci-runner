@@ -7,11 +7,10 @@ private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
 routing policy decides whether local capacity is preferred, required, or
 bypassed.
 
-The production architecture is under implementation and must remain routed
-`hosted-only` until the canary gates pass. The former Compose/restart-in-place
-implementation is migration evidence only; it is not the supported lifecycle.
-Do not copy the retained `.env.example` or use `docker-compose.yml` to bootstrap
-a host or credential; the only production credential entry point is
+Both hosts passed their isolated canary acceptance gates and serve the
+organization's governed `self-hosted-only` routing default. The former
+Compose/restart-in-place implementation is retired and its files are deleted;
+the only production credential entry point is
 `ci-runner secret import --file PATH`.
 
 ## Runtime architecture

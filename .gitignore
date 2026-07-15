@@ -1,5 +1,5 @@
-# Host-local legacy runner config. Remove this rule with the legacy Compose
-# implementation after the live cutover; never commit its credential content.
+# No supported workflow writes a .env here, but one carried App credentials in
+# the retired Compose era — keep it unstageable in this public repository.
 .env
 
 # Generated release and scheduled-monitor evidence.
