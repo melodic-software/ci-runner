@@ -199,34 +199,49 @@ func loadConfiguration(path string) (config.Config, error) {
 // deadline toward a single request.
 const reconcileStepMinRetryAttempts = 3
 
-// reconcileStepOpsPerTarget is how many retryable GitHub calls a Step makes per
-// configured target during its worst-case legitimate sweep: one r.ensure plus
-// one r.statistics, each a full RetryValue budget.
-const reconcileStepOpsPerTarget = 2
+// reconcileSweepOpsPerTarget bounds the retryable GitHub calls a Step makes per
+// configured target during its ensure/statistics sweep: one ensure plus up to
+// two statistics probes (the initial read and a not-found fallback).
+const reconcileSweepOpsPerTarget = 3
+
+// reconcileOpsPerWorker bounds the retryable GitHub calls a Step can make per
+// managed worker across one sweep: a JIT-config create to start it, a
+// registration verify, and a deregister plus a cleanup removal. The live worker
+// count can never exceed Resources.MaximumConcurrentWorkers, so that ceiling
+// bounds the whole per-worker contribution.
+const reconcileOpsPerWorker = 4
 
 // reconcileStepTimeout bounds one reconcile Step. It is a COARSE BACKSTOP, not
 // the primary stall detector: the scale-set transport hardening (HTTP/2 health
 // pings plus TCP keepalive) already errors a half-open socket in well under a
 // minute, so this deadline essentially never fires in practice. Its only
 // correctness requirement is therefore to NEVER interrupt a legitimate Step, so
-// it is sized deliberately generously — a larger backstop has no downside.
+// it upper-bounds the worst-case legitimate sweep and is sized deliberately
+// generously — a larger backstop has no downside.
 //
-// A Step is not one poll: step() sweeps every configured target, calling
-// r.ensure and then r.statistics per target, each running through RetryValue for
-// up to Retry.MaxAttempts attempts (each capped at RequestTimeout and separated
-// by backoff waits capped at Retry.Maximum). The worst-case legitimate duration
-// therefore scales with the target count, so budget reconcileStepOpsPerTarget
-// retryable operations per target, multiply by the per-attempt cap and the
-// attempt count to upper bound one full sweep, and add a 50% margin for the
-// remaining per-worker provisioning work.
+// A Step is not one poll. It sweeps every configured target (ensure +
+// statistics), and in enabled pools it also starts, verifies, and removes
+// workers — each a retryable GitHub call running through RetryValue for up to
+// Retry.MaxAttempts attempts (each capped at RequestTimeout, separated by
+// backoff waits capped at Retry.Maximum). The worst-case retryable-op count
+// therefore scales with the target count AND the worker ceiling
+// (Resources.MaximumConcurrentWorkers), not a fixed margin. It can additionally
+// bootstrap or drain Docker Desktop, bounded by StartTimeout + StopTimeout. Sum
+// those bounds and add 50% slack for the untimed local dependency calls (state,
+// power, resource, and inventory reads).
 func reconcileStepTimeout(cfg config.Config) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
 		attempts = reconcileStepMinRetryAttempts
 	}
-	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
-	retryBudget := time.Duration(stepOps*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
-	return retryBudget + retryBudget/2
+	targets := max(len(cfg.GitHub.Targets), 1)
+	workers := max(cfg.Resources.MaximumConcurrentWorkers, 1)
+	retryableOps := reconcileSweepOpsPerTarget*targets + reconcileOpsPerWorker*workers
+	perCall := cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration
+	retryBudget := time.Duration(retryableOps*attempts) * perCall
+	dockerBudget := cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
+	base := retryBudget + dockerBudget
+	return base + base/2
 }
 
 func runControllerLoop(
