@@ -57,6 +57,13 @@ type Reconciler struct {
 	sequence          uint64
 	shuttingDown      bool
 	pendingCapacity   map[string]int
+
+	// registrationCheckCursor rotates which idle workers' GitHub registration
+	// gets verified when there are more eligible candidates than one Step's
+	// registrationCheckCap allows (see step()). It is only ever read and
+	// written from within step(), itself only reachable while stepMu is held,
+	// so unlike drainCapacity/sequence it needs no additional lock.
+	registrationCheckCursor uint64
 }
 
 type ReconcileResult struct {
@@ -508,7 +515,22 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// Verify only exact, job-free idle identities. An authoritative missing
 	// registration makes that container unusable capacity; every lookup error
 	// and every active/racing worker remains preserved.
+	//
+	// r.runnerRegistered runs a full GitHub RetryValue budget per call
+	// (internal/app's reconcileStepTimeout budgets exactly
+	// registrationCheckCap of these per Step). Unlike JIT starts, the number of
+	// eligible idle workers here is not itself bounded by
+	// MaximumConcurrentWorkers -- idle inventory accumulates independently of
+	// that cap -- so cap the checks actually issued in this Step and rotate
+	// which candidates get picked via registrationCheckCursor, deferring the
+	// remainder (logged as worker-registration-check-deferred-step-budget) to
+	// later Steps. A fixed from-the-front cap would starve candidates past the
+	// cap forever whenever the same workers keep sorting first; rotating the
+	// starting point guarantees every candidate is eventually checked as long
+	// as new idle inventory does not outpace the cap indefinitely, the same
+	// assumption the retirement deregistration cap above already relies on.
 	if jobStateKnown {
+		var candidates []int
 		for index := range workers {
 			worker := &workers[index]
 			if worker.State != model.WorkerIdle || worker.JobID != "" || worker.RunnerID <= 0 {
@@ -517,15 +539,30 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if pool := findPool(pools, worker.PoolID); !pool.Ready {
 				continue
 			}
-			registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
-			if registrationErr != nil {
-				record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)
-				continue
+			candidates = append(candidates, index)
+		}
+		registrationCheckCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
+		if n := len(candidates); n > 0 {
+			start := int(r.registrationCheckCursor % uint64(n))
+			checked := 0
+			for i := 0; i < n; i++ {
+				worker := &workers[candidates[(start+i)%n]]
+				if checked >= registrationCheckCap {
+					note("worker-registration-check-deferred-step-budget", "registration verification was deferred to a later reconcile step because this step already reached its per-step registration-check budget", worker.PoolID)
+					continue
+				}
+				checked++
+				registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
+				if registrationErr != nil {
+					record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)
+					continue
+				}
+				if !registered {
+					worker.State = model.WorkerUnregistered
+					_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
+				}
 			}
-			if !registered {
-				worker.State = model.WorkerUnregistered
-				_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
-			}
+			r.registrationCheckCursor += uint64(checked)
 		}
 	}
 

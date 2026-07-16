@@ -100,7 +100,7 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
 	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
 	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin.
-	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
 	wantDelta := extraRetryBudget + extraRetryBudget/2
 	if diff := got - baseline; diff != wantDelta {
@@ -144,11 +144,48 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT-only) github budget %s once retirement retries are budgeted", got, preFixGithubBudget)
 	}
 
-	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
 	want := fullRetryBudget + fullRetryBudget/2
 	if got != want {
-		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements, all margined 1.5x)", got, want)
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x)", got, want)
+	}
+}
+
+// TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget proves a third
+// reviewer-flagged regression: Step's registration-check section calls
+// RunnerRegistered (internal/controller/reconciler.go's JIT-cancellation
+// detector) through the same full RetryValue budget as a JIT registration,
+// once per idle worker it verifies in a Step, up to
+// Resources.MaximumConcurrentWorkers (see that loop's registrationCheckCap).
+// The watchdog must budget for that verification work in addition to, not
+// instead of, the JIT-start and retirement budgets.
+func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) {
+	t.Parallel()
+	const requestTO = 70 * time.Second
+	const backoffMax = time.Minute
+	const attempts = 6
+	const targets = 1
+	const maxConcurrentWorkers = 4
+
+	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
+	got := reconcileStepTimeout(cfg)
+
+	// The pre-fix formula budgeted the target sweep plus JIT starts and
+	// retirements. Any registration-check contribution must be strictly
+	// additional to that.
+	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
+	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
+	if got <= preFixGithubBudget {
+		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT+retirement) github budget %s once registration checks are budgeted", got, preFixGithubBudget)
+	}
+
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
+	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
+	want := fullRetryBudget + fullRetryBudget/2
+	if got != want {
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x)", got, want)
 	}
 }
 

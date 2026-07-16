@@ -226,6 +226,19 @@ const reconcileStepJITOpsPerWorker = 1
 // worker inventory.
 const reconcileStepRetirementOpsPerWorker = 1
 
+// reconcileStepRegistrationCheckOpsPerWorker is how many retryable GitHub
+// calls a Step makes per idle worker it verifies during its worst-case
+// legitimate JIT-cancellation check: one RunnerRegistered call, a full
+// RetryValue budget, mirroring the same policy-compliant retry/backoff shape
+// as reconcileStepJITOpsPerWorker. Like retirement (and unlike JIT starts),
+// the number of idle workers eligible for this check is not itself bounded
+// by Resources.MaximumConcurrentWorkers — idle inventory accumulates
+// independently of that cap — so reconciler.go's registration-check loop
+// caps how many RunnerRegistered calls it actually issues in a single Step
+// at Resources.MaximumConcurrentWorkers too, rotating which candidates get
+// picked so deferred ones are eventually checked instead of starving.
+const reconcileStepRegistrationCheckOpsPerWorker = 1
+
 // reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
 // calls a single Step could make. reconciler.go has two Start call sites: an
 // eager bootstrap before resource admission and inventory (the observation
@@ -289,6 +302,13 @@ const reconcileStepDesktopStartAttempts = 2
 // that same cap, using the same per-attempt cap and attempt count, mirroring
 // the JIT budget above.
 //
+// Step's registration-check section (the JIT-cancellation detector) calls
+// RunnerRegistered once per idle, job-free worker it verifies, likewise
+// through a full RetryValue budget and likewise not itself bounded by
+// Resources.MaximumConcurrentWorkers. reconciler.go caps those calls at the
+// same limit too, so budget reconcileStepRegistrationCheckOpsPerWorker
+// retryable operations per unit of that cap as well.
+//
 // Step also drives Docker Desktop's own lifecycle (reconciler.go's
 // r.deps.Desktop.Start/Stop call sites), independently of the GitHub retry
 // loops above and independently configured via DockerDesktop.StartTimeout and
@@ -310,9 +330,10 @@ func reconcileStepTimeout(cfg config.Config) time.Duration {
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
 	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	retirementOps := reconcileStepRetirementOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
+	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
 		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
-	retryBudget := time.Duration((stepOps+jitOps+retirementOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
+	retryBudget := time.Duration((stepOps+jitOps+retirementOps+registrationCheckOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
 	githubBudget := retryBudget + retryBudget/2
 	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
 	return githubBudget + desktopBudget

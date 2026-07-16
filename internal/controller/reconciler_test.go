@@ -513,6 +513,69 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 	}
 }
 
+// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates proves the fix
+// for a third reviewer-flagged watchdog gap: RunnerRegistered runs a full
+// GitHub RetryValue budget per call, and the idle-worker inventory eligible
+// for this JIT-cancellation check is not itself bounded by
+// Resources.MaximumConcurrentWorkers. step()'s registration-check loop must
+// cap RunnerRegistered calls at Resources.MaximumConcurrentWorkers per Step
+// and rotate which candidates get picked via registrationCheckCursor, so a
+// fixed from-the-front cap (which would always re-check the same leading
+// candidates while starving the rest forever) cannot happen. This asserts
+// the cap holds every step and, allowing for the same excess-idle-worker
+// retirement this population would also legitimately trigger, that every
+// worker is eventually accounted for by either a registration check or a
+// retirement -- never silently skipped forever by both.
+func TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+		{ID: "idle-4", Name: "runner-4", PoolID: "org", RunnerID: 44, State: model.WorkerIdle},
+		{ID: "idle-5", Name: "runner-5", PoolID: "org", RunnerID: 45, State: model.WorkerIdle},
+	}
+	const wantWorkers = 5
+
+	checksIssued := func() int {
+		checks := 0
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "runner-registration" {
+				checks++
+			}
+		}
+		return checks
+	}
+	accountedFor := func() map[int64]bool {
+		accounted := map[int64]bool{}
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "runner-registration" || call.Operation == "remove-runner" {
+				accounted[call.ScaleSetID] = true
+			}
+		}
+		return accounted
+	}
+
+	const maxSteps = 8
+	previousChecks := 0
+	for step := 0; step < maxSteps; step++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		checks := checksIssued()
+		if delta := checks - previousChecks; delta > 2 {
+			t.Fatalf("step %d issued %d new registration checks, want at most 2 (MaximumConcurrentWorkers)", step, delta)
+		}
+		previousChecks = checks
+		if len(accountedFor()) == wantWorkers {
+			return
+		}
+	}
+	t.Fatalf("registration checks + retirements covered %d/%d workers within %d steps (cap=2 per step); rotation must not starve any candidate: %#v", len(accountedFor()), wantWorkers, maxSteps, accountedFor())
+}
+
 func TestEnabledQuiescePreservesAllWorkersWhenAssignmentArrives(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
