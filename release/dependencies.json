@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-07-11T00:00:00Z",
+  "resolvedAt": "2026-07-16T03:40:47.5971824Z",
   "go": {
     "version": "1.26.5",
     "source": "https://go.dev/dl/?mode=json"
@@ -56,8 +56,8 @@
     "source": "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
   },
   "zizmor": {
-    "version": "1.26.1",
-    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.26.1"
+    "version": "1.27.0",
+    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0"
   },
   "syft": {
     "version": "1.46.0",
@@ -93,13 +93,13 @@
     },
     {
       "repository": "actions/setup-go",
-      "version": "6.5.0",
-      "commit": "924ae3a1cded613372ab5595356fb5720e22ba16"
+      "version": "7.0.0",
+      "commit": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
     },
     {
       "repository": "actions/setup-node",
-      "version": "6.4.0",
-      "commit": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"
+      "version": "7.0.0",
+      "commit": "820762786026740c76f36085b0efc47a31fe5020"
     },
     {
       "repository": "actions/upload-artifact",
@@ -123,15 +123,15 @@
     },
     {
       "repository": "zizmorcore/zizmor-action",
-      "version": "0.5.7",
-      "commit": "192e21d79ab29983730a13d1382995c2307fbcaa"
+      "version": "0.6.0",
+      "commit": "6599ee8b7a49aef6a770f63d261d214911a7ce02"
     }
   ],
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "9eb22acf1a9235c352779325d24615b7b492d44d",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/9eb22acf1a9235c352779325d24615b7b492d44d"
+      "commit": "b927829fd0f8888b4dbccccdf7b27596ba453940",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/b927829fd0f8888b4dbccccdf7b27596ba453940"
     }
   ],
   "reusableWorkflows": []
