@@ -210,6 +210,23 @@ const reconcileStepOpsPerTarget = 2
 // same policy-compliant retry/backoff shape as reconcileStepOpsPerTarget.
 const reconcileStepJITOpsPerWorker = 1
 
+// reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
+// calls a single Step could make. reconciler.go has two Start call sites: an
+// eager bootstrap before resource admission and inventory (the observation
+// section), and BuildPlan's plan.StartDesktop fallback. Tracing today's
+// control flow, they are mutually exclusive within one Step: a failed eager
+// Start sets observationFailed, which zeroes the resource snapshot
+// (reconciler.go's "invalid observation fails closed in BuildPlan"), which
+// fails BuildPlan's resourceHealthy gate closed and returns PhaseResourceConstrained
+// before plan.StartDesktop is ever assigned (see evaluateResourceGate and
+// BuildPlan's !resourceHealthy branch in plan.go). This budgets both call
+// sites anyway rather than relying on that cross-file invariant holding
+// forever: summing verified call sites is the more robust way to size a
+// coarse backstop, it keeps the budget correct even if a future refactor
+// changes that control flow, and — per reconcileStepTimeout's doc comment — a
+// larger backstop has no downside.
+const reconcileStepDesktopStartAttempts = 2
+
 // reconcileStepTimeout bounds one reconcile Step. It is a COARSE BACKSTOP, not
 // the primary stall detector: the scale-set transport hardening (HTTP/2 health
 // pings plus TCP keepalive) already errors a half-open socket in well under a
@@ -232,6 +249,20 @@ const reconcileStepJITOpsPerWorker = 1
 // reconcileStepJITOpsPerWorker retryable operations per unit of that cap, using
 // the same per-attempt cap and attempt count, and add it to the sweep budget
 // before the 50% margin for remaining per-worker provisioning work.
+//
+// Step also drives Docker Desktop's own lifecycle (reconciler.go's
+// r.deps.Desktop.Start/Stop call sites), independently of the GitHub retry
+// loops above and independently configured via DockerDesktop.StartTimeout and
+// DockerDesktop.StopTimeout. Each Start/Stop call hard-bounds itself to its
+// configured timeout (ControllerDesktopAdapter.Start/Stop applies it via
+// context.WithTimeout), so — unlike the GitHub retry operations — it needs no
+// attempts multiplier or margin of its own to bound its worst case exactly.
+// Budget reconcileStepDesktopStartAttempts Start calls (see its doc comment
+// for why that upper-bounds every Start call site rather than asserting they
+// are all reachable in one Step) plus one Stop call, and add that directly to
+// the GitHub-retry budget (including its 50% margin) so a policy-compliant
+// desktop start or stop is never cut short by a watchdog sized only for
+// GitHub retries.
 func reconcileStepTimeout(cfg config.Config) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
@@ -240,7 +271,9 @@ func reconcileStepTimeout(cfg config.Config) time.Duration {
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
 	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	retryBudget := time.Duration((stepOps+jitOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
-	return retryBudget + retryBudget/2
+	githubBudget := retryBudget + retryBudget/2
+	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
+	return githubBudget + desktopBudget
 }
 
 // reconcileStepDrainGrace bounds how long the reconcile loop waits, after

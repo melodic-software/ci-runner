@@ -12,13 +12,18 @@ import (
 )
 
 func githubRetryConfig(requestTimeout, backoffMax time.Duration, maxAttempts, targets, maxConcurrentWorkers int) config.Config {
+	return desktopLifecycleConfig(requestTimeout, backoffMax, maxAttempts, targets, maxConcurrentWorkers, 0, 0)
+}
+
+func desktopLifecycleConfig(requestTimeout, backoffMax time.Duration, maxAttempts, targets, maxConcurrentWorkers int, desktopStart, desktopStop time.Duration) config.Config {
 	return config.Config{
 		GitHub: config.GitHub{
 			RequestTimeout: config.Duration{Duration: requestTimeout},
 			Retry:          config.Retry{Maximum: config.Duration{Duration: backoffMax}, MaxAttempts: maxAttempts},
 			Targets:        make([]config.Target, targets),
 		},
-		Resources: config.Resources{MaximumConcurrentWorkers: maxConcurrentWorkers},
+		Resources:     config.Resources{MaximumConcurrentWorkers: maxConcurrentWorkers},
+		DockerDesktop: config.DockerDesktop{StartTimeout: config.Duration{Duration: desktopStart}, StopTimeout: config.Duration{Duration: desktopStop}},
 	}
 }
 
@@ -54,6 +59,73 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 				t.Fatalf("reconcileStepTimeout = %s, want > whole-step retry budget %s (targets=%d, maxAttempts=%d, maxConcurrentWorkers=%d)", got, budget, tc.targets, tc.maxAttempts, tc.maxConcurrentWorkers)
 			}
 		})
+	}
+}
+
+// TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts proves the exact
+// regression the fix addresses: with a small, otherwise-legal GitHub retry
+// configuration (one target, one worker, 1s request timeout, 1s max backoff),
+// the GitHub-retry-only budget is tiny, but a policy-compliant
+// DockerDesktop.StartTimeout can legitimately be minutes. The watchdog must
+// budget for reconcileStepDesktopStartAttempts Start calls (and, separately,
+// one Stop call) at their full configured timeouts on top of the GitHub-retry
+// budget, not just the GitHub-retry budget alone.
+func TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts(t *testing.T) {
+	t.Parallel()
+	const startTimeout = 2 * time.Minute
+	const stopTimeout = 90 * time.Second
+
+	smallGitHubRetryCfg := desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, startTimeout, stopTimeout)
+	githubOnlyBudget := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, 0, 0))
+
+	got := reconcileStepTimeout(smallGitHubRetryCfg)
+
+	// The watchdog must clear the GitHub-only budget by at least the desktop
+	// lifecycle worst case: two Start attempts plus one Stop attempt, each at
+	// its full configured timeout.
+	desktopWorstCase := reconcileStepDesktopStartAttempts*startTimeout + stopTimeout
+	if got < githubOnlyBudget+desktopWorstCase {
+		t.Fatalf("reconcileStepTimeout = %s, want >= github-only budget %s + desktop worst case %s (= %s)",
+			got, githubOnlyBudget, desktopWorstCase, githubOnlyBudget+desktopWorstCase)
+	}
+
+	// Concretely: the watchdog must never be shorter than a single
+	// policy-compliant desktop start, which the original bug allowed (a small
+	// GitHub retry budget could compute a watchdog deadline of only ~27s,
+	// far under a 2-minute desktop startup).
+	if got <= startTimeout {
+		t.Fatalf("reconcileStepTimeout = %s, want > single desktop StartTimeout %s", got, startTimeout)
+	}
+}
+
+// TestReconcileStepTimeoutScalesWithDesktopStartTimeout proves the desktop
+// portion of the budget tracks DockerDesktop.StartTimeout, mirroring how
+// TestReconcileStepTimeoutClearsConfiguredRetryBudget proves the GitHub
+// portion tracks the retry configuration.
+func TestReconcileStepTimeoutScalesWithDesktopStartTimeout(t *testing.T) {
+	t.Parallel()
+	shorter := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, time.Minute, 0))
+	longer := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, 10*time.Minute, 0))
+	if longer <= shorter {
+		t.Fatalf("reconcileStepTimeout with 10m StartTimeout = %s, want > with 1m StartTimeout = %s", longer, shorter)
+	}
+	if diff, want := longer-shorter, reconcileStepDesktopStartAttempts*(10*time.Minute-time.Minute); diff != want {
+		t.Fatalf("reconcileStepTimeout delta across StartTimeout change = %s, want exactly %s (%d start attempts)", diff, want, reconcileStepDesktopStartAttempts)
+	}
+}
+
+// TestReconcileStepTimeoutScalesWithDesktopStopTimeout mirrors
+// TestReconcileStepTimeoutScalesWithDesktopStartTimeout for
+// DockerDesktop.StopTimeout.
+func TestReconcileStepTimeoutScalesWithDesktopStopTimeout(t *testing.T) {
+	t.Parallel()
+	shorter := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, 0, time.Minute))
+	longer := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, 0, 10*time.Minute))
+	if longer <= shorter {
+		t.Fatalf("reconcileStepTimeout with 10m StopTimeout = %s, want > with 1m StopTimeout = %s", longer, shorter)
+	}
+	if diff, want := longer-shorter, 10*time.Minute-time.Minute; diff != want {
+		t.Fatalf("reconcileStepTimeout delta across StopTimeout change = %s, want exactly %s", diff, want)
 	}
 }
 
