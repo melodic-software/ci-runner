@@ -250,10 +250,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if err != nil {
 			operationErrors = append(operationErrors, err)
 		}
-		_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
+		r.writeLog(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
 	}
 	note := func(code, message, poolID string) {
-		_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
+		r.writeLog(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
 	}
 	if desiredLoadErr != nil {
 		record("desired-state-error", "desired state could not be read; capacity is held at zero", "", true, desiredLoadErr)
@@ -516,7 +516,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			}
 			if !registered {
 				worker.State = model.WorkerUnregistered
-				_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
+				r.writeLog(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
 			}
 		}
 	}
@@ -559,7 +559,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				record("unregistered-worker-became-busy", "worker acquired work during final removal verification and was preserved", worker.PoolID, false, nil)
 				continue
 			}
-			_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "unregistered-worker-removed", Message: "removed idle container after GitHub deleted its one-job registration", PoolID: worker.PoolID, WorkerID: worker.ID})
+			r.writeLog(ctx, LogEvent{At: now, Code: "unregistered-worker-removed", Message: "removed idle container after GitHub deleted its one-job registration", PoolID: worker.PoolID, WorkerID: worker.ID})
 			continue
 		}
 		requiredCapacity, configuredPool := plan.AdvertisedCapacity[worker.PoolID]
@@ -656,7 +656,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
 				cleanupCancel()
 				if cleanupErr != nil {
-					_ = r.deps.Logs.Write(context.Background(), LogEvent{At: r.deps.Clock.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
+					r.writeLog(ctx, LogEvent{At: r.deps.Clock.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
 				}
 				cancel(errReconcileInputsChanged)
 				return ReconcileResult{}, errReconcileInputsChanged
@@ -1029,6 +1029,14 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 		return 0
 	}
 	return available - reserved
+}
+
+const diagnosticLogWriteTimeout = 2 * time.Second
+
+func (r *Reconciler) writeLog(ctx context.Context, event LogEvent) {
+	writeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosticLogWriteTimeout)
+	defer cancel()
+	_ = r.deps.Logs.Write(writeContext, event)
 }
 
 func sameAdmissionIntent(left, right model.DesiredState) bool {

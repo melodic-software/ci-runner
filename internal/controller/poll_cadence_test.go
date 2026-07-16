@@ -133,6 +133,50 @@ func TestInvalidResourceObservationCancelsNonzeroPollAndPreservesRacingAssignmen
 	}
 }
 
+func TestPollCadenceObservationFailureIsDurablyLogged(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	now := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 64 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan struct{}, 1)
+	go func() {
+		_, _ = harness.controller.Step(context.Background())
+		done <- struct{}{}
+	}()
+	waitForSignal(t, blocking.entered, "listener poll did not begin")
+	resources.setError(errors.New("resource monitor unavailable"))
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observation failure did not restart the listener poll")
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	found := false
+	for _, event := range logs.events {
+		if event.Code == "listener-cadence-observation-error" && event.Source == "resources" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("cadence observation diagnostics = %#v, want structured resources source", logs.events)
+	}
+}
+
 func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -464,6 +508,12 @@ func (m *mutableResources) set(snapshot model.ResourceSnapshot) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snapshot = snapshot
+}
+
+func (m *mutableResources) setError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.err = err
 }
 
 type assignmentOnCancelScaleSet struct {
