@@ -508,6 +508,22 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// Verify only exact, job-free idle identities. An authoritative missing
 	// registration makes that container unusable capacity; every lookup error
 	// and every active/racing worker remains preserved.
+	//
+	// runnerRegistered runs a full GitHub RetryValue budget per call
+	// (internal/app's reconcileStepTimeout budgets exactly
+	// Resources.MaximumConcurrentWorkers worth of these per Step, mirroring the
+	// JIT-start and retirement budgets). Like retirement, the number of idle,
+	// job-free workers eligible for this check is not itself bounded by
+	// MaximumConcurrentWorkers: lowering that setting or warm capacity can
+	// legitimately leave more existing idle workers to verify than the new cap
+	// allows for. Cap the runnerRegistered calls issued in this Step at that
+	// same limit and defer any remainder to a later Step (where this loop
+	// re-runs over current inventory and picks the deferred workers back up)
+	// instead of letting an unbounded verification count exceed the watchdog's
+	// budget.
+	registrationCheckCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
+	registrationChecks := 0
+
 	if jobStateKnown {
 		for index := range workers {
 			worker := &workers[index]
@@ -517,6 +533,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if pool := findPool(pools, worker.PoolID); !pool.Ready {
 				continue
 			}
+			if registrationChecks >= registrationCheckCap {
+				note("worker-registration-check-deferred-step-budget", "idle worker registration verification was deferred to a later reconcile step to stay within this step's registration-check retry budget", worker.PoolID)
+				continue
+			}
+			registrationChecks++
 			registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
 			if registrationErr != nil {
 				record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)

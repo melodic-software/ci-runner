@@ -226,6 +226,23 @@ const reconcileStepJITOpsPerWorker = 1
 // worker inventory.
 const reconcileStepRetirementOpsPerWorker = 1
 
+// reconcileStepRegistrationOpsPerWorker is how many retryable GitHub calls a
+// Step makes per idle, job-free worker it verifies during its worst-case
+// legitimate registration-check sequence: one RunnerRegistered call, a full
+// RetryValue budget, mirroring the same policy-compliant retry/backoff shape
+// as reconcileStepJITOpsPerWorker and reconcileStepRetirementOpsPerWorker.
+// Like retirement (and unlike JIT starts), the number of idle, job-free
+// workers checked in reconciler.go's pre-plan registration-verification loop
+// (internal/controller/reconciler.go:511-530) is not itself bounded by
+// Resources.MaximumConcurrentWorkers: lowering that setting (or warm
+// capacity) can leave more existing idle workers to verify than the new cap
+// allows for. So that loop caps how many RunnerRegistered calls it actually
+// issues in a single Step at Resources.MaximumConcurrentWorkers (deferring
+// any remainder to a later Step, where the loop re-runs over current
+// inventory and picks them back up), which keeps this budget derivable from
+// static config instead of unbounded runtime worker inventory.
+const reconcileStepRegistrationOpsPerWorker = 1
+
 // reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
 // calls a single Step could make. reconciler.go has two Start call sites: an
 // eager bootstrap before resource admission and inventory (the observation
@@ -289,6 +306,18 @@ const reconcileStepDesktopStartAttempts = 2
 // that same cap, using the same per-attempt cap and attempt count, mirroring
 // the JIT budget above.
 //
+// Before BuildPlan runs, Step also verifies every idle, job-free worker's
+// GitHub registration still exists (reconciler.go:511-530), calling
+// runnerRegistered — a RunnerRegistered call run through the same RetryValue
+// budget — once per such worker. That verification count is symmetrically
+// not bounded by Resources.MaximumConcurrentWorkers for the same reason as
+// retirement: existing idle inventory can legitimately exceed a since-lowered
+// cap. So that loop caps the RunnerRegistered calls it issues in a single
+// Step at Resources.MaximumConcurrentWorkers, deferring any remainder to a
+// later Step. Budget reconcileStepRegistrationOpsPerWorker retryable
+// operations per unit of that same cap, using the same per-attempt cap and
+// attempt count, mirroring the JIT and retirement budgets above.
+//
 // Step also drives Docker Desktop's own lifecycle (reconciler.go's
 // r.deps.Desktop.Start/Stop call sites), independently of the GitHub retry
 // loops above and independently configured via DockerDesktop.StartTimeout and
@@ -310,9 +339,10 @@ func reconcileStepTimeout(cfg config.Config) time.Duration {
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
 	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	retirementOps := reconcileStepRetirementOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
+	registrationOps := reconcileStepRegistrationOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
 		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
-	retryBudget := time.Duration((stepOps+jitOps+retirementOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
+	retryBudget := time.Duration((stepOps+jitOps+retirementOps+registrationOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
 	githubBudget := retryBudget + retryBudget/2
 	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
 	return githubBudget + desktopBudget

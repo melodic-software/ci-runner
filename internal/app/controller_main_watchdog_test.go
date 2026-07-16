@@ -51,14 +51,16 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 			got := reconcileStepTimeout(cfg)
 			// The watchdog must strictly exceed the whole-step worst case: an
 			// ensure+statistics sweep across every target, a CreateJITConfig retry
-			// loop for every worker the host can concurrently start, and a
+			// loop for every worker the host can concurrently start, a
 			// deregisterRunner retry loop for every worker the host can
-			// concurrently retire in one step, each a full retry budget (attempts
-			// requests at RequestTimeout plus attempts backoff waits jittered up to
-			// Retry.Maximum*(1+JitterRatio) per internal/controller/retry.go's
-			// BackoffPolicy.delay). It must never trip on a legitimate multi-target,
-			// high-maxAttempts, multi-worker-JIT, or fully-jittered-backoff step.
-			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*tc.maxConcurrentWorkers
+			// concurrently retire in one step, and a RunnerRegistered retry loop
+			// for every idle worker the host can concurrently verify in one step,
+			// each a full retry budget (attempts requests at RequestTimeout plus
+			// attempts backoff waits jittered up to Retry.Maximum*(1+JitterRatio)
+			// per internal/controller/retry.go's BackoffPolicy.delay). It must
+			// never trip on a legitimate multi-target, high-maxAttempts,
+			// multi-worker-JIT, or fully-jittered-backoff step.
+			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*tc.maxConcurrentWorkers + reconcileStepRegistrationOpsPerWorker*tc.maxConcurrentWorkers
 			maxJitteredBackoff := tc.backoffMax + time.Duration(float64(tc.backoffMax)*tc.jitterRatio)
 			budget := time.Duration(ops*tc.maxAttempts) * (tc.requestTO + maxJitteredBackoff)
 			if got <= budget {
@@ -100,7 +102,7 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
 	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
 	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin.
-	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationOpsPerWorker*maxConcurrentWorkers
 	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
 	wantDelta := extraRetryBudget + extraRetryBudget/2
 	if diff := got - baseline; diff != wantDelta {
@@ -149,6 +151,45 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 	want := fullRetryBudget + fullRetryBudget/2
 	if got != want {
 		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements, all margined 1.5x)", got, want)
+	}
+}
+
+// TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget proves the
+// unresolved P2 review finding this fix addresses ("Budget
+// runner-registration checks in the watchdog"): Step's pre-plan
+// registration-verification loop (internal/controller/reconciler.go:511-530)
+// calls runnerRegistered through the same full RetryValue budget as a JIT
+// registration or a retirement deregistration, once per idle, job-free
+// worker it verifies in a Step, up to Resources.MaximumConcurrentWorkers (see
+// that loop's registrationCheckCap). The watchdog must budget for that
+// registration-check work in addition to, not instead of, the JIT-start and
+// retirement budgets.
+func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) {
+	t.Parallel()
+	const requestTO = 70 * time.Second
+	const backoffMax = time.Minute
+	const attempts = 6
+	const targets = 1
+	const maxConcurrentWorkers = 4
+
+	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
+	got := reconcileStepTimeout(cfg)
+
+	// The pre-fix formula budgeted only the target sweep, JIT starts, and
+	// retirements. Any registration-check contribution must be strictly
+	// additional to that.
+	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
+	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
+	if got <= preFixGithubBudget {
+		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT+retirement-only) github budget %s once registration-check retries are budgeted", got, preFixGithubBudget)
+	}
+
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationOpsPerWorker*maxConcurrentWorkers
+	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
+	want := fullRetryBudget + fullRetryBudget/2
+	if got != want {
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x)", got, want)
 	}
 }
 

@@ -513,6 +513,104 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 	}
 }
 
+// TestRunnerRegistrationChecksCapPerStepAndDeferRemainder proves the fix for
+// the unresolved P2 review finding "Budget runner-registration checks in the
+// watchdog": Step's pre-plan registration-verification loop
+// (internal/controller/reconciler.go:511-530) calls runnerRegistered once per
+// idle, job-free worker, and that count is not itself bounded by
+// MaximumConcurrentWorkers -- lowering that setting can leave more idle
+// inventory to verify than the new cap allows for. WarmIdle and MaxCapacity
+// are raised to match the worker count so the ordinary quiescence/drain path
+// never claims any of these workers itself; only the registration-check loop
+// (and, for workers it finds unregistered, the unconditional
+// WorkerUnregistered fast path) touches them, isolating this cap from the
+// already-covered retirement cap.
+func TestRunnerRegistrationChecksCapPerStepAndDeferRemainder(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	harness.controller.config.GitHub.Targets[0].WarmIdle = 5
+	harness.controller.config.GitHub.Targets[0].MaxCapacity = 5
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+		{ID: "idle-4", Name: "runner-4", PoolID: "org", RunnerID: 44, State: model.WorkerIdle},
+		{ID: "idle-5", Name: "runner-5", PoolID: "org", RunnerID: 45, State: model.WorkerIdle},
+	}
+	originalRunnerIDs := map[int64]bool{41: true, 42: true, 43: true, 44: true, 45: true}
+	for id := range originalRunnerIDs {
+		harness.scaleSets.MissingRunners[id] = true
+	}
+	logger := &testLogSink{}
+	harness.controller.deps.Logs = logger
+
+	countOriginalChecks := func() int {
+		checks := 0
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "runner-registration" && originalRunnerIDs[call.ScaleSetID] {
+				checks++
+			}
+		}
+		return checks
+	}
+	countDeferrals := func() int {
+		logger.mu.Lock()
+		defer logger.mu.Unlock()
+		deferred := 0
+		for _, event := range logger.events {
+			if event.Code == "worker-registration-check-deferred-step-budget" {
+				deferred++
+			}
+		}
+		return deferred
+	}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := countOriginalChecks(); got != 2 {
+		t.Fatalf("registration checks after first step = %d, want exactly 2 (MaximumConcurrentWorkers)", got)
+	}
+	if got := countDeferrals(); got != 3 {
+		t.Fatalf("worker-registration-check-deferred-step-budget events = %d, want exactly 3", got)
+	}
+
+	// Remaining steps: the deferred workers must not be starved. Keep
+	// stepping until every originally idle worker has been checked (each
+	// check finds a genuinely missing registration and the worker is removed
+	// through the unconditional WorkerUnregistered fast path, so a checked
+	// worker never blocks a later step from reaching the rest), asserting on
+	// every step that the per-step check cap is never exceeded (each step
+	// issues at most MaximumConcurrentWorkers=2 new registration checks
+	// against the original inventory) and that the cumulative total lands on
+	// exactly 5 -- every originally idle worker checked exactly once, none
+	// skipped and none double-counted.
+	const maxAdditionalSteps = 6
+	previousChecks := countOriginalChecks()
+	converged := false
+	for i := 0; i < maxAdditionalSteps; i++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		checks := countOriginalChecks()
+		if delta := checks - previousChecks; delta > 2 {
+			t.Fatalf("additional step %d issued %d new registration checks against original inventory, want at most 2 (MaximumConcurrentWorkers)", i, delta)
+		}
+		previousChecks = checks
+		if checks == 5 {
+			converged = true
+			break
+		}
+	}
+	if !converged {
+		t.Fatalf("not every originally idle worker was checked within %d additional steps; checks=%d", maxAdditionalSteps, previousChecks)
+	}
+	if got := countOriginalChecks(); got != 5 {
+		t.Fatalf("cumulative registration checks after convergence = %d, want exactly 5 (every originally idle worker eventually verified, none dropped)", got)
+	}
+}
+
 func TestEnabledQuiescePreservesAllWorkersWhenAssignmentArrives(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
