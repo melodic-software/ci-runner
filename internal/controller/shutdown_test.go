@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -36,6 +38,31 @@ func TestShutdownDrainsTransientlyAndClosesAdapters(t *testing.T) {
 	}
 	if desired.Mode != model.ModeEnabled {
 		t.Fatalf("shutdown persisted transient mode over user intent: %s", desired.Mode)
+	}
+}
+
+func TestShutdownTerminatesOnPersistentStepErrors(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	// The desktop stays up, so every Step probes worker inventory and every probe
+	// fails: without a bound the drain loop would spin forever (issue #66). A
+	// controller-restart signal must still exit, so Shutdown must terminate.
+	harness.runtime.listErr = errors.New("persistent worker inventory failure")
+	scaleSets := &closingScaleSet{Client: harness.scaleSets}
+	harness.controller.deps.ScaleSets = scaleSets
+
+	done := make(chan error, 1)
+	go func() { done <- harness.controller.Shutdown(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Shutdown returned %v, want nil so a restart signal still completes its handshake", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not terminate under persistent Step errors")
+	}
+	if !scaleSets.isClosed() || !harness.runtime.closedValue() {
+		t.Fatalf("adapters not closed after bounded shutdown: scaleset=%v runtime=%v", scaleSets.isClosed(), harness.runtime.closedValue())
 	}
 }
 

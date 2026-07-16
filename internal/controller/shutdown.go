@@ -33,19 +33,39 @@ func (r *Reconciler) isShuttingDown() bool {
 	return r.shuttingDown
 }
 
+// shutdownDegradedStepBudget bounds how many consecutive erroring drain Steps
+// Shutdown tolerates before terminating. A clean drain is verified only through
+// Step, but persistently failing probes (for example after Docker Desktop was
+// intentionally stopped, or an external dependency is down) can make Step return
+// an error forever. Rather than loop until the process is externally killed, the
+// controller terminates the drain after this many consecutive failures. A clean
+// Step resets the count, so transient blips never trip it. Termination returns
+// no error so a controller-restart signal still completes its restart handshake.
+const shutdownDegradedStepBudget = 3
+
 // Shutdown advertises zero capacity, conditionally removes idle workers, waits
 // for busy work to finish naturally, then closes message sessions and the
 // worker runtime. Cancellation leaves active work intact and never implies a
-// force stop.
+// force stop. A Step that succeeds but is not yet drained keeps waiting
+// indefinitely for active work; only persistent Step errors are bounded.
 func (r *Reconciler) Shutdown(ctx context.Context) error {
 	r.BeginShutdown()
+	degradedSteps := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		result, err := r.Step(ctx)
-		if err == nil && shutdownDrained(result.Observed, r.config.GitHub.Targets) {
-			break
+		if err == nil {
+			degradedSteps = 0
+			if shutdownDrained(result.Observed, r.config.GitHub.Targets) {
+				break
+			}
+		} else {
+			degradedSteps++
+			if degradedSteps >= shutdownDegradedStepBudget {
+				break
+			}
 		}
 		if err := r.deps.Clock.Sleep(ctx, r.config.Controller.ShutdownPollInterval.Duration); err != nil {
 			return err
