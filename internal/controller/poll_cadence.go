@@ -90,6 +90,25 @@ func (r *Reconciler) pollCheckpoint(
 	}
 }
 
+// pendingCapacitySnapshot returns the last unacknowledged capacity per pool
+// that a listener poll had in flight when it was superseded. A withdrawal
+// cancels the open poll and Step reruns immediately; without this baseline,
+// the rerun's initial plan would see only the durably acknowledged capacity
+// (still the prior value, since the canceled poll never acknowledged) and
+// re-evaluate the sample as fresh growth instead of a held remainder.
+func (r *Reconciler) pendingCapacitySnapshot() map[string]int {
+	r.capacityMu.Lock()
+	defer r.capacityMu.Unlock()
+	if len(r.pendingCapacity) == 0 {
+		return nil
+	}
+	snapshot := make(map[string]int, len(r.pendingCapacity))
+	for targetID, capacity := range r.pendingCapacity {
+		snapshot[targetID] = capacity
+	}
+	return snapshot
+}
+
 func poolAcknowledgementTransitionAt(prior model.PoolObservation, scaleSetID int64, listenerID string, capacity int, acknowledged bool, now time.Time) time.Time {
 	if prior.UpdatedAt.IsZero() || prior.ScaleSetID != scaleSetID || prior.ListenerID != listenerID ||
 		prior.MaxCapacity != capacity || prior.CapacityAcknowledged != acknowledged {
