@@ -346,8 +346,12 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 // retry configuration but a large idle-confirmation window, the pre-fix
 // budget could be far shorter than a single legitimate retirement's actual
 // worst-case duration. The watchdog must add
-// reconcileStepIdleConfirmationWaitsPerWorker idle-confirmation waits per
-// unit of the same static retirement cap directly to the budget.
+// (reconcileStepIdleConfirmationWaitsPerWorker +
+// reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker)
+// idle-confirmation waits per unit of the same static retirement cap
+// directly to the budget: one cap's worth for the registered-retirement
+// path, plus one cap's worth for the separate unregistered-removal path,
+// since a single Step can legitimately spend both back to back.
 func TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget(t *testing.T) {
 	t.Parallel()
 	const maxConcurrentWorkers = 3
@@ -360,7 +364,7 @@ func TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget(t *testing.T) 
 	baseline := reconcileStepTimeout(withoutWindow, maxConcurrentWorkers)
 	got := reconcileStepTimeout(withWindow, maxConcurrentWorkers)
 
-	wantDelta := reconcileStepIdleConfirmationWaitsPerWorker * maxConcurrentWorkers * idleConfirmationWindow
+	wantDelta := (reconcileStepIdleConfirmationWaitsPerWorker + reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker) * maxConcurrentWorkers * idleConfirmationWindow
 	if diff := got - baseline; diff != wantDelta {
 		t.Fatalf("reconcileStepTimeout delta across Drain.IdleConfirmationWindow 0->%s = %s, want exactly %s (%d workers)", idleConfirmationWindow, diff, wantDelta, maxConcurrentWorkers)
 	}
@@ -369,6 +373,44 @@ func TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget(t *testing.T) 
 	// mid-drain on a policy-compliant idle-confirmation wait.
 	if got <= idleConfirmationWindow {
 		t.Fatalf("reconcileStepTimeout = %s, want > single idle-confirmation window %s", got, idleConfirmationWindow)
+	}
+}
+
+// TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively
+// proves the exact reviewer-flagged regression: when a Step's registered-
+// retirement path and its SEPARATE unregistered-removal path (reconciler.go's
+// two distinct plan.Remove branches -- one after deregisterRunner, one
+// standalone for model.WorkerUnregistered workers) both legitimately spend
+// their full per-step idle-confirmation-wait budget in the same Step, the
+// watchdog must clear the sum of BOTH, not just one cap's worth. Before this
+// fix, the pre-fix budget only counted one cap's worth of confirmation
+// waits, so a Step doing both legitimately could spend roughly twice the
+// budgeted idle-confirmation time and get canceled mid-drain.
+func TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively(t *testing.T) {
+	t.Parallel()
+	const maxConcurrentWorkers = 4
+	const idleConfirmationWindow = 2 * time.Minute
+
+	cfg := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, maxConcurrentWorkers)
+	cfg.Drain.IdleConfirmationWindow = config.Duration{Duration: idleConfirmationWindow}
+
+	got := reconcileStepTimeout(cfg, maxConcurrentWorkers)
+
+	// The worst-case legitimate scenario the reviewer flagged: this Step
+	// spends its entire registered-retirement idle-confirmation budget AND
+	// its entire unregistered-removal idle-confirmation budget, back to back.
+	singlePathBudget := time.Duration(maxConcurrentWorkers) * idleConfirmationWindow
+	bothPathsWorstCase := 2 * singlePathBudget
+	if got <= bothPathsWorstCase {
+		t.Fatalf("reconcileStepTimeout = %s, want > both-paths worst case %s (a Step spending both this Step's registered-retirement and unregistered-removal idle-confirmation budgets must not be cancelled mid-drain)", got, bothPathsWorstCase)
+	}
+
+	// A pre-fix budget sized for only one path would also clear a single
+	// path's worst case; the meaningful assertion is strictly the 2x one
+	// above. This confirms the single-path floor is not itself the binding
+	// constraint here (it would pass both pre- and post-fix).
+	if got <= singlePathBudget {
+		t.Fatalf("reconcileStepTimeout = %s, want > single-path idle-confirmation budget %s", got, singlePathBudget)
 	}
 }
 

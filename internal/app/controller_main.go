@@ -254,6 +254,37 @@ const reconcileStepRegistrationCheckOpsPerWorker = 1
 // share (max(Resources.MaximumConcurrentWorkers, 1)).
 const reconcileStepIdleConfirmationWaitsPerWorker = 1
 
+// reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker is how many
+// ADDITIONAL Drain.IdleConfirmationWindow waits a Step incurs through its
+// SEPARATE unregistered-removal path: reconciler.go's plan.Remove loop calls
+// RemoveIfIdle directly (with no deregisterRunner call first) for every
+// worker whose State is model.WorkerUnregistered, and the Docker runtime's
+// RemoveIfIdle waits the same full Drain.IdleConfirmationWindow described in
+// reconcileStepIdleConfirmationWaitsPerWorker's doc comment. A worker can
+// only ever become model.WorkerUnregistered through reconciler.go's
+// registration-check loop (the JIT-cancellation detector, a few dozen lines
+// above the removal loop in step()), which is itself capped at
+// registrationCheckCap -- the same max(Resources.MaximumConcurrentWorkers, 1)
+// formula as retirementDeregistrationCap -- and that loop is the ONLY place
+// in the codebase that ever assigns model.WorkerUnregistered: the live
+// Docker inventory (Workers.List) never reports it as a container state, and
+// BuildPlan never consults Previous.Workers when building plan.Remove, so no
+// worker can carry that state into plan.Remove from an earlier Step. This
+// path's worst-case legitimate RemoveIfIdle-driven idle-confirmation-wait
+// count per Step is therefore ALREADY bounded by registrationCheckCap by
+// construction, with no separate cap needed in reconciler.go itself.
+//
+// A single Step can legitimately need both this path's confirmation waits
+// AND reconcileStepIdleConfirmationWaitsPerWorker's registered-retirement
+// confirmation waits back to back -- missing registrations and excess
+// registered idle workers can both be present in the same reconcile -- so
+// this is budgeted ADDITIVELY alongside, not instead of, that budget: before
+// this constant existed, the watchdog budgeted only one cap's worth of
+// confirmation waits, so a Step legitimately needing both could spend
+// roughly twice its budgeted idle-confirmation time and get canceled
+// mid-drain.
+const reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker = 1
+
 // reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
 // calls a single Step could make. reconciler.go has two Start call sites: an
 // eager bootstrap before resource admission and inventory (the observation
@@ -349,7 +380,12 @@ const reconcileStepDesktopStartAttempts = 2
 // (see reconcileStepIdleConfirmationWaitsPerWorker's doc comment): a fixed
 // local wait, not a retryable GitHub operation, so it is added directly
 // alongside the desktop budget rather than folded into the margined GitHub
-// retry budget, sized per the same static retirement cap.
+// retry budget, sized per the same static retirement cap. Step's SEPARATE
+// unregistered-removal path incurs the same kind of wait per worker it
+// removes (see reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker's
+// doc comment), sized per the same static cap, and is budgeted additively
+// alongside the registered-retirement idle-confirmation budget: a Step can
+// legitimately need both in the same reconcile.
 func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
@@ -365,7 +401,7 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	retryBudget := time.Duration((stepOps+jitOps+retirementOps+registrationCheckOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
 	githubBudget := retryBudget + retryBudget/2
 	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
-	idleConfirmationBudget := time.Duration(reconcileStepIdleConfirmationWaitsPerWorker*staticWorkerCap) * cfg.Drain.IdleConfirmationWindow.Duration
+	idleConfirmationBudget := time.Duration((reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker)*staticWorkerCap) * cfg.Drain.IdleConfirmationWindow.Duration
 	return githubBudget + desktopBudget + idleConfirmationBudget
 }
 
