@@ -134,6 +134,26 @@ func TestAdvertisedCapacityMarginUsesTargetEffectiveWorkerMemory(t *testing.T) {
 	}
 }
 
+func TestAdvertisedCapacityPendingHysteresisPreservesImmediateMultiSlotDecrease(t *testing.T) {
+	t.Parallel()
+	const gibibyte = uint64(1 << 30)
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+	input.Previous.Pools = []model.PoolObservation{{
+		ID: "org", MaxCapacity: 0, CapacityAcknowledged: false,
+	}}
+	input.CapacityHysteresis = map[string]int{"org": 3}
+	// Three slots are in flight, but current headroom safely funds only one.
+	// The lower raw boundary must win over the pending hysteresis baseline.
+	input.Resources.AvailableMemoryBytes = 16*gibibyte + 2*8*gibibyte - 1
+
+	plan := BuildPlan(input)
+
+	if got := plan.AdvertisedCapacity["org"]; got != 1 {
+		t.Fatalf("capacity after pending multi-slot withdrawal = %d, want 1", got)
+	}
+}
+
 func TestGlobalCapacityReservesAssignmentsAcrossPoolsBeforeWarmIdle(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()

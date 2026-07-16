@@ -263,6 +263,65 @@ func TestMemorySlotFlapDoesNotRestartNonzeroLongPoll(t *testing.T) {
 	}
 }
 
+func TestPendingZeroToOneCapacityHoldsInsideMemoryBandBeforeAcknowledgement(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	harness.controller.config.GitHub.Targets[0].WarmIdle = 0
+	now := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org",
+			MaxCapacity: 0, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// With an 8 GiB worker and 25% increase margin, 26 GiB available is the
+	// first-slot upper boundary above the 16 GiB reserve floor.
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 26 << 30, CPUUtilizationPercent: 10,
+	}}
+	harness.controller.deps.Resources = resources
+	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+	harness.controller.deps.State = notifying
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := harness.controller.Step(ctx)
+		done <- err
+	}()
+	waitForSignal(t, blocking.entered, "zero-to-one listener poll did not begin")
+	for len(notifying.saved) > 0 {
+		<-notifying.saved
+	}
+
+	// Move below the growth threshold but remain above the raw one-slot
+	// boundary. The in-flight one is the hysteresis state until this poll acks.
+	resources.set(model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 25 << 30, CPUUtilizationPercent: 10,
+	})
+	checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+		return observed.Resources.AvailableMemoryBytes == 25<<30
+	}, "in-band memory observation was not checkpointed during the pending poll")
+	if len(checkpoint.Pools) != 1 || checkpoint.Pools[0].CapacityAcknowledged || checkpoint.Pools[0].MaxCapacity != 0 {
+		t.Fatalf("pending acknowledgement state was corrupted: %#v", checkpoint.Pools)
+	}
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[1]" {
+		t.Fatalf("in-band pending capacity restarted the listener poll: capacities=%v", got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("canceled pending listener poll did not stop")
+	}
+}
+
 func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)

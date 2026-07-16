@@ -147,7 +147,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 					return result
 				}
 				plan := BuildPlan(PlanInput{
-					Config: r.config, Desired: state.desired, Previous: checkpoint, Pools: state.pools,
+					Config: r.config, Desired: state.desired, Previous: checkpoint, CapacityHysteresis: state.advertised, Pools: state.pools,
 					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop, Now: now,
 				})
 				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
