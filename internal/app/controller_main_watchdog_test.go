@@ -33,6 +33,7 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 		name                 string
 		requestTO            time.Duration
 		backoffMax           time.Duration
+		jitterRatio          float64
 		maxAttempts          int
 		targets              int
 		maxConcurrentWorkers int
@@ -43,22 +44,78 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 		{name: "multi-target", requestTO: 70 * time.Second, backoffMax: time.Minute, maxAttempts: 6, targets: 3, maxConcurrentWorkers: 1},
 		{name: "multi-worker JIT", requestTO: 70 * time.Second, backoffMax: time.Minute, maxAttempts: 6, targets: 1, maxConcurrentWorkers: 8},
 		{name: "multi-target and multi-worker JIT", requestTO: 70 * time.Second, backoffMax: time.Minute, maxAttempts: 6, targets: 3, maxConcurrentWorkers: 8},
+		{name: "fully jittered backoff", requestTO: 70 * time.Second, backoffMax: time.Minute, jitterRatio: 1, maxAttempts: 6, targets: 1, maxConcurrentWorkers: 1},
+		{name: "multi-target, multi-worker JIT, and fully jittered backoff", requestTO: 70 * time.Second, backoffMax: time.Minute, jitterRatio: 1, maxAttempts: 6, targets: 3, maxConcurrentWorkers: 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := reconcileStepTimeout(githubRetryConfig(tc.requestTO, tc.backoffMax, tc.maxAttempts, tc.targets, tc.maxConcurrentWorkers))
+			cfg := githubRetryConfig(tc.requestTO, tc.backoffMax, tc.maxAttempts, tc.targets, tc.maxConcurrentWorkers)
+			cfg.GitHub.Retry.JitterRatio = tc.jitterRatio
+			got := reconcileStepTimeout(cfg)
 			// The watchdog must strictly exceed the whole-step worst case: an
 			// ensure+statistics sweep across every target plus a CreateJITConfig
 			// retry loop for every worker the host can concurrently start, each a
 			// full retry budget (attempts requests at RequestTimeout plus attempts
-			// backoff waits at Retry.Maximum). It must never trip on a legitimate
-			// multi-target, high-maxAttempts, or multi-worker-JIT step.
+			// backoff waits jittered up to Retry.Maximum*(1+JitterRatio) per
+			// internal/controller/retry.go's BackoffPolicy.delay). It must never
+			// trip on a legitimate multi-target, high-maxAttempts,
+			// multi-worker-JIT, or fully-jittered-backoff step.
 			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers
-			budget := time.Duration(ops*tc.maxAttempts) * (tc.requestTO + tc.backoffMax)
+			maxJitteredBackoff := tc.backoffMax + time.Duration(float64(tc.backoffMax)*tc.jitterRatio)
+			budget := time.Duration(ops*tc.maxAttempts) * (tc.requestTO + maxJitteredBackoff)
 			if got <= budget {
-				t.Fatalf("reconcileStepTimeout = %s, want > whole-step retry budget %s (targets=%d, maxAttempts=%d, maxConcurrentWorkers=%d)", got, budget, tc.targets, tc.maxAttempts, tc.maxConcurrentWorkers)
+				t.Fatalf("reconcileStepTimeout = %s, want > whole-step retry budget %s (targets=%d, maxAttempts=%d, maxConcurrentWorkers=%d, jitterRatio=%v)", got, budget, tc.targets, tc.maxAttempts, tc.maxConcurrentWorkers, tc.jitterRatio)
 			}
 		})
+	}
+}
+
+// TestReconcileStepTimeoutAccountsForJitteredBackoff proves the exact
+// regression a reviewer flagged: the watchdog budget must not assume
+// Retry.Maximum is already the maximum possible per-attempt sleep.
+// internal/controller/retry.go's BackoffPolicy.delay applies jitter after
+// capping the base delay to Maximum, drawing uniformly from
+// [1-JitterRatio, 1+JitterRatio], so with a config where backoff dominates
+// request time (a small RequestTimeout, a large Retry.Maximum) and
+// JitterRatio at its validated ceiling of 1, a single policy-compliant wait
+// can reach nearly 2x Retry.Maximum -- exceeding the watchdog's 50% margin if
+// the budget were sized from bare Retry.Maximum alone.
+func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
+	t.Parallel()
+	const requestTO = time.Second
+	const backoffMax = time.Minute
+	const attempts = reconcileStepMinRetryAttempts
+	const targets = 1
+	const maxConcurrentWorkers = 1
+
+	unjittered := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
+	fullyJittered := unjittered
+	fullyJittered.GitHub.Retry.JitterRatio = 1
+
+	baseline := reconcileStepTimeout(unjittered)
+	got := reconcileStepTimeout(fullyJittered)
+
+	if got <= baseline {
+		t.Fatalf("reconcileStepTimeout with jitterRatio=1 = %s, want > jitterRatio=0 baseline %s", got, baseline)
+	}
+
+	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
+	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
+	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin.
+	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers
+	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
+	wantDelta := extraRetryBudget + extraRetryBudget/2
+	if diff := got - baseline; diff != wantDelta {
+		t.Fatalf("reconcileStepTimeout delta across jitterRatio 0->1 = %s, want exactly %s", diff, wantDelta)
+	}
+
+	// Concretely: the watchdog must clear a single worst-case jittered attempt
+	// (RequestTimeout plus a backoff wait of nearly 2x Retry.Maximum), which a
+	// budget sized from bare Retry.Maximum could fail to do once its 50% margin
+	// is spent elsewhere.
+	worstCaseJitteredAttempt := requestTO + 2*backoffMax
+	if got <= worstCaseJitteredAttempt {
+		t.Fatalf("reconcileStepTimeout = %s, want > single worst-case jittered attempt delay %s", got, worstCaseJitteredAttempt)
 	}
 }
 

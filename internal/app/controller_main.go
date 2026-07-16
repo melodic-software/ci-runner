@@ -242,6 +242,15 @@ const reconcileStepDesktopStartAttempts = 2
 // retryable operations per target, multiply by the per-attempt cap and the
 // attempt count to upper bound one full sweep.
 //
+// Each of those backoff waits is not itself capped at bare Retry.Maximum:
+// BackoffPolicy.delay (internal/controller/retry.go) applies jitter after
+// capping the base delay to Maximum, drawing uniformly from
+// [1-JitterRatio, 1+JitterRatio], so a single policy-compliant wait can reach
+// Maximum*(1+JitterRatio) — up to nearly 2x Maximum when JitterRatio is at its
+// validated ceiling of 1. Every retry-budget calculation below therefore uses
+// that jittered worst-case delay (maxJitteredBackoff), not bare Retry.Maximum,
+// so a legitimately jittered retry loop can never exceed this deadline.
+//
 // Step's worker-start section also calls CreateJITConfig once per worker it
 // starts, each likewise run through RetryValue for up to Retry.MaxAttempts
 // attempts. Resources.MaximumConcurrentWorkers is the host-wide cap on workers
@@ -270,7 +279,9 @@ func reconcileStepTimeout(cfg config.Config) time.Duration {
 	}
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
 	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
-	retryBudget := time.Duration((stepOps+jitOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
+	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
+		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
+	retryBudget := time.Duration((stepOps+jitOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
 	githubBudget := retryBudget + retryBudget/2
 	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
 	return githubBudget + desktopBudget
