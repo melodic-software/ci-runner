@@ -481,21 +481,38 @@ func runControllerLoop(
 			cancelStep()
 			_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-timeout", Message: fmt.Sprintf("reconcile step exceeded its %s watchdog deadline and was cancelled", stepTimeout)})
 			// This inner select must stay responsive to shutdown/interrupt/server
-			// signals just like every other select in this loop: draining a stuck
-			// step must never make the controller unresponsive for up to
-			// stepDrainGrace. stepDone is already buffered and the step's context
-			// is already cancelled, so the shutdown/interrupt/server branches below
-			// return immediately without waiting on it further.
+			// signals just like every other select in this loop, but it must NOT
+			// call shutdown() directly for a signal that arrives here: shutdown()'s
+			// first action is reconciler.Shutdown, which itself calls Step and
+			// would block on the very same stepMu this watchdog exists to survive
+			// if the timed-out Step goroutine has not actually released it yet --
+			// defeating the whole point of the bounded drain below. So a
+			// shutdown-triggering signal observed during the drain window is
+			// recorded but not acted on immediately; the code below waits for the
+			// same outcome (stepMu released vs. still wedged past stepDrainGrace)
+			// that an undirected watchdog timeout would, and only calls shutdown()
+			// once that outcome confirms it is safe to do so.
+			var (
+				pendingSignal      controller.ShutdownSignal
+				pendingAwaitServer bool
+				pendingJoinErr     error
+				haveSignal         bool
+			)
 			select {
 			case signal := <-handler.ShutdownRequests():
-				return shutdown(signal, true)
+				pendingSignal, pendingAwaitServer, haveSignal = signal, true, true
 			case <-ctx.Done():
-				return shutdown(controller.ShutdownSignal{Reason: "process interrupt"}, true)
+				pendingSignal = controller.ShutdownSignal{Reason: "process interrupt"}
+				pendingAwaitServer = true
+				haveSignal = true
 			case serveErr := <-serverErrors:
 				if serveErr == nil {
 					serveErr = errors.New("control server exited unexpectedly")
 				}
-				return errors.Join(serveErr, shutdown(controller.ShutdownSignal{Reason: "control server exited unexpectedly"}, false))
+				pendingSignal = controller.ShutdownSignal{Reason: "control server exited unexpectedly"}
+				pendingAwaitServer = false
+				pendingJoinErr = serveErr
+				haveSignal = true
 			case stepErr := <-stepDone:
 				if stepErr != nil {
 					_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
@@ -511,6 +528,27 @@ func runControllerLoop(
 				// tears down this entire process -- goroutine included -- on exit.
 				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-stuck", Message: fmt.Sprintf("reconcile step did not release its lock within %s of cancellation; exiting so the scheduled task restarts the controller", stepDrainGrace)})
 				return errReconcileStepAbandoned
+			}
+			if haveSignal {
+				// A shutdown-triggering signal arrived while the timed-out Step
+				// might still hold stepMu. Keep waiting, bounded by the same drain
+				// grace period, for the old Step to actually release it before
+				// calling shutdown(); escalate to process exit (rather than
+				// invoking reconciler.Shutdown and hanging behind the wedged Step)
+				// if it does not.
+				select {
+				case stepErr := <-stepDone:
+					if stepErr != nil {
+						_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
+					}
+					if pendingJoinErr != nil {
+						return errors.Join(pendingJoinErr, shutdown(pendingSignal, pendingAwaitServer))
+					}
+					return shutdown(pendingSignal, pendingAwaitServer)
+				case <-time.After(stepDrainGrace):
+					_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-stuck", Message: fmt.Sprintf("reconcile step did not release its lock within %s of cancellation; exiting so the scheduled task restarts the controller", stepDrainGrace)})
+					return errReconcileStepAbandoned
+				}
 			}
 		case stepErr := <-stepDone:
 			cancelStep()
