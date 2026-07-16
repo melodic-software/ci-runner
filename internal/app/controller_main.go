@@ -199,22 +199,33 @@ func loadConfiguration(path string) (config.Config, error) {
 // deadline toward a single request.
 const reconcileStepMinRetryAttempts = 3
 
-// reconcileStepTimeout bounds one reconcile Step generously enough never to
-// interrupt a legitimate retry sequence, yet tightly enough that a wedged
-// operation cannot park the controller. The Step's dominant cost is the listener
-// long poll, which RetryValue runs for up to Retry.MaxAttempts attempts, each
-// capped at RequestTimeout and separated by backoff waits capped at
-// Retry.Maximum; a flat multiple of RequestTimeout would ignore maxAttempts and
-// trip on healthy retries when it is configured high. attempts x (RequestTimeout
-// + Retry.Maximum) upper bounds that full retry budget (the Retry.Maximum term
-// over-bounds the real geometric backoff), and the added 50% margin leaves room
-// for the Step's other GitHub calls and worker provisioning.
+// reconcileStepOpsPerTarget is how many retryable GitHub calls a Step makes per
+// configured target during its worst-case legitimate sweep: one r.ensure plus
+// one r.statistics, each a full RetryValue budget.
+const reconcileStepOpsPerTarget = 2
+
+// reconcileStepTimeout bounds one reconcile Step. It is a COARSE BACKSTOP, not
+// the primary stall detector: the scale-set transport hardening (HTTP/2 health
+// pings plus TCP keepalive) already errors a half-open socket in well under a
+// minute, so this deadline essentially never fires in practice. Its only
+// correctness requirement is therefore to NEVER interrupt a legitimate Step, so
+// it is sized deliberately generously — a larger backstop has no downside.
+//
+// A Step is not one poll: step() sweeps every configured target, calling
+// r.ensure and then r.statistics per target, each running through RetryValue for
+// up to Retry.MaxAttempts attempts (each capped at RequestTimeout and separated
+// by backoff waits capped at Retry.Maximum). The worst-case legitimate duration
+// therefore scales with the target count, so budget reconcileStepOpsPerTarget
+// retryable operations per target, multiply by the per-attempt cap and the
+// attempt count to upper bound one full sweep, and add a 50% margin for the
+// remaining per-worker provisioning work.
 func reconcileStepTimeout(cfg config.Config) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
 		attempts = reconcileStepMinRetryAttempts
 	}
-	retryBudget := time.Duration(attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
+	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
+	retryBudget := time.Duration(stepOps*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
 	return retryBudget + retryBudget/2
 }
 
