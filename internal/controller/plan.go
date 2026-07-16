@@ -21,15 +21,20 @@ type PoolSnapshot struct {
 }
 
 type PlanInput struct {
-	Config    config.Config
-	Desired   model.DesiredState
-	Previous  model.ObservedState
-	Pools     []PoolSnapshot
-	Workers   []model.Worker
-	Resources model.ResourceSnapshot
-	Power     model.PowerSnapshot
-	Desktop   model.DesktopStatus
-	Now       time.Time
+	Config   config.Config
+	Desired  model.DesiredState
+	Previous model.ObservedState
+	// CapacityHysteresis overrides the last acknowledged capacity only for
+	// memory Schmitt-trigger state. During a long poll, this is the capacity
+	// currently in flight; it must hold inside the dead band without being
+	// misrepresented as acknowledged in the durable observation.
+	CapacityHysteresis map[string]int
+	Pools              []PoolSnapshot
+	Workers            []model.Worker
+	Resources          model.ResourceSnapshot
+	Power              model.PowerSnapshot
+	Desktop            model.DesktopStatus
+	Now                time.Time
 }
 
 type StartDecision struct {
@@ -180,6 +185,13 @@ func BuildPlan(input PlanInput) Plan {
 	poolByID := make(map[string]PoolSnapshot, len(input.Pools))
 	for _, pool := range input.Pools {
 		poolByID[pool.TargetID] = pool
+	}
+	previousCapacityByPool := make(map[string]int, len(input.Previous.Pools))
+	for _, pool := range input.Previous.Pools {
+		previousCapacityByPool[pool.ID] = pool.MaxCapacity
+	}
+	for poolID, capacity := range input.CapacityHysteresis {
+		previousCapacityByPool[poolID] = capacity
 	}
 	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
 	sort.SliceStable(targets, func(i, j int) bool {
@@ -406,10 +418,26 @@ func BuildPlan(input PlanInput) Plan {
 			if !advertisable[target.ID] || serviceSlots == 0 {
 				continue
 			}
-			additional := minInt(target.MaxCapacity-plan.AdvertisedCapacity[target.ID], serviceSlots)
-			additional = minInt(additional, advertisedBudget)
+			currentCapacity := plan.AdvertisedCapacity[target.ID]
+			additionalLimit := minInt(target.MaxCapacity-currentCapacity, serviceSlots)
+			additionalLimit = minInt(additionalLimit, advertisedBudget)
 			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
-			additional = minInt(additional, affordableWorkerCount(memoryRemaining, workerMemory))
+			rawAffordable := affordableWorkerCount(memoryRemaining, workerMemory)
+			// Memory-backed capacity decreases immediately at the raw slot
+			// boundary. Growth requires extra headroom, while an already
+			// advertised slot remains stable inside that Schmitt-trigger band.
+			held := minInt(additionalLimit, maxInt(previousCapacityByPool[target.ID]-currentCapacity, 0))
+			held = minInt(held, rawAffordable)
+			memoryAfterHeld := memoryRemaining - uint64(held)*uint64(workerMemory)
+			growth := minInt(
+				additionalLimit-held,
+				affordableWorkerCountWithMargin(
+					memoryAfterHeld,
+					workerMemory,
+					input.Config.Resources.MemoryCapacityIncreaseMarginPct,
+				),
+			)
+			additional := held + growth
 			if additional <= 0 {
 				continue
 			}
@@ -624,6 +652,18 @@ func affordableWorkerCount(memoryAvailable uint64, workerMemory config.ByteSize)
 		return int(maxInt)
 	}
 	return int(slots)
+}
+
+func affordableWorkerCountWithMargin(memoryAvailable uint64, workerMemory config.ByteSize, marginPercent float64) int {
+	memoryBytes := uint64(workerMemory)
+	if memoryBytes == 0 {
+		return 0
+	}
+	margin := uint64(math.Ceil(float64(memoryBytes) * marginPercent / 100))
+	if memoryAvailable <= margin {
+		return 0
+	}
+	return affordableWorkerCount(memoryAvailable-margin, workerMemory)
 }
 
 func evaluatePowerGate(previous model.PowerGateState, snapshot model.PowerSnapshot, policy config.Power, now time.Time) (model.PowerGateState, bool) {

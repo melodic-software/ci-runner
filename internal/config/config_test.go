@@ -7,7 +7,7 @@ import (
 )
 
 const validYAML = `
-schemaVersion: 1
+schemaVersion: 2
 host:
   id: melo-desk-001
   runnerNamePrefix: melo-desk-001
@@ -48,6 +48,7 @@ resources:
     memorySwap: 8GiB
     pids: 4096
   minimumAvailableMemoryPercent: 25
+  memoryCapacityIncreaseMarginPercent: 25
   cpuBlockPercent: 75
   cpuResumePercent: 60
   cpuObservationWindow: 60s
@@ -94,6 +95,9 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 	if cfg.Resources.Worker.Memory != ByteSize(8<<30) {
 		t.Fatalf("memory = %d", cfg.Resources.Worker.Memory)
+	}
+	if cfg.Resources.MemoryCapacityIncreaseMarginPct != 25 {
+		t.Fatalf("memory capacity increase margin = %g", cfg.Resources.MemoryCapacityIncreaseMarginPct)
 	}
 	if cfg.Drain.WarningAfter.Duration != 20*time.Minute {
 		t.Fatalf("warningAfter = %s", cfg.Drain.WarningAfter.Duration)
@@ -147,6 +151,19 @@ func TestValidateRejectsNegativeWorkerImagePullTimeout(t *testing.T) {
 	validateErr := cfg.Validate()
 	if validateErr == nil || !strings.Contains(validateErr.Error(), "workerImage.pullTimeout") {
 		t.Fatalf("validate error = %v, want workerImage.pullTimeout rejection", validateErr)
+	}
+}
+
+func TestLoadLegacySchemaVersionOneDefaultsMemoryCapacityIncreaseMarginToZero(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1)
+	input = strings.Replace(input, "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1)
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != LegacySchemaVersion || cfg.Resources.MemoryCapacityIncreaseMarginPct != 0 {
+		t.Fatalf("legacy config = schema %d, margin %g", cfg.SchemaVersion, cfg.Resources.MemoryCapacityIncreaseMarginPct)
 	}
 }
 
@@ -379,15 +396,19 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
       warmIdle: 0
       maxCapacity: 1
       priority: 1`, 1),
-		"threshold inversion":        strings.Replace(validYAML, "cpuResumePercent: 60", "cpuResumePercent: 80", 1),
-		"malformed URL":              strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
-		"raw diagnostics bound":      strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
-		"UNC path":                   strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),
-		"device namespace":           strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\?\C:\ci-runner\state'`, 1),
-		"alternate data stream":      strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\state:evil'`, 1),
-		"reserved device":            strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\CON\state'`, 1),
-		"nested runtime roots":       strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'C:\Users\runner\AppData\Local\ci-runner\state\diagnostics'`, 1),
-		"canonical equivalent roots": strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'c:/users/RUNNER/AppData/Local/ci-runner/state'`, 1),
+		"threshold inversion":         strings.Replace(validYAML, "cpuResumePercent: 60", "cpuResumePercent: 80", 1),
+		"v1 field extension":          strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1),
+		"v2 missing margin":           strings.Replace(validYAML, "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
+		"v2 null margin":              strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: null", 1),
+		"zero memory increase margin": strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: 0", 1),
+		"malformed URL":               strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
+		"raw diagnostics bound":       strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
+		"UNC path":                    strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),
+		"device namespace":            strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\?\C:\ci-runner\state'`, 1),
+		"alternate data stream":       strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\state:evil'`, 1),
+		"reserved device":             strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\CON\state'`, 1),
+		"nested runtime roots":        strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'C:\Users\runner\AppData\Local\ci-runner\state\diagnostics'`, 1),
+		"canonical equivalent roots":  strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'c:/users/RUNNER/AppData/Local/ci-runner/state'`, 1),
 	}
 	for name, input := range tests {
 		name, input := name, input

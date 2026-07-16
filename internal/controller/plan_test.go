@@ -68,8 +68,89 @@ func TestAdvertisedServiceCapacityRemainsMemoryBounded(t *testing.T) {
 	if plan.DesiredWorkers["org"] != 1 || totalStarts(plan.Start) != 1 {
 		t.Fatalf("desired=%d starts=%#v, want only one warm worker", plan.DesiredWorkers["org"], plan.Start)
 	}
-	if plan.AdvertisedCapacity["org"] != 3 {
-		t.Fatalf("advertised capacity=%d, want exactly three memory-backed slots", plan.AdvertisedCapacity["org"])
+	if plan.AdvertisedCapacity["org"] != 2 {
+		t.Fatalf("advertised capacity=%d, want two slots before the upward memory margin", plan.AdvertisedCapacity["org"])
+	}
+}
+
+func TestAdvertisedCapacityUsesMemorySchmittTriggerAtEverySlotBoundary(t *testing.T) {
+	t.Parallel()
+	const (
+		gibibyte    = uint64(1 << 30)
+		memoryFloor = 16 * gibibyte
+	)
+	tests := []struct {
+		name             string
+		previousCapacity int
+		headroomBytes    uint64
+		wantCapacity     int
+	}{
+		{name: "zero to one waits below upper boundary", headroomBytes: 10*gibibyte - 1, wantCapacity: 0},
+		{name: "zero to one grows at upper boundary", headroomBytes: 10 * gibibyte, wantCapacity: 1},
+		{name: "existing slot holds at lower boundary", previousCapacity: 1, headroomBytes: 8 * gibibyte, wantCapacity: 1},
+		{name: "existing slot drops below lower boundary", previousCapacity: 1, headroomBytes: 8*gibibyte - 1, wantCapacity: 0},
+		{name: "multi-slot decrease is immediate", previousCapacity: 3, headroomBytes: 16*gibibyte - 1, wantCapacity: 1},
+		{name: "second slot waits for its upper boundary", previousCapacity: 1, headroomBytes: 18*gibibyte - 1, wantCapacity: 1},
+		{name: "second slot grows at its upper boundary", previousCapacity: 1, headroomBytes: 18 * gibibyte, wantCapacity: 2},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input := healthyInput()
+			input.Config.GitHub.Targets[0].WarmIdle = 0
+			input.Resources.AvailableMemoryBytes = memoryFloor + test.headroomBytes
+			input.Previous.Pools = []model.PoolObservation{{
+				ID: "org", MaxCapacity: test.previousCapacity, CapacityAcknowledged: true,
+			}}
+
+			plan := BuildPlan(input)
+
+			if got := plan.AdvertisedCapacity["org"]; got != test.wantCapacity {
+				t.Fatalf("advertised capacity = %d, want %d", got, test.wantCapacity)
+			}
+		})
+	}
+}
+
+func TestAdvertisedCapacityMarginUsesTargetEffectiveWorkerMemory(t *testing.T) {
+	t.Parallel()
+	const gibibyte = uint64(1 << 30)
+	workerMemory := config.ByteSize(4 * gibibyte)
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+	input.Config.GitHub.Targets[0].Resources.Worker = &config.WorkerOverrides{Memory: &workerMemory}
+	input.Resources.AvailableMemoryBytes = 16*gibibyte + 5*gibibyte - 1
+
+	below := BuildPlan(input)
+	if got := below.AdvertisedCapacity["org"]; got != 0 {
+		t.Fatalf("capacity below profile-specific upper boundary = %d, want 0", got)
+	}
+
+	input.Resources.AvailableMemoryBytes++
+	atBoundary := BuildPlan(input)
+	if got := atBoundary.AdvertisedCapacity["org"]; got != 1 {
+		t.Fatalf("capacity at profile-specific upper boundary = %d, want 1", got)
+	}
+}
+
+func TestAdvertisedCapacityPendingHysteresisPreservesImmediateMultiSlotDecrease(t *testing.T) {
+	t.Parallel()
+	const gibibyte = uint64(1 << 30)
+	input := healthyInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 0
+	input.Previous.Pools = []model.PoolObservation{{
+		ID: "org", MaxCapacity: 0, CapacityAcknowledged: false,
+	}}
+	input.CapacityHysteresis = map[string]int{"org": 3}
+	// Three slots are in flight, but current headroom safely funds only one.
+	// The lower raw boundary must win over the pending hysteresis baseline.
+	input.Resources.AvailableMemoryBytes = 16*gibibyte + 2*8*gibibyte - 1
+
+	plan := BuildPlan(input)
+
+	if got := plan.AdvertisedCapacity["org"]; got != 1 {
+		t.Fatalf("capacity after pending multi-slot withdrawal = %d, want 1", got)
 	}
 }
 
@@ -854,16 +935,18 @@ func healthyInput() PlanInput {
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	return PlanInput{
 		Config: config.Config{
-			Host:   config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
-			GitHub: config.GitHub{Targets: []config.Target{{ID: "org", MaxCapacity: 3, WarmIdle: 1, Priority: 0}}},
+			SchemaVersion: config.SupportedSchemaVersion,
+			Host:          config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
+			GitHub:        config.GitHub{Targets: []config.Target{{ID: "org", MaxCapacity: 3, WarmIdle: 1, Priority: 0}}},
 			Resources: config.Resources{
-				MaximumConcurrentWorkers:  3,
-				Worker:                    config.Worker{Memory: config.ByteSize(8 << 30)},
-				MinimumAvailableMemoryPct: 25,
-				CPUBlockPercent:           75,
-				CPUResumePercent:          60,
-				CPUObservationWindow:      config.Duration{Duration: 60 * time.Second},
-				CPUHysteresisWindow:       config.Duration{Duration: 60 * time.Second},
+				MaximumConcurrentWorkers:        3,
+				Worker:                          config.Worker{Memory: config.ByteSize(8 << 30)},
+				MinimumAvailableMemoryPct:       25,
+				MemoryCapacityIncreaseMarginPct: 25,
+				CPUBlockPercent:                 75,
+				CPUResumePercent:                60,
+				CPUObservationWindow:            config.Duration{Duration: 60 * time.Second},
+				CPUHysteresisWindow:             config.Duration{Duration: 60 * time.Second},
 			},
 			Power: config.Power{Policy: config.PowerAlways, StableACWindow: config.Duration{Duration: 30 * time.Second}},
 		},

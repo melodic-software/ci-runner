@@ -411,8 +411,13 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// Compute capacity from the last authoritative statistics, then send that
 	// capacity with this poll. Newly returned statistics drive worker changes
 	// now and the next poll's capacity, avoiding an unsupported reservation API.
+	// A withdrawal-triggered rerun reaches this call with a checkpoint that
+	// still reports the last acknowledged capacity, not the capacity the
+	// canceled poll had in flight; carry that in-flight baseline forward so
+	// the rerun holds a still-affordable remainder instead of re-deriving it
+	// as fresh growth.
 	provisional := BuildPlan(PlanInput{
-		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
+		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: r.pendingCapacitySnapshot(), Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
 	})
 	pollPlan := provisional

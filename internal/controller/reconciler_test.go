@@ -1580,7 +1580,7 @@ func (l *testJobLookup) ActiveJob(_ context.Context, poolID, runnerName string) 
 
 func validControllerConfig() config.Config {
 	return config.Config{
-		SchemaVersion: 1,
+		SchemaVersion: config.SupportedSchemaVersion,
 		Host:          config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
 		Controller: config.Controller{
 			ReconcileInterval:    config.Duration{Duration: 5 * time.Second},
@@ -1604,7 +1604,7 @@ func validControllerConfig() config.Config {
 		Resources: config.Resources{
 			MaximumConcurrentWorkers:  3,
 			Worker:                    config.Worker{CPUs: 2, Memory: config.ByteSize(8 << 30), MemorySwap: config.ByteSize(8 << 30), PIDs: 4096},
-			MinimumAvailableMemoryPct: 25, CPUBlockPercent: 75, CPUResumePercent: 60,
+			MinimumAvailableMemoryPct: 25, MemoryCapacityIncreaseMarginPct: 25, CPUBlockPercent: 75, CPUResumePercent: 60,
 			CPUObservationWindow: config.Duration{Duration: time.Minute}, CPUHysteresisWindow: config.Duration{Duration: time.Minute},
 		},
 		Power: config.Power{Policy: config.PowerAlways, StableACWindow: config.Duration{Duration: 30 * time.Second}},

@@ -16,7 +16,10 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-const SupportedSchemaVersion = 1
+const (
+	LegacySchemaVersion    = 1
+	SupportedSchemaVersion = 2
+)
 
 var (
 	hostIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -167,13 +170,14 @@ type WorkerOverrides struct {
 }
 
 type Resources struct {
-	MaximumConcurrentWorkers  int      `yaml:"maximumConcurrentWorkers"`
-	Worker                    Worker   `yaml:"worker"`
-	MinimumAvailableMemoryPct float64  `yaml:"minimumAvailableMemoryPercent"`
-	CPUBlockPercent           float64  `yaml:"cpuBlockPercent"`
-	CPUResumePercent          float64  `yaml:"cpuResumePercent"`
-	CPUObservationWindow      Duration `yaml:"cpuObservationWindow"`
-	CPUHysteresisWindow       Duration `yaml:"cpuHysteresisWindow"`
+	MaximumConcurrentWorkers        int      `yaml:"maximumConcurrentWorkers"`
+	Worker                          Worker   `yaml:"worker"`
+	MinimumAvailableMemoryPct       float64  `yaml:"minimumAvailableMemoryPercent"`
+	MemoryCapacityIncreaseMarginPct float64  `yaml:"memoryCapacityIncreaseMarginPercent"`
+	CPUBlockPercent                 float64  `yaml:"cpuBlockPercent"`
+	CPUResumePercent                float64  `yaml:"cpuResumePercent"`
+	CPUObservationWindow            Duration `yaml:"cpuObservationWindow"`
+	CPUHysteresisWindow             Duration `yaml:"cpuHysteresisWindow"`
 }
 
 type Worker struct {
@@ -327,6 +331,9 @@ func Load(r io.Reader) (Config, error) {
 	if err := validateTargetResourceSyntax(&document); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
+	if err := validateResourceSchemaSyntax(&document); err != nil {
+		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	}
 
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -343,6 +350,46 @@ func Load(r io.Reader) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func validateResourceSchemaSyntax(document *yaml.Node) error {
+	root := dereferenceYAMLNode(document)
+	if root == nil || root.Kind != yaml.DocumentNode || len(root.Content) != 1 {
+		return nil
+	}
+	root = dereferenceYAMLNode(root.Content[0])
+	schema, ok := yamlMappingValue(root, "schemaVersion")
+	if !ok {
+		return nil
+	}
+	schema = dereferenceYAMLNode(schema)
+	if schema == nil {
+		return nil
+	}
+	schemaVersion, err := strconv.Atoi(schema.Value)
+	if err != nil {
+		return nil
+	}
+	resources, ok := yamlMappingValue(root, "resources")
+	if !ok {
+		return nil
+	}
+	resources = dereferenceYAMLNode(resources)
+	if resources == nil {
+		return nil
+	}
+	margin, present := yamlMappingValue(resources, "memoryCapacityIncreaseMarginPercent")
+	switch schemaVersion {
+	case LegacySchemaVersion:
+		if present {
+			return errors.New("resources.memoryCapacityIncreaseMarginPercent is not defined by schemaVersion 1")
+		}
+	case SupportedSchemaVersion:
+		if !present || yamlNodeIsNull(dereferenceYAMLNode(margin)) {
+			return errors.New("resources.memoryCapacityIncreaseMarginPercent is required by schemaVersion 2")
+		}
+	}
+	return nil
 }
 
 func rejectYAMLMergeKeys(document *yaml.Node) error {
@@ -456,8 +503,8 @@ func (c Config) Validate() error {
 			problems = append(problems, err)
 		}
 	}
-	if c.SchemaVersion != SupportedSchemaVersion {
-		add(fmt.Errorf("schemaVersion: unsupported value %d (supported: %d)", c.SchemaVersion, SupportedSchemaVersion))
+	if c.SchemaVersion != LegacySchemaVersion && c.SchemaVersion != SupportedSchemaVersion {
+		add(fmt.Errorf("schemaVersion: unsupported value %d (supported: %d, %d)", c.SchemaVersion, LegacySchemaVersion, SupportedSchemaVersion))
 	}
 	if !hostIDPattern.MatchString(c.Host.ID) {
 		add(errors.New("host.id: must be a lowercase DNS-style machine identifier"))
@@ -554,6 +601,13 @@ func (c Config) Validate() error {
 	}
 	add(validateWorker("resources.worker", resources.Worker))
 	add(validatePercent("resources.minimumAvailableMemoryPercent", resources.MinimumAvailableMemoryPct, false))
+	if c.SchemaVersion == LegacySchemaVersion {
+		if resources.MemoryCapacityIncreaseMarginPct != 0 {
+			add(errors.New("resources.memoryCapacityIncreaseMarginPercent: schemaVersion 1 requires the legacy zero default"))
+		}
+	} else {
+		add(validatePercent("resources.memoryCapacityIncreaseMarginPercent", resources.MemoryCapacityIncreaseMarginPct, false))
+	}
 	add(validatePercent("resources.cpuBlockPercent", resources.CPUBlockPercent, false))
 	add(validatePercent("resources.cpuResumePercent", resources.CPUResumePercent, true))
 	if resources.CPUResumePercent >= resources.CPUBlockPercent {
