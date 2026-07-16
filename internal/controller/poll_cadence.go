@@ -130,12 +130,24 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 		now := r.deps.Clock.Now().UTC()
 		checkpoint := state.observed
 		var observationErr error
+		observationSources := make([]string, 0, 3)
 		if !state.forcedZero {
 			power, powerErr := r.deps.Power.Snapshot(ctx)
+			if powerErr != nil {
+				observationSources = append(observationSources, "power")
+			}
 			resources, resourceErr := r.deps.Resources.Snapshot(ctx)
+			if resourceErr != nil {
+				observationSources = append(observationSources, "resources")
+			}
 			workers, workerErr := r.deps.Workers.List(ctx)
-			if workerErr == nil {
+			if workerErr != nil {
+				observationSources = append(observationSources, "workers")
+			} else {
 				workers, workerErr = r.enrichWorkerJobs(ctx, workers)
+				if workerErr != nil {
+					observationSources = append(observationSources, "worker-jobs")
+				}
 			}
 			if ctx.Err() != nil {
 				return result
@@ -175,7 +187,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 					if withdrawn {
 						message = "open listener poll was restarted to withdraw advertised capacity"
 					}
-					_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
+					r.writeLog(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
 					cancel(errReconcileInputsChanged)
 					return result
 				}
@@ -190,6 +202,14 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 			result.checkpointErr = checkpointErr
 		}
 		if observationErr != nil {
+			for _, source := range observationSources {
+				r.writeLog(ctx, LogEvent{
+					At:      now,
+					Code:    "listener-cadence-observation-error",
+					Message: "host observation failed during an open listener poll; the poll will restart",
+					Source:  source,
+				})
+			}
 			cancel(errReconcileInputsChanged)
 			return result
 		}

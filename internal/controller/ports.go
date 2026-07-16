@@ -75,6 +75,7 @@ type LogEvent struct {
 	At       time.Time
 	Code     string
 	Message  string
+	Source   string
 	PoolID   string
 	WorkerID string
 }
