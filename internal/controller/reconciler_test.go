@@ -540,7 +540,7 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 	// error for that one runner; every other runner's deregistration succeeds
 	// through the same fake.
 	persistentErr := errors.New("persistent deregistration failure")
-	harness.controller.deps.ScaleSets = &runnerRemovalFailer{Client: harness.scaleSets, failRunnerID: 41, err: persistentErr}
+	harness.controller.deps.ScaleSets = &runnerRemovalFailureClient{Client: harness.scaleSets, failRunnerID: 41, err: persistentErr}
 
 	if _, err := harness.controller.Step(context.Background()); err != nil {
 		t.Fatal(err)
@@ -549,7 +549,12 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 	const maxSteps = 8
 	idle2Removed := false
 	for step := 0; step < maxSteps; step++ {
-		if _, err := harness.controller.Step(context.Background()); err != nil {
+		// A Step that attempts idle-1's deregistration surfaces the injected
+		// persistentErr through record()'s operationErrors (Step() joins and
+		// returns them), exactly like a real retryable GitHub error would. That
+		// is the scenario under test, not a test failure: only an error other
+		// than the expected persistent one is unexpected here.
+		if _, err := harness.controller.Step(context.Background()); err != nil && !errors.Is(err, persistentErr) {
 			t.Fatal(err)
 		}
 		if !harness.runtime.hasWorker("idle-2") {
@@ -1918,19 +1923,19 @@ func (s *tracingScaleSet) RemoveRunner(ctx context.Context, poolID string, runne
 	return s.Client.RemoveRunner(ctx, poolID, runnerID)
 }
 
-// runnerRemovalFailer wraps a scaleset.Client and returns a persistent error
-// for RemoveRunner calls against one specific runner ID, delegating every
-// other call (including RemoveRunner for other runner IDs) to the wrapped
-// client. It simulates one worker's deregistration being permanently stuck
-// without needing a Fake field, for
+// runnerRemovalFailureClient wraps a scaleset.Client and returns a
+// persistent error for RemoveRunner calls against one specific runner ID,
+// delegating every other call (including RemoveRunner for other runner IDs)
+// to the wrapped client. It simulates one worker's deregistration being
+// permanently stuck without needing a Fake field, for
 // TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker.
-type runnerRemovalFailer struct {
+type runnerRemovalFailureClient struct {
 	scaleset.Client
 	failRunnerID int64
 	err          error
 }
 
-func (s *runnerRemovalFailer) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
+func (s *runnerRemovalFailureClient) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
 	if runnerID == s.failRunnerID {
 		return s.err
 	}
