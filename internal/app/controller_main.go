@@ -204,6 +204,12 @@ const reconcileStepMinRetryAttempts = 3
 // one r.statistics, each a full RetryValue budget.
 const reconcileStepOpsPerTarget = 2
 
+// reconcileStepJITOpsPerWorker is how many retryable GitHub calls a Step makes
+// per worker it starts during its worst-case legitimate JIT registration
+// sequence: one CreateJITConfig call, a full RetryValue budget, mirroring the
+// same policy-compliant retry/backoff shape as reconcileStepOpsPerTarget.
+const reconcileStepJITOpsPerWorker = 1
+
 // reconcileStepTimeout bounds one reconcile Step. It is a COARSE BACKSTOP, not
 // the primary stall detector: the scale-set transport hardening (HTTP/2 health
 // pings plus TCP keepalive) already errors a half-open socket in well under a
@@ -217,15 +223,23 @@ const reconcileStepOpsPerTarget = 2
 // by backoff waits capped at Retry.Maximum). The worst-case legitimate duration
 // therefore scales with the target count, so budget reconcileStepOpsPerTarget
 // retryable operations per target, multiply by the per-attempt cap and the
-// attempt count to upper bound one full sweep, and add a 50% margin for the
-// remaining per-worker provisioning work.
+// attempt count to upper bound one full sweep.
+//
+// Step's worker-start section also calls CreateJITConfig once per worker it
+// starts, each likewise run through RetryValue for up to Retry.MaxAttempts
+// attempts. Resources.MaximumConcurrentWorkers is the host-wide cap on workers
+// started (and therefore on JIT registrations) within a single Step, so budget
+// reconcileStepJITOpsPerWorker retryable operations per unit of that cap, using
+// the same per-attempt cap and attempt count, and add it to the sweep budget
+// before the 50% margin for remaining per-worker provisioning work.
 func reconcileStepTimeout(cfg config.Config) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
 		attempts = reconcileStepMinRetryAttempts
 	}
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
-	retryBudget := time.Duration(stepOps*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
+	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
+	retryBudget := time.Duration((stepOps+jitOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration)
 	return retryBudget + retryBudget/2
 }
 
