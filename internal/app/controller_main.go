@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -386,6 +387,23 @@ const reconcileStepDesktopStartAttempts = 2
 // doc comment), sized per the same static cap, and is budgeted additively
 // alongside the registered-retirement idle-confirmation budget: a Step can
 // legitimately need both in the same reconcile.
+//
+// Every term below is computed with saturating arithmetic (see
+// saturatingMulInt, saturatingAddInt, saturatingScaleDuration, and
+// saturatingAddDuration) rather than bare + and *. jitOps scales with
+// effectiveMaxConcurrentWorkers, which the caller sizes from
+// controller.EffectiveMaximumConcurrentWorkers -- an operator-set
+// Desired.TemporaryCapacityOverride when one is set. Current validation
+// (internal/state/fs/store.go's SaveDesired, internal/app's parseCapacity)
+// only rejects a NEGATIVE override; a legitimate (if operationally silly)
+// very large override must not silently overflow this arithmetic into a
+// negative or near-zero time.Duration, which would violate this function's
+// one correctness requirement (never interrupt a legitimate Step) far worse
+// than any of the scenarios the budget above defends against: it would
+// cancel EVERY reconcile immediately, not just an unusually slow one.
+// Saturating toward the largest representable time.Duration instead keeps
+// every input legal while guaranteeing the result is always large and
+// positive, consistent with "a larger backstop has no downside" above.
 func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
@@ -393,16 +411,82 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	}
 	staticWorkerCap := max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
-	jitOps := reconcileStepJITOpsPerWorker * max(effectiveMaxConcurrentWorkers, 1)
+	jitOps := saturatingMulInt(reconcileStepJITOpsPerWorker, max(effectiveMaxConcurrentWorkers, 1))
 	retirementOps := reconcileStepRetirementOpsPerWorker * staticWorkerCap
 	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * staticWorkerCap
+	totalOps := saturatingAddInt(stepOps, saturatingAddInt(jitOps, saturatingAddInt(retirementOps, registrationCheckOps)))
+	totalRetryUnits := saturatingMulInt(totalOps, attempts)
 	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
 		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
-	retryBudget := time.Duration((stepOps+jitOps+retirementOps+registrationCheckOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
-	githubBudget := retryBudget + retryBudget/2
-	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
-	idleConfirmationBudget := time.Duration((reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker)*staticWorkerCap) * cfg.Drain.IdleConfirmationWindow.Duration
-	return githubBudget + desktopBudget + idleConfirmationBudget
+	perAttemptBudget := cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff
+	retryBudget := saturatingScaleDuration(perAttemptBudget, totalRetryUnits)
+	githubBudget := saturatingAddDuration(retryBudget, retryBudget/2)
+	desktopBudget := saturatingAddDuration(
+		saturatingScaleDuration(cfg.DockerDesktop.StartTimeout.Duration, reconcileStepDesktopStartAttempts),
+		cfg.DockerDesktop.StopTimeout.Duration,
+	)
+	idleConfirmationWaits := saturatingMulInt(reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker, staticWorkerCap)
+	idleConfirmationBudget := saturatingScaleDuration(cfg.Drain.IdleConfirmationWindow.Duration, idleConfirmationWaits)
+	return saturatingAddDuration(saturatingAddDuration(githubBudget, desktopBudget), idleConfirmationBudget)
+}
+
+// saturatingMulInt multiplies two non-negative ints, clamping to math.MaxInt
+// instead of silently wrapping negative on overflow, mirroring
+// internal/controller/reconciler.go's saturatingAddUint64 for the
+// signed-int, multiplicative case reconcileStepTimeout needs. See that
+// function's doc comment for why this matters: an operator-set
+// Desired.TemporaryCapacityOverride is validated only to be non-negative, so
+// reconcileStepTimeout's op-count arithmetic must degrade to a saturated
+// upper bound instead of a wrapped, possibly negative one.
+func saturatingMulInt(left, right int) int {
+	if left <= 0 || right <= 0 {
+		return 0
+	}
+	product := left * right
+	if product/left != right {
+		return math.MaxInt
+	}
+	return product
+}
+
+// saturatingAddInt adds two non-negative ints, clamping to math.MaxInt
+// instead of wrapping negative on overflow. See saturatingMulInt.
+func saturatingAddInt(left, right int) int {
+	if left < 0 || right < 0 {
+		return 0
+	}
+	sum := left + right
+	if sum < left {
+		return math.MaxInt
+	}
+	return sum
+}
+
+// saturatingScaleDuration multiplies unit by a non-negative count, clamping
+// to the largest representable time.Duration instead of overflowing int64
+// nanoseconds. See saturatingMulInt.
+func saturatingScaleDuration(unit time.Duration, count int) time.Duration {
+	if unit <= 0 || count <= 0 {
+		return 0
+	}
+	if int64(unit) > math.MaxInt64/int64(count) {
+		return math.MaxInt64
+	}
+	return unit * time.Duration(count)
+}
+
+// saturatingAddDuration adds two non-negative durations, clamping to the
+// largest representable time.Duration instead of overflowing int64
+// nanoseconds. See saturatingMulInt.
+func saturatingAddDuration(left, right time.Duration) time.Duration {
+	if left < 0 || right < 0 {
+		return 0
+	}
+	sum := left + right
+	if sum < left {
+		return math.MaxInt64
+	}
+	return sum
 }
 
 // reconcileStepDrainGrace bounds how long the reconcile loop waits, after

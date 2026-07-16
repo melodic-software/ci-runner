@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -411,6 +412,83 @@ func TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively(t
 	// constraint here (it would pass both pre- and post-fix).
 	if got <= singlePathBudget {
 		t.Fatalf("reconcileStepTimeout = %s, want > single-path idle-confirmation budget %s", got, singlePathBudget)
+	}
+}
+
+// TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride
+// proves the fix for a reviewer-flagged arithmetic-safety gap: validation
+// (internal/state/fs/store.go's SaveDesired, internal/app's parseCapacity)
+// only rejects a NEGATIVE Desired.TemporaryCapacityOverride, so an operator
+// can legally set a very large one. The pre-fix formula multiplied
+// effectiveMaxConcurrentWorkers into the op count with bare int arithmetic
+// and then into nanoseconds with bare Duration arithmetic, either of which
+// could silently overflow (wrapping negative or near-zero) before the
+// result reached context.WithTimeout, which would cancel every reconcile
+// immediately. The result must instead saturate to a large, positive
+// duration for any legal (non-negative) override, all the way up to
+// math.MaxInt.
+func TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride(t *testing.T) {
+	t.Parallel()
+	cfg := githubRetryConfig(70*time.Second, time.Minute, 6, 3, 4)
+
+	sane := reconcileStepTimeout(cfg, 4)
+
+	for _, override := range []int{1 << 40, math.MaxInt32, math.MaxInt} {
+		got := reconcileStepTimeout(cfg, override)
+		if got <= 0 {
+			t.Fatalf("reconcileStepTimeout with effectiveMaxConcurrentWorkers=%d = %s, want a large positive duration, not <= 0 (overflowed)", override, got)
+		}
+		if got < sane {
+			t.Fatalf("reconcileStepTimeout with effectiveMaxConcurrentWorkers=%d = %s, want >= the small-override budget %s (a larger override must never produce a SMALLER watchdog)", override, got, sane)
+		}
+	}
+}
+
+// TestSaturatingMulIntClampsInsteadOfWrapping and its siblings below prove
+// the arithmetic-safety helpers reconcileStepTimeout relies on never wrap
+// past math.MaxInt/math.MaxInt64, mirroring
+// internal/controller/reconciler.go's saturatingAddUint64 test coverage for
+// the signed, multiplicative cases this watchdog needs.
+func TestSaturatingMulIntClampsInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+	if got := saturatingMulInt(math.MaxInt, 2); got != math.MaxInt {
+		t.Fatalf("saturatingMulInt(MaxInt, 2) = %d, want math.MaxInt", got)
+	}
+	if got := saturatingMulInt(3, 4); got != 12 {
+		t.Fatalf("saturatingMulInt(3, 4) = %d, want 12", got)
+	}
+	if got := saturatingMulInt(0, math.MaxInt); got != 0 {
+		t.Fatalf("saturatingMulInt(0, MaxInt) = %d, want 0", got)
+	}
+}
+
+func TestSaturatingAddIntClampsInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+	if got := saturatingAddInt(math.MaxInt, 1); got != math.MaxInt {
+		t.Fatalf("saturatingAddInt(MaxInt, 1) = %d, want math.MaxInt", got)
+	}
+	if got := saturatingAddInt(3, 4); got != 7 {
+		t.Fatalf("saturatingAddInt(3, 4) = %d, want 7", got)
+	}
+}
+
+func TestSaturatingScaleDurationClampsInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+	if got := saturatingScaleDuration(time.Hour, math.MaxInt); got != math.MaxInt64 {
+		t.Fatalf("saturatingScaleDuration(1h, MaxInt) = %s, want math.MaxInt64", got)
+	}
+	if got := saturatingScaleDuration(time.Second, 3); got != 3*time.Second {
+		t.Fatalf("saturatingScaleDuration(1s, 3) = %s, want 3s", got)
+	}
+}
+
+func TestSaturatingAddDurationClampsInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+	if got := saturatingAddDuration(math.MaxInt64, time.Second); got != math.MaxInt64 {
+		t.Fatalf("saturatingAddDuration(MaxInt64, 1s) = %s, want math.MaxInt64", got)
+	}
+	if got := saturatingAddDuration(time.Second, 2*time.Second); got != 3*time.Second {
+		t.Fatalf("saturatingAddDuration(1s, 2s) = %s, want 3s", got)
 	}
 }
 
