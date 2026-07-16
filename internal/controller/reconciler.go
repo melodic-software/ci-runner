@@ -57,6 +57,21 @@ type Reconciler struct {
 	sequence          uint64
 	shuttingDown      bool
 	pendingCapacity   map[string]int
+
+	// registrationCheckCursor rotates which idle workers' GitHub registration
+	// gets verified when there are more eligible candidates than one Step's
+	// registrationCheckCap allows (see step()). It is only ever read and
+	// written from within step(), itself only reachable while stepMu is held,
+	// so unlike drainCapacity/sequence it needs no additional lock.
+	registrationCheckCursor uint64
+
+	// retirementCursor rotates which worker in plan.Remove is tried first when
+	// there are more retirement-eligible candidates than one Step's
+	// retirementDeregistrationCap allows (see step()), so a worker whose
+	// deregisterRunner call keeps failing cannot permanently starve every
+	// worker behind it in plan.Remove. Like registrationCheckCursor, it is
+	// only ever read and written from within step() while stepMu is held.
+	retirementCursor uint64
 }
 
 type ReconcileResult struct {
@@ -117,6 +132,23 @@ func (r *Reconciler) setWatchIntervalForTest(interval time.Duration) error {
 	defer r.stateMu.Unlock()
 	r.watchInterval = interval
 	return nil
+}
+
+// EffectiveMaximumConcurrentWorkers reports the host-wide worker cap the next
+// Step's BuildPlan will apply, honoring any active
+// Desired.TemporaryCapacityOverride. internal/app's per-step watchdog budget
+// calls this before starting each Step so a legitimate temporary scale-up
+// widens the JIT-start portion of the budget instead of tripping the watchdog
+// on a policy-compliant burst reconcile. A desired-state read failure fails
+// safe to the static configured cap -- the same value step() itself falls
+// back to when it cannot load desired state -- rather than assuming an
+// override might be in effect that cannot be verified.
+func (r *Reconciler) EffectiveMaximumConcurrentWorkers(ctx context.Context) int {
+	desired, err := r.deps.State.LoadDesired(ctx)
+	if err != nil {
+		return r.config.Resources.MaximumConcurrentWorkers
+	}
+	return EffectiveMaximumConcurrentWorkers(r.config.Resources, desired)
 }
 
 // Step performs one serialized reconciliation. Polling scale-set statistics
@@ -268,6 +300,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		observationFailed = true
 		record("power-monitor-error", "power observation failed; new work is blocked", "", true, powerErr)
 	}
+	// This watcher is a child of the Step context, which the reconcileStepTimeout
+	// watchdog already bounds, so it needs no deadline of its own. A per-request
+	// deadline here would wrongly expire it during a normal multi-attempt listener
+	// poll: r.statistics runs through RetryValue for up to Retry.MaxAttempts
+	// attempts, so the poll it shadows can legitimately span minutes.
 	watchContext, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
@@ -387,6 +424,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	)
 	if containsReadyPool(pools) {
 		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
+		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
+		// separate per-request deadline would expire this cadence watcher during a
+		// normal multi-attempt poll retry sequence, so none is set here.
 		pollWatchContext, stop := context.WithCancel(ctx)
 		stopPollWatch = stop
 		pollWatchDone = make(chan pollCadenceResult, 1)
@@ -500,7 +540,22 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// Verify only exact, job-free idle identities. An authoritative missing
 	// registration makes that container unusable capacity; every lookup error
 	// and every active/racing worker remains preserved.
+	//
+	// r.runnerRegistered runs a full GitHub RetryValue budget per call
+	// (internal/app's reconcileStepTimeout budgets exactly
+	// registrationCheckCap of these per Step). Unlike JIT starts, the number of
+	// eligible idle workers here is not itself bounded by
+	// MaximumConcurrentWorkers -- idle inventory accumulates independently of
+	// that cap -- so cap the checks actually issued in this Step and rotate
+	// which candidates get picked via registrationCheckCursor, deferring the
+	// remainder (logged as worker-registration-check-deferred-step-budget) to
+	// later Steps. A fixed from-the-front cap would starve candidates past the
+	// cap forever whenever the same workers keep sorting first; rotating the
+	// starting point guarantees every candidate is eventually checked as long
+	// as new idle inventory does not outpace the cap indefinitely, the same
+	// assumption the retirement deregistration cap above already relies on.
 	if jobStateKnown {
+		var candidates []int
 		for index := range workers {
 			worker := &workers[index]
 			if worker.State != model.WorkerIdle || worker.JobID != "" || worker.RunnerID <= 0 {
@@ -509,15 +564,30 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if pool := findPool(pools, worker.PoolID); !pool.Ready {
 				continue
 			}
-			registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
-			if registrationErr != nil {
-				record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)
-				continue
+			candidates = append(candidates, index)
+		}
+		registrationCheckCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
+		if n := len(candidates); n > 0 {
+			start := int(r.registrationCheckCursor % uint64(n))
+			checked := 0
+			for i := 0; i < n; i++ {
+				worker := &workers[candidates[(start+i)%n]]
+				if checked >= registrationCheckCap {
+					note("worker-registration-check-deferred-step-budget", "registration verification was deferred to a later reconcile step because this step already reached its per-step registration-check budget", worker.PoolID)
+					continue
+				}
+				checked++
+				registered, registrationErr := r.runnerRegistered(ctx, worker.PoolID, worker.RunnerID, worker.Name)
+				if registrationErr != nil {
+					record("runner-registration-check-error", safeScaleSetMessage("verify runner registration", registrationErr), worker.PoolID, scaleset.Retryable(registrationErr), registrationErr)
+					continue
+				}
+				if !registered {
+					worker.State = model.WorkerUnregistered
+					r.writeLog(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
+				}
 			}
-			if !registered {
-				worker.State = model.WorkerUnregistered
-				r.writeLog(ctx, LogEvent{At: now, Code: "runner-registration-missing", Message: "idle worker registration no longer exists and will be retired", PoolID: worker.PoolID, WorkerID: worker.ID})
-			}
+			r.registrationCheckCursor += uint64(checked)
 		}
 	}
 
@@ -539,8 +609,41 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
+	// deregisterRunner runs a full GitHub RetryValue budget per call
+	// (internal/app's reconcileStepTimeout budgets exactly
+	// Resources.MaximumConcurrentWorkers worth of these per Step, mirroring the
+	// JIT-start budget). Unlike JIT starts, plan.Remove's idle-worker count is
+	// not itself bounded by MaximumConcurrentWorkers: lowering that setting or
+	// warm capacity can legitimately leave more existing idle workers to drain
+	// than the new cap allows for. Cap the deregisterRunner calls issued in this
+	// Step at that same limit and defer any remainder to a later Step (where
+	// plan.Remove is recomputed and picks the deferred workers back up) instead
+	// of letting an unbounded retirement count exceed the watchdog's budget.
+	retirementDeregistrationCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
+	retirementDeregistrations := 0
+
+	// Rotate which worker in plan.Remove is tried first each Step, mirroring
+	// the registration-check rotation below (registrationCheckCursor). Without
+	// rotation, a single worker whose deregisterRunner call keeps returning a
+	// persistent error would consume this Step's entire per-step retry budget
+	// every Step forever -- it always sorts first in plan.Remove and the cap
+	// check above is reached (and the budget spent) before any later entry is
+	// ever tried -- starving every worker behind it from retiring at all.
+	// Rotating the starting point guarantees every worker eventually reaches
+	// the front of the budget, as long as new excess inventory does not
+	// outpace the cap indefinitely, the same assumption
+	// registrationCheckCursor already relies on.
+	removalOrder := make([]int, len(plan.Remove))
+	if n := len(removalOrder); n > 0 {
+		start := int(r.retirementCursor % uint64(n))
+		for i := range removalOrder {
+			removalOrder[i] = (start + i) % n
+		}
+	}
+
 	seenRemoval := map[string]struct{}{}
-	for _, worker := range plan.Remove {
+	for _, removeIndex := range removalOrder {
+		worker := plan.Remove[removeIndex]
 		if _, duplicate := seenRemoval[worker.ID]; duplicate {
 			continue
 		}
@@ -597,6 +700,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				record("worker-retirement-runner-id-missing", "automatic retirement was refused because the managed worker has no persisted GitHub runner ID", worker.PoolID, false, nil)
 				continue
 			}
+			if retirementDeregistrations >= retirementDeregistrationCap {
+				note("worker-retirement-deferred-step-budget", "idle worker retirement was deferred to a later reconcile step to stay within this step's deregistration retry budget", worker.PoolID)
+				continue
+			}
+			retirementDeregistrations++
 			if removeRunnerErr := r.deregisterRunner(ctx, worker.PoolID, worker.RunnerID); removeRunnerErr != nil {
 				record("runner-deregistration-error", safeScaleSetMessage("deregister quiesced runner", removeRunnerErr), worker.PoolID, scaleset.Retryable(removeRunnerErr), removeRunnerErr)
 				continue
@@ -611,6 +719,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			record("worker-became-busy", "worker acquired work during drain and was preserved", worker.PoolID, false, nil)
 		}
 	}
+	r.retirementCursor += uint64(retirementDeregistrations)
 
 	var reservedMemory uint64
 	for _, decision := range plan.Start {

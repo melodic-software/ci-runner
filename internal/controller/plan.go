@@ -51,6 +51,22 @@ type Plan struct {
 	Problems           []model.Problem
 }
 
+// EffectiveMaximumConcurrentWorkers resolves the host-wide worker cap
+// BuildPlan enforces for a reconcile: the desired state's
+// TemporaryCapacityOverride when an operator has set one, otherwise the
+// static configured Resources.MaximumConcurrentWorkers. Exported so callers
+// outside this package (internal/app's reconcile-step watchdog) can size a
+// budget against the same effective limit BuildPlan actually applies to
+// worker starts, instead of just the static cap -- a legitimate temporary
+// scale-up (override greater than the static cap) must not trip the watchdog
+// on a policy-compliant burst reconcile it correctly authorized.
+func EffectiveMaximumConcurrentWorkers(resources config.Resources, desired model.DesiredState) int {
+	if desired.TemporaryCapacityOverride != nil {
+		return *desired.TemporaryCapacityOverride
+	}
+	return resources.MaximumConcurrentWorkers
+}
+
 // BuildPlan is pure: it computes a complete desired transition without
 // invoking an adapter. Lower target priority values are allocated first.
 func BuildPlan(input PlanInput) Plan {
@@ -173,10 +189,7 @@ func BuildPlan(input PlanInput) Plan {
 		return targets[i].Priority < targets[j].Priority
 	})
 
-	hostLimit := input.Config.Resources.MaximumConcurrentWorkers
-	if input.Desired.TemporaryCapacityOverride != nil {
-		hostLimit = *input.Desired.TemporaryCapacityOverride
-	}
+	hostLimit := EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)
 	if hostLimit < 0 {
 		plan.Phase = model.PhaseDegraded
 		plan.Problems = append(plan.Problems, problem(input.Now, "invalid-capacity-override", "temporary capacity override must not be negative", "", false))

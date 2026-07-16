@@ -397,6 +397,279 @@ func TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls(t *testing.T
 	}
 }
 
+// TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder proves the
+// fix for a reviewer-flagged watchdog gap: deregisterRunner runs a full
+// GitHub RetryValue budget per call, and internal/app's reconcileStepTimeout
+// only budgets Resources.MaximumConcurrentWorkers worth of those per Step.
+// Lowering MaximumConcurrentWorkers (simulated here after warm inventory was
+// already started under the higher configured limit) can legitimately leave
+// more idle workers eligible for retirement than the new cap allows for. The
+// removal loop must cap deregisterRunner calls at MaximumConcurrentWorkers
+// per Step -- deferring, never dropping, the remainder to a later Step -- so
+// the watchdog's budget is never exceeded by a single Step's retirements.
+func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	// Simulate MaximumConcurrentWorkers (or warm capacity) having been lowered
+	// after five idle workers were legitimately started under a higher limit:
+	// the new cap is well below the number of idle workers now eligible for
+	// retirement (target WarmIdle=1 keeps exactly one, so four must drain).
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+		{ID: "idle-4", Name: "runner-4", PoolID: "org", RunnerID: 44, State: model.WorkerIdle},
+		{ID: "idle-5", Name: "runner-5", PoolID: "org", RunnerID: 45, State: model.WorkerIdle},
+	}
+	logger := &testLogSink{}
+	harness.controller.deps.Logs = logger
+
+	countRemovals := func() int {
+		removed := 0
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "remove-runner" {
+				removed++
+			}
+		}
+		return removed
+	}
+	countDeferrals := func() int {
+		logger.mu.Lock()
+		defer logger.mu.Unlock()
+		deferred := 0
+		for _, event := range logger.events {
+			if event.Code == "worker-retirement-deferred-step-budget" {
+				deferred++
+			}
+		}
+		return deferred
+	}
+
+	first, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Observed.Pools[0].ZeroCapacityConfirmations != 1 || len(harness.runtime.snapshot()) != 5 {
+		t.Fatalf("first quiesce poll = %#v workers=%#v", first.Observed.Pools[0], harness.runtime.snapshot())
+	}
+
+	// Second step: quiescence reaches its two-poll confirmation threshold and
+	// four workers become eligible for retirement, but the deregistration cap
+	// (MaximumConcurrentWorkers=2) must limit this Step to exactly two
+	// deregisterRunner calls, deferring the other two rather than exceeding
+	// the watchdog's per-step retry budget.
+	second, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countRemovals(); got != 2 {
+		t.Fatalf("deregistrations after capped step = %d, want exactly 2 (MaximumConcurrentWorkers)", got)
+	}
+	if got := len(harness.runtime.snapshot()); got != 3 {
+		t.Fatalf("workers remaining after capped step = %d, want 3 (1 kept + 2 deferred)", got)
+	}
+	if got := countDeferrals(); got != 2 {
+		t.Fatalf("worker-retirement-deferred-step-budget events = %d, want exactly 2", got)
+	}
+	if second.Observed.Phase != model.PhaseDraining {
+		t.Fatalf("phase after capped step = %s, want still draining", second.Observed.Phase)
+	}
+
+	// Remaining steps: the two deferred workers must not be lost. Keep
+	// stepping until the drain converges to the single kept warm-idle worker,
+	// asserting on every step that the deregistration cap is never exceeded
+	// (each step issues at most MaximumConcurrentWorkers=2 new
+	// deregistrations) and that the cumulative total lands on exactly 4 -- the
+	// full set of originally-excess workers, neither double-counted nor
+	// stranded. This intentionally avoids asserting the exact step at which
+	// Phase reports Ready and MaxCapacity is fully restored (that timing
+	// depends on the capacity-acknowledgment sequencing exercised by
+	// TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls, which is
+	// orthogonal to this fix) and instead focuses precisely on what the fix
+	// guarantees: the per-step cap holds, and deferred work is never dropped.
+	const maxAdditionalSteps = 6
+	previousRemovals := countRemovals()
+	converged := false
+	for i := 0; i < maxAdditionalSteps; i++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		removals := countRemovals()
+		if delta := removals - previousRemovals; delta > 2 {
+			t.Fatalf("additional step %d issued %d new deregistrations, want at most 2 (MaximumConcurrentWorkers)", i, delta)
+		}
+		previousRemovals = removals
+		if len(harness.runtime.snapshot()) == 1 {
+			converged = true
+			break
+		}
+	}
+	if !converged {
+		t.Fatalf("workers did not converge to the single kept worker within %d additional steps; remaining=%#v", maxAdditionalSteps, harness.runtime.snapshot())
+	}
+	if got := countRemovals(); got != 4 {
+		t.Fatalf("cumulative deregistrations after convergence = %d, want exactly 4 (all originally-excess workers eventually drained, none dropped)", got)
+	}
+}
+
+// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker proves the
+// fix for a reviewer-flagged starvation gap in the per-step retirement cap
+// (TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder above):
+// with MaximumConcurrentWorkers=1, plan.Remove's first entry sorts
+// identically every Step. If that first worker's deregisterRunner call keeps
+// returning a persistent error, a fixed head-of-line iteration order would
+// let it consume the single per-step retry slot every Step forever --
+// before the cap was added, the loop simply recorded the error and moved on
+// to other idle workers -- starving every worker behind it in plan.Remove
+// from ever being retired. The removal loop must rotate which worker is
+// tried first each Step (retirementCursor, mirroring
+// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates's
+// registrationCheckCursor below) so later plan.Remove entries eventually get
+// a turn even while the first worker keeps failing.
+func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 1
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+	}
+	// idle-1's deregistration always fails, simulating a persistent GitHub
+	// error for that one runner; every other runner's deregistration succeeds
+	// through the same fake.
+	persistentErr := errors.New("persistent deregistration failure")
+	harness.controller.deps.ScaleSets = &runnerRemovalFailureClient{Client: harness.scaleSets, failRunnerID: 41, err: persistentErr}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	} // first zero-capacity poll; not yet eligible for retirement
+
+	const maxSteps = 8
+	idle2Removed := false
+	for step := 0; step < maxSteps; step++ {
+		// A Step that attempts idle-1's deregistration surfaces the injected
+		// persistentErr through record()'s operationErrors (Step() joins and
+		// returns them), exactly like a real retryable GitHub error would. That
+		// is the scenario under test, not a test failure: only an error other
+		// than the expected persistent one is unexpected here.
+		if _, err := harness.controller.Step(context.Background()); err != nil && !errors.Is(err, persistentErr) {
+			t.Fatal(err)
+		}
+		if !harness.runtime.hasWorker("idle-2") {
+			idle2Removed = true
+			break
+		}
+	}
+	if !idle2Removed {
+		t.Fatalf("idle-2 was never retired within %d steps; a persistently failing head-of-line worker starved every worker behind it in plan.Remove", maxSteps)
+	}
+	if !harness.runtime.hasWorker("idle-1") {
+		t.Fatal("idle-1 was removed despite its deregisterRunner call always failing")
+	}
+	if !harness.runtime.hasWorker("idle-3") {
+		t.Fatal("idle-3 (the single retained warm-idle worker) was unexpectedly removed")
+	}
+}
+
+// TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride
+// proves the fix for a reviewer-flagged watchdog gap: internal/app's
+// reconcile-step watchdog queries Reconciler.EffectiveMaximumConcurrentWorkers
+// before every Step to size the JIT-start portion of its budget from the same
+// effective limit BuildPlan actually applies (static cap or, when set, the
+// durable Desired.TemporaryCapacityOverride), not the static cap alone. This
+// exercises that resolution against the real durable state store: no
+// override yet returns the static cap, an override in effect returns the
+// override (even when larger), and a desired-state read failure fails safe
+// to the static cap rather than assuming an unverifiable override.
+func TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 1
+
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(context.Background()); got != 1 {
+		t.Fatalf("no override: EffectiveMaximumConcurrentWorkers = %d, want static cap 1", got)
+	}
+
+	override := 10
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, TemporaryCapacityOverride: &override, UpdatedAt: harness.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(context.Background()); got != 10 {
+		t.Fatalf("override=10 > static cap=1: EffectiveMaximumConcurrentWorkers = %d, want the override 10", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(cancelled); got != 1 {
+		t.Fatalf("desired-state read failure: EffectiveMaximumConcurrentWorkers = %d, want fail-safe static cap 1 (not the unverifiable override)", got)
+	}
+}
+
+// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates proves the fix
+// for a third reviewer-flagged watchdog gap: RunnerRegistered runs a full
+// GitHub RetryValue budget per call, and the idle-worker inventory eligible
+// for this JIT-cancellation check is not itself bounded by
+// Resources.MaximumConcurrentWorkers. step()'s registration-check loop must
+// cap RunnerRegistered calls at Resources.MaximumConcurrentWorkers per Step
+// and rotate which candidates get picked via registrationCheckCursor, so a
+// fixed from-the-front cap (which would always re-check the same leading
+// candidates while starving the rest forever) cannot happen. This asserts
+// the cap holds every step and, allowing for the same excess-idle-worker
+// retirement this population would also legitimately trigger, that every
+// worker is eventually accounted for by either a registration check or a
+// retirement -- never silently skipped forever by both.
+func TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+		{ID: "idle-4", Name: "runner-4", PoolID: "org", RunnerID: 44, State: model.WorkerIdle},
+		{ID: "idle-5", Name: "runner-5", PoolID: "org", RunnerID: 45, State: model.WorkerIdle},
+	}
+	const wantWorkers = 5
+
+	checksIssued := func() int {
+		checks := 0
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "runner-registration" {
+				checks++
+			}
+		}
+		return checks
+	}
+	accountedFor := func() map[int64]bool {
+		accounted := map[int64]bool{}
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "runner-registration" || call.Operation == "remove-runner" {
+				accounted[call.ScaleSetID] = true
+			}
+		}
+		return accounted
+	}
+
+	const maxSteps = 8
+	previousChecks := 0
+	for step := 0; step < maxSteps; step++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		checks := checksIssued()
+		if delta := checks - previousChecks; delta > 2 {
+			t.Fatalf("step %d issued %d new registration checks, want at most 2 (MaximumConcurrentWorkers)", step, delta)
+		}
+		previousChecks = checks
+		if len(accountedFor()) == wantWorkers {
+			return
+		}
+	}
+	t.Fatalf("registration checks + retirements covered %d/%d workers within %d steps (cap=2 per step); rotation must not starve any candidate: %#v", len(accountedFor()), wantWorkers, maxSteps, accountedFor())
+}
+
 func TestEnabledQuiescePreservesAllWorkersWhenAssignmentArrives(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -1647,6 +1920,25 @@ func (s *tracingScaleSet) Statistics(ctx context.Context, identity scaleset.Iden
 }
 func (s *tracingScaleSet) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
 	s.trace.add(fmt.Sprintf("deregister:%s:%d", poolID, runnerID))
+	return s.Client.RemoveRunner(ctx, poolID, runnerID)
+}
+
+// runnerRemovalFailureClient wraps a scaleset.Client and returns a
+// persistent error for RemoveRunner calls against one specific runner ID,
+// delegating every other call (including RemoveRunner for other runner IDs)
+// to the wrapped client. It simulates one worker's deregistration being
+// permanently stuck without needing a Fake field, for
+// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker.
+type runnerRemovalFailureClient struct {
+	scaleset.Client
+	failRunnerID int64
+	err          error
+}
+
+func (s *runnerRemovalFailureClient) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
+	if runnerID == s.failRunnerID {
+		return s.err
+	}
 	return s.Client.RemoveRunner(ctx, poolID, runnerID)
 }
 

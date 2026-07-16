@@ -764,6 +764,33 @@ func TestBusyWorkersRemainWhenLimitDropsBelowBusyCount(t *testing.T) {
 	}
 }
 
+// TestEffectiveMaximumConcurrentWorkersPrefersOverride proves
+// EffectiveMaximumConcurrentWorkers -- the resolution BuildPlan applies and
+// internal/app's reconcile-step watchdog mirrors to size its JIT-start
+// budget -- returns the desired state's TemporaryCapacityOverride when an
+// operator has set one, even when it is larger than the static configured
+// cap, and falls back to the static cap only when no override is set.
+func TestEffectiveMaximumConcurrentWorkersPrefersOverride(t *testing.T) {
+	t.Parallel()
+	resources := config.Resources{MaximumConcurrentWorkers: 1}
+
+	if got := EffectiveMaximumConcurrentWorkers(resources, model.DesiredState{}); got != 1 {
+		t.Fatalf("no override: EffectiveMaximumConcurrentWorkers = %d, want static cap 1", got)
+	}
+
+	override := 10
+	desired := model.DesiredState{TemporaryCapacityOverride: &override}
+	if got := EffectiveMaximumConcurrentWorkers(resources, desired); got != 10 {
+		t.Fatalf("override=10 > static cap=1: EffectiveMaximumConcurrentWorkers = %d, want the override 10", got)
+	}
+
+	smaller := 0
+	desired = model.DesiredState{TemporaryCapacityOverride: &smaller}
+	if got := EffectiveMaximumConcurrentWorkers(resources, desired); got != 0 {
+		t.Fatalf("override=0 < static cap=1: EffectiveMaximumConcurrentWorkers = %d, want the override 0", got)
+	}
+}
+
 func TestUnavailablePoolFailsClosedLocally(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
