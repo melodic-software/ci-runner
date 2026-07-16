@@ -202,8 +202,18 @@ const reconcileStepMinRetryAttempts = 3
 
 // reconcileStepOpsPerTarget is how many retryable GitHub calls a Step makes per
 // configured target during its worst-case legitimate sweep: one r.ensure plus
-// one r.statistics, each a full RetryValue budget.
-const reconcileStepOpsPerTarget = 2
+// one r.statistics, each a full RetryValue budget -- PLUS, when the persisted
+// scale set was deleted externally, r.statistics's own not-found recovery
+// path (internal/controller/reconciler.go's statistics function): a second
+// r.ensure call to recreate this host's identity, then a second r.statistics
+// call against the recreated identity, each again a full RetryValue budget.
+// That recovery path is not a rare/unbounded retry -- it fires at most once
+// per target per Step (statistics only recurses one level after a single
+// ErrorNotFound) -- but it is a real, policy-compliant doubling of a target's
+// worst-case retryable-call count that the budget must clear, or a Step
+// legitimately recovering a deleted scale set for enough targets can exceed
+// the watchdog even though every individual retry obeyed policy.
+const reconcileStepOpsPerTarget = 4
 
 // reconcileStepJITOpsPerWorker is how many retryable GitHub calls a Step makes
 // per worker it starts during its worst-case legitimate JIT registration
@@ -303,6 +313,68 @@ const reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker = 1
 // larger backstop has no downside.
 const reconcileStepDesktopStartAttempts = 2
 
+// reconcileStepWorkerImagePullBudget generously bounds the one Docker image
+// pull a Step's worker-start section can incur. reconciler.go's plan.Start
+// loop calls Workers.Start once per worker it starts, and the Docker runtime
+// implementation's Start (internal/runtime/docker/runtime.go) calls
+// ensureImage first, which pulls the configured worker image only when
+// ImageInspect reports it missing (a first-run host, or after the pinned
+// digest changes) -- unlike every other per-op term in this budget,
+// ensureImage has NO configured timeout of its own (it runs unbounded under
+// whatever context it is given), so there is no runtime policy value to
+// derive an exact term from the way DockerDesktop.StartTimeout bounds the
+// desktop lifecycle above.
+//
+// This is budgeted as a single fixed occurrence, not scaled by worker count:
+// plan.Start's loop issues Workers.Start calls one at a time, never
+// concurrently, and ensureImage's own ImageInspect check means only the
+// FIRST Start call in a Step that finds the image missing actually pulls it
+// -- Docker has the image on disk for every subsequent Start call in that
+// same Step. A generous fixed floor is therefore this term's only honest
+// option; per this function's "a larger backstop has no downside" principle,
+// it is sized well above a realistic worst-case pull of a multi-gigabyte CI
+// runner image over a slow link rather than tuned tight.
+const reconcileStepWorkerImagePullBudget = 20 * time.Minute
+
+// reconcileStepJITBudgetFloorWorkers floors the worker count the JIT-start
+// portion of the budget is sized from, in addition to (not instead of) the
+// live effectiveMaxConcurrentWorkers value the caller supplies.
+//
+// effectiveMaxConcurrentWorkers is read from Desired.TemporaryCapacityOverride
+// (via Reconciler.EffectiveMaximumConcurrentWorkers) immediately before this
+// function is called, and validation places no upper bound on that override
+// -- only a non-negative check (internal/state/fs/store.go's SaveDesired,
+// internal/app's parseCapacity). That snapshot can go stale in two distinct
+// ways once Step actually starts running: (1) an ordinary timing race between
+// this read and step()'s own LoadDesired a moment later, and (2) far more
+// significantly, step()'s own errReconcileInputsChanged retry path
+// (reconciler.go's watchSafetyInputs and freshStartAllowed both cancel with
+// that cause the instant they observe the desired state has changed, and
+// Step's outer loop immediately re-runs step() under the SAME
+// context.WithTimeout deadline this function computed for the OLD snapshot):
+// an operator legitimately raising the override at any point during a
+// long-running Step causes the re-run to need MORE JIT-start budget than was
+// sized, against a deadline that cannot grow to compensate.
+//
+// No term computed purely from the pre-Step snapshot can close that class of
+// gap: the override can change to any non-negative value after the snapshot
+// is taken, so no snapshot-derived exact term is staleness-immune by
+// construction. Rather than adding yet another itemized term chasing this
+// (each prior fix in this budget's history has surfaced another snapshot-
+// sensitive gap the same way), floor the JIT-start worker count at a value
+// generous enough to absorb any realistic single-host operator burst --
+// concurrent Windows/Docker CI worker containers on one host are practically
+// bounded by CPU and memory long before reaching this floor -- so an override
+// raised mid-Step, within that realistic envelope, cannot exceed the budget
+// regardless of exactly when the snapshot was taken. This does not achieve
+// mathematical staleness-immunity against an unbounded override (that would
+// require either a real product ceiling on TemporaryCapacityOverride or a
+// fundamentally different watchdog design that resizes as Step runs, both
+// out of scope here); it trades that for a floor that comfortably covers
+// every operationally realistic case, consistent with this function's
+// existing "a larger backstop has no downside" principle.
+const reconcileStepJITBudgetFloorWorkers = 64
+
 // reconcileStepTimeout bounds one reconcile Step. It is a COARSE BACKSTOP, not
 // the primary stall detector: the scale-set transport hardening (HTTP/2 health
 // pings plus TCP keepalive) already errors a half-open socket in well under a
@@ -375,7 +447,9 @@ const reconcileStepDesktopStartAttempts = 2
 // are all reachable in one Step) plus one Stop call, and add that directly to
 // the GitHub-retry budget (including its 50% margin) so a policy-compliant
 // desktop start or stop is never cut short by a watchdog sized only for
-// GitHub retries.
+// GitHub retries. Add reconcileStepWorkerImagePullBudget alongside it: an
+// unrelated, unbounded Docker operation (see its doc comment for why it gets
+// a fixed floor instead of a computed term).
 //
 // Registered retirements also incur a Drain.IdleConfirmationWindow wait each
 // (see reconcileStepIdleConfirmationWaitsPerWorker's doc comment): a fixed
@@ -387,6 +461,13 @@ const reconcileStepDesktopStartAttempts = 2
 // doc comment), sized per the same static cap, and is budgeted additively
 // alongside the registered-retirement idle-confirmation budget: a Step can
 // legitimately need both in the same reconcile.
+//
+// jitOps floors effectiveMaxConcurrentWorkers at reconcileStepJITBudgetFloorWorkers
+// (see that constant's doc comment) rather than just at 1: the live value can
+// go stale between the pre-Step snapshot and Step's own desired-state reload,
+// including across an errReconcileInputsChanged re-run of step() under this
+// same deadline, so the JIT-start term uses the LARGER of the live value and
+// the generous floor instead of the live value alone.
 //
 // Every term below is computed with saturating arithmetic (see
 // saturatingMulInt, saturatingAddInt, saturatingScaleDuration, and
@@ -411,7 +492,7 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	}
 	staticWorkerCap := max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
-	jitOps := saturatingMulInt(reconcileStepJITOpsPerWorker, max(effectiveMaxConcurrentWorkers, 1))
+	jitOps := saturatingMulInt(reconcileStepJITOpsPerWorker, max(effectiveMaxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers))
 	retirementOps := reconcileStepRetirementOpsPerWorker * staticWorkerCap
 	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * staticWorkerCap
 	totalOps := saturatingAddInt(stepOps, saturatingAddInt(jitOps, saturatingAddInt(retirementOps, registrationCheckOps)))
@@ -422,8 +503,11 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	retryBudget := saturatingScaleDuration(perAttemptBudget, totalRetryUnits)
 	githubBudget := saturatingAddDuration(retryBudget, retryBudget/2)
 	desktopBudget := saturatingAddDuration(
-		saturatingScaleDuration(cfg.DockerDesktop.StartTimeout.Duration, reconcileStepDesktopStartAttempts),
-		cfg.DockerDesktop.StopTimeout.Duration,
+		saturatingAddDuration(
+			saturatingScaleDuration(cfg.DockerDesktop.StartTimeout.Duration, reconcileStepDesktopStartAttempts),
+			cfg.DockerDesktop.StopTimeout.Duration,
+		),
+		reconcileStepWorkerImagePullBudget,
 	)
 	idleConfirmationWaits := saturatingMulInt(reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker, staticWorkerCap)
 	idleConfirmationBudget := saturatingScaleDuration(cfg.Drain.IdleConfirmationWindow.Duration, idleConfirmationWaits)

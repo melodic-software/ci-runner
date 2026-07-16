@@ -100,8 +100,11 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 
 	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
 	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
-	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin.
-	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
+	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin. JIT
+	// ops are floored at reconcileStepJITBudgetFloorWorkers (see its doc
+	// comment), not just at maxConcurrentWorkers, since maxConcurrentWorkers=1
+	// here is far below that floor.
+	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
 	wantDelta := extraRetryBudget + extraRetryBudget/2
 	if diff := got - baseline; diff != wantDelta {
@@ -137,19 +140,25 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 	got := reconcileStepTimeout(cfg, maxConcurrentWorkers)
 
 	// The pre-fix formula budgeted only the target sweep plus JIT starts. Any
-	// retirement contribution must be strictly additional to that.
-	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers
+	// retirement contribution must be strictly additional to that. JIT ops are
+	// floored at reconcileStepJITBudgetFloorWorkers (see its doc comment), not
+	// just at maxConcurrentWorkers, since maxConcurrentWorkers=4 here is far
+	// below that floor.
+	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers)
 	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
 	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
 	if got <= preFixGithubBudget {
 		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT-only) github budget %s once retirement retries are budgeted", got, preFixGithubBudget)
 	}
 
-	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
-	want := fullRetryBudget + fullRetryBudget/2
+	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
+	// desktop-category contribution is the fixed, unconditional
+	// reconcileStepWorkerImagePullBudget term.
+	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget
 	if got != want {
-		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x)", got, want)
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the fixed image-pull floor)", got, want)
 	}
 }
 
@@ -174,19 +183,25 @@ func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) 
 
 	// The pre-fix formula budgeted the target sweep plus JIT starts and
 	// retirements. Any registration-check contribution must be strictly
-	// additional to that.
-	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	// additional to that. JIT ops are floored at
+	// reconcileStepJITBudgetFloorWorkers (see its doc comment), not just at
+	// maxConcurrentWorkers, since maxConcurrentWorkers=4 here is far below
+	// that floor.
+	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
 	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
 	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
 	if got <= preFixGithubBudget {
 		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT+retirement) github budget %s once registration checks are budgeted", got, preFixGithubBudget)
 	}
 
-	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
-	want := fullRetryBudget + fullRetryBudget/2
+	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
+	// desktop-category contribution is the fixed, unconditional
+	// reconcileStepWorkerImagePullBudget term.
+	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget
 	if got != want {
-		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x)", got, want)
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the fixed image-pull floor)", got, want)
 	}
 }
 
@@ -287,12 +302,14 @@ func TestReconcileStepTimeoutFloorsZeroMaxConcurrentWorkers(t *testing.T) {
 // JIT-start portion of the budget floors its effectiveMaxConcurrentWorkers
 // argument independently of the static
 // Resources.MaximumConcurrentWorkers-derived floor above, mirroring it for
-// the override-aware parameter Fix 3/5 introduced.
+// the override-aware parameter. Both 0 and 1 are far below
+// reconcileStepJITBudgetFloorWorkers, so both collapse to that same
+// generous floor (see its doc comment), not to a "single worker" value.
 func TestReconcileStepTimeoutFloorsZeroEffectiveMaxConcurrentWorkers(t *testing.T) {
 	t.Parallel()
 	if got, want := reconcileStepTimeout(githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1), 0),
 		reconcileStepTimeout(githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1), 1); got != want {
-		t.Fatalf("zero effectiveMaxConcurrentWorkers: reconcileStepTimeout = %s, want single-worker floor %s", got, want)
+		t.Fatalf("zero effectiveMaxConcurrentWorkers: reconcileStepTimeout = %s, want equal to effectiveMaxConcurrentWorkers=1's budget %s (both below reconcileStepJITBudgetFloorWorkers, so both collapse to the same floor)", got, want)
 	}
 }
 
@@ -315,7 +332,11 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 	const attempts = 6
 	const targets = 1
 	const staticCap = 1
-	const override = 10
+	// override must clear reconcileStepJITBudgetFloorWorkers (see its doc
+	// comment) for this test to observe the override actually widening the
+	// budget beyond the floor: a staticCap-vs-override comparison where both
+	// sides are floored to the same value would show no delta at all.
+	const override = reconcileStepJITBudgetFloorWorkers + 50
 
 	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, staticCap)
 	staticBudget := reconcileStepTimeout(cfg, staticCap)
@@ -329,8 +350,9 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 	// retirement and registration-check ops stay tied to the static cap
 	// because reconciler.go's removal and registration-check loops cap
 	// themselves at Resources.MaximumConcurrentWorkers regardless of any
-	// temporary override.
-	jitOpsDelta := reconcileStepJITOpsPerWorker * (override - staticCap)
+	// temporary override. staticCap is below reconcileStepJITBudgetFloorWorkers,
+	// so the static side of the delta is anchored at the floor, not staticCap.
+	jitOpsDelta := reconcileStepJITOpsPerWorker * (override - reconcileStepJITBudgetFloorWorkers)
 	wantDelta := time.Duration(jitOpsDelta*attempts) * (requestTO + backoffMax)
 	wantDelta = wantDelta + wantDelta/2
 	if diff := overrideBudget - staticBudget; diff != wantDelta {
@@ -441,6 +463,112 @@ func TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride(t *te
 		if got < sane {
 			t.Fatalf("reconcileStepTimeout with effectiveMaxConcurrentWorkers=%d = %s, want >= the small-override budget %s (a larger override must never produce a SMALLER watchdog)", override, got, sane)
 		}
+	}
+}
+
+// TestReconcileStepTimeoutIncludesWorkerImagePullBudget proves the fix for a
+// reviewer-flagged gap: Workers.Start's Docker runtime implementation
+// (internal/runtime/docker/runtime.go) calls ensureImage before creating a
+// container, which pulls the configured worker image whenever ImageInspect
+// reports it missing (a first-run host, or after the pinned digest changes).
+// That pull has no configured timeout of its own -- unlike every other
+// per-operation term in this budget -- and can legitimately take many
+// minutes, so the watchdog must budget reconcileStepWorkerImagePullBudget as
+// a fixed floor even when every other term (GitHub retries, desktop
+// lifecycle, idle confirmation) is at its own floor.
+func TestReconcileStepTimeoutIncludesWorkerImagePullBudget(t *testing.T) {
+	t.Parallel()
+	tiny := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1)
+	got := reconcileStepTimeout(tiny, 1)
+	if got < reconcileStepWorkerImagePullBudget {
+		t.Fatalf("reconcileStepTimeout = %s, want >= the fixed worker image-pull floor %s even with an otherwise-tiny configuration", got, reconcileStepWorkerImagePullBudget)
+	}
+}
+
+// TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled proves the
+// image-pull term is added once per Step, not multiplied by worker count:
+// reconciler.go's plan.Start loop issues Workers.Start calls sequentially,
+// never concurrently, and ensureImage's own ImageInspect check means only
+// the first Start call that finds the image missing actually pulls it, so a
+// larger effectiveMaxConcurrentWorkers must not multiply this term the way
+// it multiplies the JIT-start retry budget. Proved by an exact delta: if the
+// image-pull term scaled with worker count, the observed delta across two
+// effectiveMaxConcurrentWorkers values would exceed pure JIT-ops scaling; it
+// must match exactly.
+func TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled(t *testing.T) {
+	t.Parallel()
+	const requestTO = 70 * time.Second
+	const backoffMax = time.Minute
+	const attempts = 6
+	const low = reconcileStepJITBudgetFloorWorkers
+	const high = reconcileStepJITBudgetFloorWorkers * 4
+
+	cfg := githubRetryConfig(requestTO, backoffMax, attempts, 1, 1)
+	lowBudget := reconcileStepTimeout(cfg, low)
+	highBudget := reconcileStepTimeout(cfg, high)
+
+	jitOpsDelta := reconcileStepJITOpsPerWorker * (high - low)
+	wantDelta := time.Duration(jitOpsDelta*attempts) * (requestTO + backoffMax)
+	wantDelta = wantDelta + wantDelta/2
+	if diff := highBudget - lowBudget; diff != wantDelta {
+		t.Fatalf("reconcileStepTimeout delta across effectiveMaxConcurrentWorkers %d->%d = %s, want exactly %s (the fixed image-pull floor must not scale with worker count; only JIT ops may)", low, high, diff, wantDelta)
+	}
+}
+
+// TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness proves the fix
+// for a reviewer-flagged staleness gap: effectiveMaxConcurrentWorkers is read
+// from Desired.TemporaryCapacityOverride immediately before this function is
+// called, but Step() can re-run step() under this SAME deadline
+// (errReconcileInputsChanged, when watchSafetyInputs or freshStartAllowed
+// observes the desired state changed mid-step) using a FRESH LoadDesired
+// read -- so an operator raising the override during a Step can need more
+// JIT-start budget than the pre-Step snapshot provided, against a deadline
+// that already exists and cannot grow. reconcileStepJITBudgetFloorWorkers
+// floors the JIT-ops worker count generously enough to absorb any override
+// raise within a realistic single-host operational envelope, regardless of
+// the live snapshot's exact value at read time.
+func TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness(t *testing.T) {
+	t.Parallel()
+	cfg := githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1)
+
+	atFloor := reconcileStepTimeout(cfg, reconcileStepJITBudgetFloorWorkers)
+	for _, small := range []int{0, 1, reconcileStepJITBudgetFloorWorkers - 1} {
+		got := reconcileStepTimeout(cfg, small)
+		if got != atFloor {
+			t.Fatalf("reconcileStepTimeout with effectiveMaxConcurrentWorkers=%d = %s, want exactly the at-floor budget %s (any snapshot below the floor must be treated identically to the floor itself, so a mid-step override raise within the floor cannot exceed the budget regardless of the snapshot's exact value)", small, got, atFloor)
+		}
+	}
+}
+
+// TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget proves the fix
+// for a reviewer-flagged gap: when a target's persisted scale set is deleted
+// externally, r.statistics's not-found recovery path
+// (internal/controller/reconciler.go:945-955) issues a SECOND r.ensure call
+// plus a SECOND r.statistics call, each a full RetryValue budget, on top of
+// the target's normal one-ensure-one-statistics sweep. reconcileStepOpsPerTarget
+// must therefore budget 4 retryable operations per target, not 2, or a Step
+// legitimately recovering enough externally-deleted scale sets can exceed
+// the watchdog even though every individual retry obeyed policy.
+func TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget(t *testing.T) {
+	t.Parallel()
+	if reconcileStepOpsPerTarget != 4 {
+		t.Fatalf("reconcileStepOpsPerTarget = %d, want exactly 4 (ensure + statistics, each doubled for the not-found recovery path)", reconcileStepOpsPerTarget)
+	}
+
+	const requestTO = 70 * time.Second
+	const backoffMax = time.Minute
+	const attempts = 6
+	const maxConcurrentWorkers = 1
+
+	oneTarget := reconcileStepTimeout(githubRetryConfig(requestTO, backoffMax, attempts, 1, maxConcurrentWorkers), maxConcurrentWorkers)
+	twoTargets := reconcileStepTimeout(githubRetryConfig(requestTO, backoffMax, attempts, 2, maxConcurrentWorkers), maxConcurrentWorkers)
+
+	// Each additional target adds reconcileStepOpsPerTarget more retryable
+	// operations, margined 1.5x, same as the golden-path delta tests above.
+	perTargetOps := time.Duration(reconcileStepOpsPerTarget*attempts) * (requestTO + backoffMax)
+	wantDelta := perTargetOps + perTargetOps/2
+	if diff := twoTargets - oneTarget; diff != wantDelta {
+		t.Fatalf("reconcileStepTimeout delta across targets 1->2 = %s, want exactly %s (%d ops per target, including the not-found recovery pair)", diff, wantDelta, reconcileStepOpsPerTarget)
 	}
 }
 
