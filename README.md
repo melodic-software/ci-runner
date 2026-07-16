@@ -163,7 +163,7 @@ remain in the shared Go state machine.
 ## Configuration and ownership
 
 The checked-in, nonsecret host YAML is owned by
-[`kyle-sexton/provisioning`](https://github.com/kyle-sexton/provisioning) and is
+[`melodic-software/provisioning`](https://github.com/melodic-software/provisioning) and is
 installed as `%LOCALAPPDATA%\ci-runner\config.yaml`. The strict parser rejects
 unknown properties, unsupported schemas, invalid units, duplicate targets,
 unsafe paths, inconsistent thresholds, and explicit null or blank target worker
