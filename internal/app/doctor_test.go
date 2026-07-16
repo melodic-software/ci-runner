@@ -53,7 +53,7 @@ func TestDoctorDisabledHealthyRequiresLiveControllerAndExitsZero(t *testing.T) {
 	inspector := &doctorInspectorFake{checks: []DoctorCheck{
 		{Name: "environment", Healthy: true, Detail: "verified"},
 		{Name: "bitlocker", Skipped: true, Detail: "explicit opt-in required"},
-		{Name: "github-jit-proof", Skipped: true, Detail: "live canary only"},
+		{Name: "github-jit-proof", Skipped: true, Detail: "proven live on rollout only"},
 	}}
 	application.dependencies.Doctor = inspector
 

@@ -7,7 +7,7 @@ private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
 routing policy decides whether local capacity is preferred, required, or
 bypassed.
 
-Both hosts passed their isolated canary acceptance gates and serve the
+Both hosts passed their acceptance gates and serve the
 organization's governed `self-hosted-only` routing default. The former
 Compose/restart-in-place implementation is retired and its files are deleted;
 the only production credential entry point is
