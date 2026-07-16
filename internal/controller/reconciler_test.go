@@ -1817,15 +1817,40 @@ func (s *corruptObservedStore) QuarantineObserved(context.Context) error {
 }
 
 type testLogSink struct {
-	mu     sync.Mutex
-	events []LogEvent
+	mu       sync.Mutex
+	events   []LogEvent
+	contexts []context.Context
 }
 
-func (s *testLogSink) Write(_ context.Context, event LogEvent) error {
+func (s *testLogSink) Write(ctx context.Context, event LogEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, event)
+	s.contexts = append(s.contexts, ctx)
 	return nil
+}
+
+func TestWriteLogDetachesCancellationAndPreservesValues(t *testing.T) {
+	harness := newHarness(t, model.ModeEnabled)
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	type traceKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), traceKey{}, "trace-123"))
+	cancel()
+
+	harness.controller.writeLog(ctx, LogEvent{Code: "cancellation-diagnostic"})
+
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if len(logs.contexts) != 1 {
+		t.Fatalf("log contexts = %d, want 1", len(logs.contexts))
+	}
+	if err := logs.contexts[0].Err(); err != nil {
+		t.Fatalf("diagnostic context remained canceled: %v", err)
+	}
+	if got := logs.contexts[0].Value(traceKey{}); got != "trace-123" {
+		t.Fatalf("diagnostic context value = %v, want trace-123", got)
+	}
 }
 func (s *testLogSink) String() string {
 	s.mu.Lock()

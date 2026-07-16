@@ -175,7 +175,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 					if withdrawn {
 						message = "open listener poll was restarted to withdraw advertised capacity"
 					}
-					_ = r.deps.Logs.Write(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
+					r.writeLog(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
 					cancel(errReconcileInputsChanged)
 					return result
 				}
@@ -190,6 +190,11 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 			result.checkpointErr = checkpointErr
 		}
 		if observationErr != nil {
+			r.writeLog(ctx, LogEvent{
+				At:      now,
+				Code:    "listener-cadence-observation-error",
+				Message: "host observation failed during an open listener poll; the poll will restart",
+			})
 			cancel(errReconcileInputsChanged)
 			return result
 		}

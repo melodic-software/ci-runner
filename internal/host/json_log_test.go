@@ -78,3 +78,37 @@ func TestJSONLogSinkRotatesRetainsAndRedacts(t *testing.T) {
 		t.Fatalf("expected directory and file ACL hardening: %#v", acl.paths)
 	}
 }
+
+func TestJSONLogSinkWritesAfterContextCancellation(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(1024), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(1024),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sink.Write(ctx, controller.LogEvent{Code: "canceled-operation", Message: "diagnostic survived cancellation"}); err != nil {
+		t.Fatalf("write with canceled context: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("log files = %d, want 1", len(entries))
+	}
+	contents, err := os.ReadFile(filepath.Join(directory, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"code":"canceled-operation"`) {
+		t.Fatalf("cancellation diagnostic was not written: %s", contents)
+	}
+}

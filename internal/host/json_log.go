@@ -76,10 +76,7 @@ func NewJSONLogSink(directory string, policy config.LogClass, cleanupEvery time.
 	return sink, nil
 }
 
-func (s *JSONLogSink) Write(ctx context.Context, event controller.LogEvent) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func (s *JSONLogSink) Write(_ context.Context, event controller.LogEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
