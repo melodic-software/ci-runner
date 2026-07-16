@@ -240,6 +240,8 @@ at 2 CPU/8 GiB while giving a CodeQL pool a larger profile:
 ```yaml
 resources:
   maximumConcurrentWorkers: 5
+  minimumAvailableMemoryPercent: 25
+  memoryCapacityIncreaseMarginPercent: 25
   worker:
     cpus: 2
     memory: 8GiB
@@ -270,6 +272,13 @@ activate the global resource gate or retire healthy existing capacity. Invalid
 resource observations and sustained high CPU remain global gates. Target
 profiles change only Docker CPU, memory, memory-plus-swap, and PID limits. They
 cannot add the Docker socket, privileged mode, devices, or host mounts.
+
+Listener capacity uses a per-pool memory Schmitt trigger. A decrease crosses the
+raw worker-memory boundary immediately, preserving the fail-closed admission
+contract. An increase must additionally clear
+`memoryCapacityIncreaseMarginPercent` of that target's effective worker memory;
+inside the band, the last advertised capacity is retained. The margin applies to
+capacity growth only and is not charged as a permanent memory reservation.
 
 ## Credential boundary
 

@@ -166,13 +166,14 @@ type WorkerOverrides struct {
 }
 
 type Resources struct {
-	MaximumConcurrentWorkers  int      `yaml:"maximumConcurrentWorkers"`
-	Worker                    Worker   `yaml:"worker"`
-	MinimumAvailableMemoryPct float64  `yaml:"minimumAvailableMemoryPercent"`
-	CPUBlockPercent           float64  `yaml:"cpuBlockPercent"`
-	CPUResumePercent          float64  `yaml:"cpuResumePercent"`
-	CPUObservationWindow      Duration `yaml:"cpuObservationWindow"`
-	CPUHysteresisWindow       Duration `yaml:"cpuHysteresisWindow"`
+	MaximumConcurrentWorkers        int      `yaml:"maximumConcurrentWorkers"`
+	Worker                          Worker   `yaml:"worker"`
+	MinimumAvailableMemoryPct       float64  `yaml:"minimumAvailableMemoryPercent"`
+	MemoryCapacityIncreaseMarginPct float64  `yaml:"memoryCapacityIncreaseMarginPercent"`
+	CPUBlockPercent                 float64  `yaml:"cpuBlockPercent"`
+	CPUResumePercent                float64  `yaml:"cpuResumePercent"`
+	CPUObservationWindow            Duration `yaml:"cpuObservationWindow"`
+	CPUHysteresisWindow             Duration `yaml:"cpuHysteresisWindow"`
 }
 
 type Worker struct {
@@ -511,6 +512,7 @@ func (c Config) Validate() error {
 	}
 	add(validateWorker("resources.worker", resources.Worker))
 	add(validatePercent("resources.minimumAvailableMemoryPercent", resources.MinimumAvailableMemoryPct, false))
+	add(validatePercent("resources.memoryCapacityIncreaseMarginPercent", resources.MemoryCapacityIncreaseMarginPct, false))
 	add(validatePercent("resources.cpuBlockPercent", resources.CPUBlockPercent, false))
 	add(validatePercent("resources.cpuResumePercent", resources.CPUResumePercent, true))
 	if resources.CPUResumePercent >= resources.CPUBlockPercent {
