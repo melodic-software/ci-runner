@@ -72,9 +72,14 @@ type SecretStore = scaleset.SecretStore
 var NewSecretMaterial = scaleset.NewSecretMaterial
 
 type LogEvent struct {
-	At       time.Time
-	Code     string
-	Message  string
+	At      time.Time
+	Code    string
+	Message string
+	// Cause carries the underlying error detail behind a classified Message.
+	// Message stays a stable, sanitized summary (see safeScaleSetMessage) while
+	// Cause preserves diagnostic specifics such as a GitHub activity or request
+	// ID. Sinks redact Cause like every other field before it is persisted.
+	Cause    string
 	Source   string
 	PoolID   string
 	WorkerID string

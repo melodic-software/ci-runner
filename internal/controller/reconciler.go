@@ -279,10 +279,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	var operationProblems []model.Problem
 	record := func(code, message, poolID string, retryable bool, err error) {
 		operationProblems = append(operationProblems, problem(now, code, message, poolID, retryable))
+		event := LogEvent{At: now, Code: code, Message: message, PoolID: poolID}
 		if err != nil {
 			operationErrors = append(operationErrors, err)
+			event.Cause = err.Error()
 		}
-		r.writeLog(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
+		r.writeLog(ctx, event)
 	}
 	note := func(code, message, poolID string) {
 		r.writeLog(ctx, LogEvent{At: now, Code: code, Message: message, PoolID: poolID})
@@ -491,6 +493,14 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pool := &pools[result.index]
 		if result.err != nil {
 			pool.Ready = false
+			if pollSuperseded(ctx, result.err) {
+				// The cadence watcher cancels an open listener long poll on purpose
+				// (errReconcileInputsChanged) when reconciliation safety inputs
+				// change, and Step reruns. The in-flight poll then unblocks with
+				// context.Canceled: routine control flow, not a scale-set failure,
+				// so it must not surface an error-level record or problem entry.
+				continue
+			}
 			record("scale-set-statistics-error", safeScaleSetMessage("poll", result.err), pool.TargetID, scaleset.Retryable(result.err), result.err)
 			continue
 		}
@@ -1161,6 +1171,16 @@ func sameAdmissionIntent(left, right model.DesiredState) bool {
 		return left.TemporaryCapacityOverride == nil && right.TemporaryCapacityOverride == nil
 	}
 	return *left.TemporaryCapacityOverride == *right.TemporaryCapacityOverride
+}
+
+// pollSuperseded reports whether a listener poll error is the controller's own
+// designed supersession rather than a GitHub or transport failure.
+// watchPollCadence cancels the open poll with errReconcileInputsChanged when
+// reconciliation safety inputs change; the in-flight poll then returns
+// context.Canceled and Step reruns. A genuine failure is a *scaleset.Error and
+// never a bare cancellation, so neither form is misreported as a poll failure.
+func pollSuperseded(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(context.Cause(ctx), errReconcileInputsChanged)
 }
 
 func safeScaleSetMessage(operation string, err error) string {

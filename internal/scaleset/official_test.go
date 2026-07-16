@@ -532,6 +532,27 @@ func TestOfficialErrorClassification(t *testing.T) {
 	}
 }
 
+func TestOfficialErrorPassesContextCancellationUnwrapped(t *testing.T) {
+	t.Parallel()
+	// A canceled listener long poll is the controller's own designed
+	// supersession, not a GitHub failure. It must stay context.Canceled and
+	// never become a classified *Error, so the controller can recognize it as
+	// benign rather than recording a spurious scale-set poll failure.
+	for name, err := range map[string]error{
+		"bare":    context.Canceled,
+		"wrapped": fmt.Errorf("failed to get next message: %w", context.Canceled),
+	} {
+		got := translateOfficialError("poll", err)
+		if !errors.Is(got, context.Canceled) {
+			t.Errorf("%s: context cancellation not passed through: %#v", name, got)
+		}
+		var typed *Error
+		if errors.As(got, &typed) {
+			t.Errorf("%s: context cancellation classified as *Error: %#v", name, typed)
+		}
+	}
+}
+
 func TestOfficialDeadlineIsRetryableTransportFailure(t *testing.T) {
 	t.Parallel()
 	api := newFakeOfficialAPI()
