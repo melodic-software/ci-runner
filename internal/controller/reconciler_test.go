@@ -513,6 +513,62 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 	}
 }
 
+// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker proves the
+// fix for a reviewer-flagged starvation gap in the per-step retirement cap
+// (TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder above):
+// with MaximumConcurrentWorkers=1, plan.Remove's first entry sorts
+// identically every Step. If that first worker's deregisterRunner call keeps
+// returning a persistent error, a fixed head-of-line iteration order would
+// let it consume the single per-step retry slot every Step forever --
+// before the cap was added, the loop simply recorded the error and moved on
+// to other idle workers -- starving every worker behind it in plan.Remove
+// from ever being retired. The removal loop must rotate which worker is
+// tried first each Step (retirementCursor, mirroring
+// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates's
+// registrationCheckCursor below) so later plan.Remove entries eventually get
+// a turn even while the first worker keeps failing.
+func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 1
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+	}
+	// idle-1's deregistration always fails, simulating a persistent GitHub
+	// error for that one runner; every other runner's deregistration succeeds
+	// through the same fake.
+	persistentErr := errors.New("persistent deregistration failure")
+	harness.controller.deps.ScaleSets = &runnerRemovalFailer{Client: harness.scaleSets, failRunnerID: 41, err: persistentErr}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	} // first zero-capacity poll; not yet eligible for retirement
+
+	const maxSteps = 8
+	idle2Removed := false
+	for step := 0; step < maxSteps; step++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if !harness.runtime.hasWorker("idle-2") {
+			idle2Removed = true
+			break
+		}
+	}
+	if !idle2Removed {
+		t.Fatalf("idle-2 was never retired within %d steps; a persistently failing head-of-line worker starved every worker behind it in plan.Remove", maxSteps)
+	}
+	if !harness.runtime.hasWorker("idle-1") {
+		t.Fatal("idle-1 was removed despite its deregisterRunner call always failing")
+	}
+	if !harness.runtime.hasWorker("idle-3") {
+		t.Fatal("idle-3 (the single retained warm-idle worker) was unexpectedly removed")
+	}
+}
+
+
 // TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates proves the fix
 // for a third reviewer-flagged watchdog gap: RunnerRegistered runs a full
 // GitHub RetryValue budget per call, and the idle-worker inventory eligible
@@ -1826,6 +1882,25 @@ func (s *tracingScaleSet) Statistics(ctx context.Context, identity scaleset.Iden
 }
 func (s *tracingScaleSet) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
 	s.trace.add(fmt.Sprintf("deregister:%s:%d", poolID, runnerID))
+	return s.Client.RemoveRunner(ctx, poolID, runnerID)
+}
+
+// runnerRemovalFailer wraps a scaleset.Client and returns a persistent error
+// for RemoveRunner calls against one specific runner ID, delegating every
+// other call (including RemoveRunner for other runner IDs) to the wrapped
+// client. It simulates one worker's deregistration being permanently stuck
+// without needing a Fake field, for
+// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker.
+type runnerRemovalFailer struct {
+	scaleset.Client
+	failRunnerID int64
+	err          error
+}
+
+func (s *runnerRemovalFailer) RemoveRunner(ctx context.Context, poolID string, runnerID int64) error {
+	if runnerID == s.failRunnerID {
+		return s.err
+	}
 	return s.Client.RemoveRunner(ctx, poolID, runnerID)
 }
 

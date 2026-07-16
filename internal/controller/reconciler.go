@@ -64,6 +64,14 @@ type Reconciler struct {
 	// written from within step(), itself only reachable while stepMu is held,
 	// so unlike drainCapacity/sequence it needs no additional lock.
 	registrationCheckCursor uint64
+
+	// retirementCursor rotates which worker in plan.Remove is tried first when
+	// there are more retirement-eligible candidates than one Step's
+	// retirementDeregistrationCap allows (see step()), so a worker whose
+	// deregisterRunner call keeps failing cannot permanently starve every
+	// worker behind it in plan.Remove. Like registrationCheckCursor, it is
+	// only ever read and written from within step() while stepMu is held.
+	retirementCursor uint64
 }
 
 type ReconcileResult struct {
@@ -597,8 +605,28 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	retirementDeregistrationCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
 	retirementDeregistrations := 0
 
+	// Rotate which worker in plan.Remove is tried first each Step, mirroring
+	// the registration-check rotation below (registrationCheckCursor). Without
+	// rotation, a single worker whose deregisterRunner call keeps returning a
+	// persistent error would consume this Step's entire per-step retry budget
+	// every Step forever -- it always sorts first in plan.Remove and the cap
+	// check above is reached (and the budget spent) before any later entry is
+	// ever tried -- starving every worker behind it from retiring at all.
+	// Rotating the starting point guarantees every worker eventually reaches
+	// the front of the budget, as long as new excess inventory does not
+	// outpace the cap indefinitely, the same assumption
+	// registrationCheckCursor already relies on.
+	removalOrder := make([]int, len(plan.Remove))
+	if n := len(removalOrder); n > 0 {
+		start := int(r.retirementCursor % uint64(n))
+		for i := range removalOrder {
+			removalOrder[i] = (start + i) % n
+		}
+	}
+
 	seenRemoval := map[string]struct{}{}
-	for _, worker := range plan.Remove {
+	for _, removeIndex := range removalOrder {
+		worker := plan.Remove[removeIndex]
 		if _, duplicate := seenRemoval[worker.ID]; duplicate {
 			continue
 		}
@@ -674,6 +702,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			record("worker-became-busy", "worker acquired work during drain and was preserved", worker.PoolID, false, nil)
 		}
 	}
+	r.retirementCursor += uint64(retirementDeregistrations)
 
 	var reservedMemory uint64
 	for _, decision := range plan.Start {
