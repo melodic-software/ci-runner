@@ -82,7 +82,7 @@ jobs:
               '|---|---:|---:|---:|---:|---|',
               ...rows,
               '',
-              'Do not auto-merge these updates. Publish and promote a new compatibility pair only after CI, canary, and independent review.',
+              'Do not auto-merge these updates. Publish and promote a new compatibility pair only after CI, a rolling-host rollout, and independent review.',
               '',
               `Last checked: ${report.checkedAt}`,
             ].join('\n');

@@ -61,8 +61,8 @@ drifting toolchain or toolcache.
 
 Parity with the hosted Ubuntu 24.04 manifest is case-by-case, never wholesale:
 a hosted-default tool joins this layer only when a governed lane empirically
-needs it. zstd earned its place when the canary's hosted-to-self cache proof
-could not match versions against a gzip-only image; a medley lane's `pipx`
+needs it. zstd earned its place when the retired canary process's
+hosted-to-self cache proof could not match versions against a gzip-only image; a medley lane's `pipx`
 dependency was instead removed by invoking pip directly. Before migrating a
 hosted lane to the fleet, verify the lane's tool dependencies against this
 image; a real gap is a reviewed Dockerfile addition and release, never an
@@ -173,8 +173,9 @@ tool surface, exact runner version, non-root identity, rootless .NET/NuGet
 environment and directory ownership, absence of runner toolcache overrides,
 absence of baked JIT or credential variables, required stdin handoff,
 passwordless sudo, and the exact `idle → busy → completed` hook sequence.
-Runtime isolation is verified in the controller adapter tests and live canary
-because it is a container-create contract rather than an image property.
+Runtime isolation is verified in the controller adapter tests and observed
+live during each release's first rolling-host rollout because it is a
+container-create contract rather than an image property.
 
 `completed` means workflow steps have finished; GitHub runs the completed hook
 before its final job protocol finishes. The controller must still wait for

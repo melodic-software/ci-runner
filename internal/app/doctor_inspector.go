@@ -156,7 +156,7 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 	checks = append(checks, DoctorCheck{
 		Name:    "github-jit-proof",
 		Skipped: true,
-		Detail:  "not performed by doctor because JIT creation mutates GitHub runner inventory; the live canary acceptance gate performs this proof",
+		Detail:  "not performed by doctor because JIT creation mutates GitHub runner inventory; the first enable on a rolling-host rollout performs this proof under real traffic",
 	})
 	return checks
 }

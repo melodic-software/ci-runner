@@ -2,8 +2,9 @@
 
 This file records deliberate V1 boundaries. An item here is not an accepted
 workaround and does not weaken the current worker contract. Each capability
-requires a separate design review, threat model, compatibility proof, and
-canary before a workflow may depend on it.
+requires a separate design review, threat model, compatibility proof, and a
+first rolling-host rollout under production traffic with the documented health
+checklist before a workflow may depend on it.
 
 ## Standing non-goals
 
