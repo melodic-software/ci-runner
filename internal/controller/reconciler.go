@@ -1031,8 +1031,12 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 	return available - reserved
 }
 
+const diagnosticLogWriteTimeout = 2 * time.Second
+
 func (r *Reconciler) writeLog(ctx context.Context, event LogEvent) {
-	_ = r.deps.Logs.Write(context.WithoutCancel(ctx), event)
+	writeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosticLogWriteTimeout)
+	defer cancel()
+	_ = r.deps.Logs.Write(writeContext, event)
 }
 
 func sameAdmissionIntent(left, right model.DesiredState) bool {

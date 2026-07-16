@@ -163,8 +163,17 @@ func TestPollCadenceObservationFailureIsDurablyLogged(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("observation failure did not restart the listener poll")
 	}
-	if !logs.contains("listener-cadence-observation-error") {
-		t.Fatalf("cadence observation failure was not durably logged: %s", logs)
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	found := false
+	for _, event := range logs.events {
+		if event.Code == "listener-cadence-observation-error" && event.Source == "resources" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("cadence observation diagnostics = %#v, want structured resources source", logs.events)
 	}
 }
 

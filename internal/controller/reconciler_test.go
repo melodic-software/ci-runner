@@ -1817,9 +1817,11 @@ func (s *corruptObservedStore) QuarantineObserved(context.Context) error {
 }
 
 type testLogSink struct {
-	mu       sync.Mutex
-	events   []LogEvent
-	contexts []context.Context
+	mu            sync.Mutex
+	events        []LogEvent
+	contexts      []context.Context
+	contextErrors []error
+	deadlines     []bool
 }
 
 func (s *testLogSink) Write(ctx context.Context, event LogEvent) error {
@@ -1827,6 +1829,9 @@ func (s *testLogSink) Write(ctx context.Context, event LogEvent) error {
 	defer s.mu.Unlock()
 	s.events = append(s.events, event)
 	s.contexts = append(s.contexts, ctx)
+	s.contextErrors = append(s.contextErrors, ctx.Err())
+	_, hasDeadline := ctx.Deadline()
+	s.deadlines = append(s.deadlines, hasDeadline)
 	return nil
 }
 
@@ -1845,8 +1850,11 @@ func TestWriteLogDetachesCancellationAndPreservesValues(t *testing.T) {
 	if len(logs.contexts) != 1 {
 		t.Fatalf("log contexts = %d, want 1", len(logs.contexts))
 	}
-	if err := logs.contexts[0].Err(); err != nil {
-		t.Fatalf("diagnostic context remained canceled: %v", err)
+	if err := logs.contextErrors[0]; err != nil {
+		t.Fatalf("diagnostic context was canceled during the sink call: %v", err)
+	}
+	if !logs.deadlines[0] {
+		t.Fatal("diagnostic context has no bounded write deadline")
 	}
 	if got := logs.contexts[0].Value(traceKey{}); got != "trace-123" {
 		t.Fatalf("diagnostic context value = %v, want trace-123", got)

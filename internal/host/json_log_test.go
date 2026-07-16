@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +91,7 @@ func TestJSONLogSinkWritesAfterContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := sink.Write(ctx, controller.LogEvent{Code: "canceled-operation", Message: "diagnostic survived cancellation"}); err != nil {
+	if err := sink.Write(ctx, controller.LogEvent{Code: "canceled-operation", Message: "diagnostic survived cancellation", Source: "resources"}); err != nil {
 		t.Fatalf("write with canceled context: %v", err)
 	}
 	if err := sink.Close(); err != nil {
@@ -110,5 +111,37 @@ func TestJSONLogSinkWritesAfterContextCancellation(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), `"code":"canceled-operation"`) {
 		t.Fatalf("cancellation diagnostic was not written: %s", contents)
+	}
+	if !strings.Contains(string(contents), `"source":"resources"`) {
+		t.Fatalf("structured observation source was not written: %s", contents)
+	}
+}
+
+func TestJSONLogSinkBoundsCanceledPathWhenFileWorkerStalls(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(1024), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(1024),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.writeTimeout = 25 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink.mu.Lock()
+	started := time.Now()
+	err = sink.Write(ctx, controller.LogEvent{Code: "stalled-cancellation-diagnostic"})
+	elapsed := time.Since(started)
+	sink.mu.Unlock()
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled write error = %v, want deadline exceeded", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("stalled cancellation-path write took %s, want a bounded return", elapsed)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
