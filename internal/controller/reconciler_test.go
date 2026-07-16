@@ -397,6 +397,122 @@ func TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls(t *testing.T
 	}
 }
 
+// TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder proves the
+// fix for a reviewer-flagged watchdog gap: deregisterRunner runs a full
+// GitHub RetryValue budget per call, and internal/app's reconcileStepTimeout
+// only budgets Resources.MaximumConcurrentWorkers worth of those per Step.
+// Lowering MaximumConcurrentWorkers (simulated here after warm inventory was
+// already started under the higher configured limit) can legitimately leave
+// more idle workers eligible for retirement than the new cap allows for. The
+// removal loop must cap deregisterRunner calls at MaximumConcurrentWorkers
+// per Step -- deferring, never dropping, the remainder to a later Step -- so
+// the watchdog's budget is never exceeded by a single Step's retirements.
+func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	// Simulate MaximumConcurrentWorkers (or warm capacity) having been lowered
+	// after five idle workers were legitimately started under a higher limit:
+	// the new cap is well below the number of idle workers now eligible for
+	// retirement (target WarmIdle=1 keeps exactly one, so four must drain).
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+		{ID: "idle-4", Name: "runner-4", PoolID: "org", RunnerID: 44, State: model.WorkerIdle},
+		{ID: "idle-5", Name: "runner-5", PoolID: "org", RunnerID: 45, State: model.WorkerIdle},
+	}
+	logger := &testLogSink{}
+	harness.controller.deps.Logs = logger
+
+	countRemovals := func() int {
+		removed := 0
+		for _, call := range harness.scaleSets.SnapshotCalls() {
+			if call.Operation == "remove-runner" {
+				removed++
+			}
+		}
+		return removed
+	}
+	countDeferrals := func() int {
+		logger.mu.Lock()
+		defer logger.mu.Unlock()
+		deferred := 0
+		for _, event := range logger.events {
+			if event.Code == "worker-retirement-deferred-step-budget" {
+				deferred++
+			}
+		}
+		return deferred
+	}
+
+	first, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Observed.Pools[0].ZeroCapacityConfirmations != 1 || len(harness.runtime.snapshot()) != 5 {
+		t.Fatalf("first quiesce poll = %#v workers=%#v", first.Observed.Pools[0], harness.runtime.snapshot())
+	}
+
+	// Second step: quiescence reaches its two-poll confirmation threshold and
+	// four workers become eligible for retirement, but the deregistration cap
+	// (MaximumConcurrentWorkers=2) must limit this Step to exactly two
+	// deregisterRunner calls, deferring the other two rather than exceeding
+	// the watchdog's per-step retry budget.
+	second, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countRemovals(); got != 2 {
+		t.Fatalf("deregistrations after capped step = %d, want exactly 2 (MaximumConcurrentWorkers)", got)
+	}
+	if got := len(harness.runtime.snapshot()); got != 3 {
+		t.Fatalf("workers remaining after capped step = %d, want 3 (1 kept + 2 deferred)", got)
+	}
+	if got := countDeferrals(); got != 2 {
+		t.Fatalf("worker-retirement-deferred-step-budget events = %d, want exactly 2", got)
+	}
+	if second.Observed.Phase != model.PhaseDraining {
+		t.Fatalf("phase after capped step = %s, want still draining", second.Observed.Phase)
+	}
+
+	// Remaining steps: the two deferred workers must not be lost. Keep
+	// stepping until the drain converges to the single kept warm-idle worker,
+	// asserting on every step that the deregistration cap is never exceeded
+	// (each step issues at most MaximumConcurrentWorkers=2 new
+	// deregistrations) and that the cumulative total lands on exactly 4 -- the
+	// full set of originally-excess workers, neither double-counted nor
+	// stranded. This intentionally avoids asserting the exact step at which
+	// Phase reports Ready and MaxCapacity is fully restored (that timing
+	// depends on the capacity-acknowledgment sequencing exercised by
+	// TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls, which is
+	// orthogonal to this fix) and instead focuses precisely on what the fix
+	// guarantees: the per-step cap holds, and deferred work is never dropped.
+	const maxAdditionalSteps = 6
+	previousRemovals := countRemovals()
+	converged := false
+	for i := 0; i < maxAdditionalSteps; i++ {
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		removals := countRemovals()
+		if delta := removals - previousRemovals; delta > 2 {
+			t.Fatalf("additional step %d issued %d new deregistrations, want at most 2 (MaximumConcurrentWorkers)", i, delta)
+		}
+		previousRemovals = removals
+		if len(harness.runtime.snapshot()) == 1 {
+			converged = true
+			break
+		}
+	}
+	if !converged {
+		t.Fatalf("workers did not converge to the single kept worker within %d additional steps; remaining=%#v", maxAdditionalSteps, harness.runtime.snapshot())
+	}
+	if got := countRemovals(); got != 4 {
+		t.Fatalf("cumulative deregistrations after convergence = %d, want exactly 4 (all originally-excess workers eventually drained, none dropped)", got)
+	}
+}
+
 func TestEnabledQuiescePreservesAllWorkersWhenAssignmentArrives(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)

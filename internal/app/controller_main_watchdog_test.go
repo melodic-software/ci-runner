@@ -53,14 +53,15 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 			cfg.GitHub.Retry.JitterRatio = tc.jitterRatio
 			got := reconcileStepTimeout(cfg)
 			// The watchdog must strictly exceed the whole-step worst case: an
-			// ensure+statistics sweep across every target plus a CreateJITConfig
-			// retry loop for every worker the host can concurrently start, each a
-			// full retry budget (attempts requests at RequestTimeout plus attempts
-			// backoff waits jittered up to Retry.Maximum*(1+JitterRatio) per
-			// internal/controller/retry.go's BackoffPolicy.delay). It must never
-			// trip on a legitimate multi-target, high-maxAttempts,
-			// multi-worker-JIT, or fully-jittered-backoff step.
-			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers
+			// ensure+statistics sweep across every target, a CreateJITConfig retry
+			// loop for every worker the host can concurrently start, and a
+			// deregisterRunner retry loop for every worker the host can
+			// concurrently retire in one step, each a full retry budget (attempts
+			// requests at RequestTimeout plus attempts backoff waits jittered up to
+			// Retry.Maximum*(1+JitterRatio) per internal/controller/retry.go's
+			// BackoffPolicy.delay). It must never trip on a legitimate multi-target,
+			// high-maxAttempts, multi-worker-JIT, or fully-jittered-backoff step.
+			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*tc.maxConcurrentWorkers
 			maxJitteredBackoff := tc.backoffMax + time.Duration(float64(tc.backoffMax)*tc.jitterRatio)
 			budget := time.Duration(ops*tc.maxAttempts) * (tc.requestTO + maxJitteredBackoff)
 			if got <= budget {
@@ -102,7 +103,7 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
 	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
 	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin.
-	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers
+	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
 	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
 	wantDelta := extraRetryBudget + extraRetryBudget/2
 	if diff := got - baseline; diff != wantDelta {
@@ -116,6 +117,41 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 	worstCaseJitteredAttempt := requestTO + 2*backoffMax
 	if got <= worstCaseJitteredAttempt {
 		t.Fatalf("reconcileStepTimeout = %s, want > single worst-case jittered attempt delay %s", got, worstCaseJitteredAttempt)
+	}
+}
+
+// TestReconcileStepTimeoutIncludesRetirementRetryBudget proves the other
+// regression a reviewer flagged: Step's worker-removal section calls
+// deregisterRunner (internal/controller/reconciler.go:603-609) through the
+// same full RetryValue budget as a JIT registration, once per idle worker it
+// retires in a Step, up to Resources.MaximumConcurrentWorkers (see that
+// loop's retirementDeregistrationCap). The watchdog must budget for that
+// retirement work in addition to, not instead of, the JIT-start budget.
+func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
+	t.Parallel()
+	const requestTO = 70 * time.Second
+	const backoffMax = time.Minute
+	const attempts = 6
+	const targets = 1
+	const maxConcurrentWorkers = 4
+
+	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
+	got := reconcileStepTimeout(cfg)
+
+	// The pre-fix formula budgeted only the target sweep plus JIT starts. Any
+	// retirement contribution must be strictly additional to that.
+	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers
+	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
+	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
+	if got <= preFixGithubBudget {
+		t.Fatalf("reconcileStepTimeout = %s, want > pre-fix (JIT-only) github budget %s once retirement retries are budgeted", got, preFixGithubBudget)
+	}
+
+	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
+	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
+	want := fullRetryBudget + fullRetryBudget/2
+	if got != want {
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements, all margined 1.5x)", got, want)
 	}
 }
 

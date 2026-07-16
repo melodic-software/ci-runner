@@ -547,6 +547,19 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
+	// deregisterRunner runs a full GitHub RetryValue budget per call
+	// (internal/app's reconcileStepTimeout budgets exactly
+	// Resources.MaximumConcurrentWorkers worth of these per Step, mirroring the
+	// JIT-start budget). Unlike JIT starts, plan.Remove's idle-worker count is
+	// not itself bounded by MaximumConcurrentWorkers: lowering that setting or
+	// warm capacity can legitimately leave more existing idle workers to drain
+	// than the new cap allows for. Cap the deregisterRunner calls issued in this
+	// Step at that same limit and defer any remainder to a later Step (where
+	// plan.Remove is recomputed and picks the deferred workers back up) instead
+	// of letting an unbounded retirement count exceed the watchdog's budget.
+	retirementDeregistrationCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
+	retirementDeregistrations := 0
+
 	seenRemoval := map[string]struct{}{}
 	for _, worker := range plan.Remove {
 		if _, duplicate := seenRemoval[worker.ID]; duplicate {
@@ -605,6 +618,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				record("worker-retirement-runner-id-missing", "automatic retirement was refused because the managed worker has no persisted GitHub runner ID", worker.PoolID, false, nil)
 				continue
 			}
+			if retirementDeregistrations >= retirementDeregistrationCap {
+				note("worker-retirement-deferred-step-budget", "idle worker retirement was deferred to a later reconcile step to stay within this step's deregistration retry budget", worker.PoolID)
+				continue
+			}
+			retirementDeregistrations++
 			if removeRunnerErr := r.deregisterRunner(ctx, worker.PoolID, worker.RunnerID); removeRunnerErr != nil {
 				record("runner-deregistration-error", safeScaleSetMessage("deregister quiesced runner", removeRunnerErr), worker.PoolID, scaleset.Retryable(removeRunnerErr), removeRunnerErr)
 				continue
