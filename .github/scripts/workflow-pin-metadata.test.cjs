@@ -6,8 +6,8 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const ciWorkflowsSha = "9eb22acf1a9235c352779325d24615b7b492d44d";
-const ciWorkflowsVersion = "v0.3.0";
+const ciWorkflowsSha = "b927829fd0f8888b4dbccccdf7b27596ba453940";
+const ciWorkflowsVersion = "v0.4.0";
 const expectedCiWorkflowsReferences = 18;
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
@@ -108,13 +108,13 @@ test("ci-workflows references use a full SHA with one release version", () => {
     1,
     "ci-workflows references must move as one reviewed compatibility pin",
   );
-  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.3.0 SHA");
+  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.4.0 SHA");
   assert.equal(
     new Set(versions).size,
     1,
     "ci-workflows references must name one release version for online pin verification",
   );
-  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.3.0");
+  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.4.0");
 });
 
 test("go-quality uses the exact reusable caller contract", () => {
