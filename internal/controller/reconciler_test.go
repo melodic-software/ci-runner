@@ -274,26 +274,49 @@ func TestDesktopBootstrapRecoversAfterTransientStartFailure(t *testing.T) {
 	if first.Observed.Phase != model.PhaseDegraded || harness.runtime.startCount() != 0 {
 		t.Fatalf("first observed = %#v; workers=%#v", first.Observed, harness.runtime.snapshot())
 	}
+	// A down desktop must not weaponize the resource gate: the host resource
+	// observation stays valid through the failed start, so recovery needs no
+	// invalid-observation hysteresis once the desktop comes up.
+	if first.Observed.ResourceGate.Blocked {
+		t.Fatalf("transient desktop start failure blocked the resource gate: %#v", first.Observed.ResourceGate)
+	}
 
 	harness.desktop.setStartError(nil)
-	harness.clock.Advance(61 * time.Second)
 	second, err := harness.controller.Step(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Observed.Phase != model.PhaseResourceConstrained {
-		t.Fatalf("second phase = %s, want hysteresis recovery; problems=%#v", second.Observed.Phase, second.Observed.Problems)
+	if second.Observed.Phase != model.PhaseReady || harness.runtime.startCount() != 1 {
+		t.Fatalf("second observed = %#v; workers=%#v", second.Observed, harness.runtime.snapshot())
 	}
-	harness.clock.Advance(61 * time.Second)
-	third, err := harness.controller.Step(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	// While the desktop is down, both start sites fire in a Step: the eager
+	// bootstrap and BuildPlan's StartDesktop fallback (no longer suppressed by a
+	// resource gate). The first Step makes two failing attempts, the second one
+	// succeeding attempt.
+	if got := harness.desktop.startCount(); got != 3 {
+		t.Fatalf("Desktop starts = %d, want two failed attempts and one recovery", got)
 	}
-	if third.Observed.Phase != model.PhaseReady || harness.runtime.startCount() != 1 {
-		t.Fatalf("third observed = %#v; workers=%#v", third.Observed, harness.runtime.snapshot())
+}
+
+func TestStoppedDesktopPreservesResourceObservation(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.desktop.status = model.DesktopStatus{} // stopped: engine unreachable
+	harness.desktop.setStartError(errors.New("desktop unavailable"))
+
+	result, err := harness.controller.Step(context.Background())
+	if err == nil {
+		t.Fatal("expected the failed desktop start to surface an error")
 	}
-	if got := harness.desktop.startCount(); got != 2 {
-		t.Fatalf("Desktop starts = %d, want one failed attempt and one recovery", got)
+	// The host resource monitor reads physical RAM independent of Docker, so a
+	// stopped desktop must not zero it and trip the gate closed (issue #66) --
+	// otherwise the blocked gate would keep the StartDesktop bootstrap from
+	// running on re-enable.
+	if result.Observed.ResourceGate.Blocked {
+		t.Fatalf("stopped desktop blocked the resource gate: %#v", result.Observed.ResourceGate)
+	}
+	if result.Observed.Resources.TotalMemoryBytes == 0 {
+		t.Fatalf("real host resource observation was zeroed while the desktop was stopped: %#v", result.Observed.Resources)
 	}
 }
 

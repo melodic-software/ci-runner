@@ -931,6 +931,22 @@ func TestOrphanedBusyWorkerIsReportedAndPreserved(t *testing.T) {
 	}
 }
 
+func TestBuildPlanStartsDesktopDespiteInvalidResourceObservation(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Desktop = model.DesktopStatus{}      // desktop down: start is required
+	input.Resources = model.ResourceSnapshot{} // zeroed: resource gate fails closed
+	plan := BuildPlan(input)
+	if !plan.StartDesktop || plan.Phase != model.PhaseStarting {
+		t.Fatalf("blocked resource gate suppressed the desktop start: StartDesktop=%v phase=%s", plan.StartDesktop, plan.Phase)
+	}
+	// The gate still fails closed -- it governs worker scheduling, which only runs
+	// once the desktop is up. StartDesktop is exempt so re-enable can recover.
+	if !plan.ResourceGate.Blocked {
+		t.Fatalf("expected the zeroed observation to still block the gate: %#v", plan.ResourceGate)
+	}
+}
+
 func healthyInput() PlanInput {
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	return PlanInput{

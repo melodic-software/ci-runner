@@ -299,18 +299,15 @@ const reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker = 1
 // reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
 // calls a single Step could make. reconciler.go has two Start call sites: an
 // eager bootstrap before resource admission and inventory (the observation
-// section), and BuildPlan's plan.StartDesktop fallback. Tracing today's
-// control flow, they are mutually exclusive within one Step: a failed eager
-// Start sets observationFailed, which zeroes the resource snapshot
-// (reconciler.go's "invalid observation fails closed in BuildPlan"), which
-// fails BuildPlan's resourceHealthy gate closed and returns PhaseResourceConstrained
-// before plan.StartDesktop is ever assigned (see evaluateResourceGate and
-// BuildPlan's !resourceHealthy branch in plan.go). This budgets both call
-// sites anyway rather than relying on that cross-file invariant holding
-// forever: summing verified call sites is the more robust way to size a
-// coarse backstop, it keeps the budget correct even if a future refactor
-// changes that control flow, and — per reconcileStepTimeout's doc comment — a
-// larger backstop has no downside.
+// section), and BuildPlan's plan.StartDesktop fallback. Both can fire within one
+// Step: a failed eager Start sets observationFailed, but the resource snapshot is
+// preserved when the desktop is intentionally stopped, and BuildPlan assigns
+// plan.StartDesktop ahead of its resource gate, so a blocked gate no longer
+// suppresses the fallback (see reconciler.go's desktopIntentionallyStopped guard
+// and BuildPlan's StartDesktop-before-resource-gate ordering in plan.go). Summing
+// both verified call sites is the robust way to size a coarse backstop: it stays
+// correct regardless of that control flow, and — per reconcileStepTimeout's doc
+// comment — a larger backstop has no downside.
 const reconcileStepDesktopStartAttempts = 2
 
 // reconcileStepWorkerImagePullBudget bounds the one Docker image pull a
