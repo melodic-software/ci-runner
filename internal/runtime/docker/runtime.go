@@ -76,6 +76,7 @@ type Options struct {
 	DockerLogMaxFiles      int
 	IdleConfirmationWindow time.Duration
 	FinalizationTimeout    time.Duration
+	ImagePullTimeout       time.Duration
 	Artifacts              ArtifactSink
 	OnError                func(error)
 	Telemetry              telemetry.Recorder
@@ -114,6 +115,9 @@ func (o Options) validate() error {
 	}
 	if o.IdleConfirmationWindow <= 0 || o.FinalizationTimeout <= 0 {
 		return errors.New("idle confirmation and finalization timeouts must be positive")
+	}
+	if o.ImagePullTimeout <= 0 {
+		return errors.New("image pull timeout must be positive")
 	}
 	if o.Artifacts == nil {
 		return errors.New("worker artifact sink is required")
@@ -469,11 +473,20 @@ func (r *Runtime) ensureImage(ctx context.Context) error {
 	} else if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect pinned worker image: %w", err)
 	}
-	pull, err := r.engine.ImagePull(ctx, r.opts.Image, client.ImagePullOptions{Platforms: []ocispec.Platform{{OS: "linux", Architecture: "amd64"}}})
+	// A stalled or hung registry pull otherwise has no independent stall
+	// detector anywhere in this call chain: it would sit unresponsive under
+	// whatever deadline the caller passed in (the reconcile Step watchdog,
+	// sized generously to never cut off a legitimate Step) instead of failing
+	// fast the way GitHub's own scale-set transport does. Bound it with its
+	// own configured timeout, mirroring how ControllerDesktopAdapter.Start/Stop
+	// bound Docker Desktop's lifecycle with cfg.DockerDesktop.StartTimeout/StopTimeout.
+	pullCtx, cancel := context.WithTimeout(ctx, r.opts.ImagePullTimeout)
+	defer cancel()
+	pull, err := r.engine.ImagePull(pullCtx, r.opts.Image, client.ImagePullOptions{Platforms: []ocispec.Platform{{OS: "linux", Architecture: "amd64"}}})
 	if err != nil {
 		return fmt.Errorf("pull pinned worker image: %w", err)
 	}
-	waitErr := pull.Wait(ctx)
+	waitErr := pull.Wait(pullCtx)
 	closeErr := pull.Close()
 	if waitErr != nil {
 		return errors.Join(

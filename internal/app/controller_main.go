@@ -313,28 +313,29 @@ const reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker = 1
 // larger backstop has no downside.
 const reconcileStepDesktopStartAttempts = 2
 
-// reconcileStepWorkerImagePullBudget generously bounds the one Docker image
-// pull a Step's worker-start section can incur. reconciler.go's plan.Start
-// loop calls Workers.Start once per worker it starts, and the Docker runtime
+// reconcileStepWorkerImagePullBudget bounds the one Docker image pull a
+// Step's worker-start section can incur. reconciler.go's plan.Start loop
+// calls Workers.Start once per worker it starts, and the Docker runtime
 // implementation's Start (internal/runtime/docker/runtime.go) calls
 // ensureImage first, which pulls the configured worker image only when
 // ImageInspect reports it missing (a first-run host, or after the pinned
-// digest changes) -- unlike every other per-op term in this budget,
-// ensureImage has NO configured timeout of its own (it runs unbounded under
-// whatever context it is given), so there is no runtime policy value to
-// derive an exact term from the way DockerDesktop.StartTimeout bounds the
-// desktop lifecycle above.
+// digest changes). ensureImage now bounds that pull with its own configured
+// WorkerImage.PullTimeout (applied via context.WithTimeout around the
+// ImagePull+Wait sequence, mirroring how ControllerDesktopAdapter.Start/Stop
+// bound Docker Desktop's lifecycle with DockerDesktop.StartTimeout/
+// StopTimeout), so this term is now an exact derived bound read straight from
+// that runtime policy value, the same way desktopBudget derives from
+// DockerDesktop.StartTimeout/StopTimeout below -- not a generous guess.
 //
-// This is budgeted as a single fixed occurrence, not scaled by worker count:
+// This is budgeted as a single occurrence, not scaled by worker count:
 // plan.Start's loop issues Workers.Start calls one at a time, never
 // concurrently, and ensureImage's own ImageInspect check means only the
 // FIRST Start call in a Step that finds the image missing actually pulls it
 // -- Docker has the image on disk for every subsequent Start call in that
-// same Step. A generous fixed floor is therefore this term's only honest
-// option; per this function's "a larger backstop has no downside" principle,
-// it is sized well above a realistic worst-case pull of a multi-gigabyte CI
-// runner image over a slow link rather than tuned tight.
-const reconcileStepWorkerImagePullBudget = 20 * time.Minute
+// same Step.
+func reconcileStepWorkerImagePullBudget(cfg config.Config) time.Duration {
+	return cfg.WorkerImage.PullTimeout.Duration
+}
 
 // reconcileStepJITBudgetFloorWorkers floors the worker count the JIT-start
 // portion of the budget is sized from, in addition to (not instead of) the
@@ -447,9 +448,10 @@ const reconcileStepJITBudgetFloorWorkers = 64
 // are all reachable in one Step) plus one Stop call, and add that directly to
 // the GitHub-retry budget (including its 50% margin) so a policy-compliant
 // desktop start or stop is never cut short by a watchdog sized only for
-// GitHub retries. Add reconcileStepWorkerImagePullBudget alongside it: an
-// unrelated, unbounded Docker operation (see its doc comment for why it gets
-// a fixed floor instead of a computed term).
+// GitHub retries. Add reconcileStepWorkerImagePullBudget(cfg) alongside it: a
+// separate, likewise exactly-bounded Docker operation (see its doc comment
+// for why it derives directly from WorkerImage.PullTimeout instead of a
+// computed retry term).
 //
 // Registered retirements also incur a Drain.IdleConfirmationWindow wait each
 // (see reconcileStepIdleConfirmationWaitsPerWorker's doc comment): a fixed
@@ -507,7 +509,7 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 			saturatingScaleDuration(cfg.DockerDesktop.StartTimeout.Duration, reconcileStepDesktopStartAttempts),
 			cfg.DockerDesktop.StopTimeout.Duration,
 		),
-		reconcileStepWorkerImagePullBudget,
+		reconcileStepWorkerImagePullBudget(cfg),
 	)
 	idleConfirmationWaits := saturatingMulInt(reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker, staticWorkerCap)
 	idleConfirmationBudget := saturatingScaleDuration(cfg.Drain.IdleConfirmationWindow.Duration, idleConfirmationWaits)

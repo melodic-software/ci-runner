@@ -34,6 +34,7 @@ func newWorkerRuntime(
 		DockerLogMaxSizeBytes: uint64(cfg.Logs.Docker.MaxSize), DockerLogMaxFiles: cfg.Logs.Docker.MaxFiles,
 		IdleConfirmationWindow: cfg.Drain.IdleConfirmationWindow.Duration,
 		FinalizationTimeout:    cfg.Logs.WorkerFinalizationTimeout.Duration,
+		ImagePullTimeout:       cfg.WorkerImage.PullTimeout.Duration,
 		Artifacts:              artifacts, OnError: onError, Telemetry: telemetryRecorder,
 	})
 }

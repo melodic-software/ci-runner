@@ -61,6 +61,8 @@ drain:
 dockerDesktop:
   startTimeout: 2m
   stopTimeout: 2m
+workerImage:
+  pullTimeout: 20m
 logs:
   docker:
     driver: local
@@ -99,6 +101,52 @@ func TestLoadValidConfiguration(t *testing.T) {
 	worker, ok := cfg.WorkerForTarget("melodic-org")
 	if !ok || worker != cfg.Resources.Worker {
 		t.Fatalf("default effective worker = %#v, found=%v", worker, ok)
+	}
+	if cfg.WorkerImage.PullTimeout.Duration != 20*time.Minute {
+		t.Fatalf("workerImage.pullTimeout (explicit) = %s, want 20m", cfg.WorkerImage.PullTimeout.Duration)
+	}
+}
+
+// TestLoadDefaultsOmittedWorkerImagePullTimeout proves WorkerImage.PullTimeout
+// is the one deliberate exception to this schema's otherwise-universal
+// "every Duration is explicit/required" convention (see WorkerImage's doc
+// comment): a host YAML that omits workerImage entirely must still load
+// successfully, with PullTimeout defaulted to defaultWorkerImagePullTimeout,
+// rather than failing Validate the way an omitted dockerDesktop.startTimeout
+// or drain.warningAfter would.
+func TestLoadDefaultsOmittedWorkerImagePullTimeout(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "workerImage:\n  pullTimeout: 20m\n", "", 1)
+	if input == validYAML {
+		t.Fatal("test fixture did not contain the expected workerImage block")
+	}
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerImage.PullTimeout.Duration != defaultWorkerImagePullTimeout {
+		t.Fatalf("workerImage.pullTimeout (omitted) = %s, want the default %s", cfg.WorkerImage.PullTimeout.Duration, defaultWorkerImagePullTimeout)
+	}
+}
+
+// TestValidateRejectsNegativeWorkerImagePullTimeout proves an explicitly
+// negative PullTimeout is still rejected. This is unreachable through the
+// ordinary Load path -- Duration.UnmarshalYAML already refuses any
+// non-positive explicit YAML value before Validate ever runs -- so, mirroring
+// TestTargetWorkerOverridesUseGlobalValidationContract's load-then-mutate-
+// then-Validate pattern below, this constructs the invalid value directly in
+// Go and calls Validate itself, the only way a negative value can reach it
+// (e.g. a future non-YAML config source).
+func TestValidateRejectsNegativeWorkerImagePullTimeout(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkerImage.PullTimeout.Duration = -time.Minute
+	validateErr := cfg.Validate()
+	if validateErr == nil || !strings.Contains(validateErr.Error(), "workerImage.pullTimeout") {
+		t.Fatalf("validate error = %v, want workerImage.pullTimeout rejection", validateErr)
 	}
 }
 

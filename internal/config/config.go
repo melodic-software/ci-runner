@@ -81,6 +81,7 @@ type Config struct {
 	Power         Power         `yaml:"power"`
 	Drain         Drain         `yaml:"drain"`
 	DockerDesktop DockerDesktop `yaml:"dockerDesktop"`
+	WorkerImage   WorkerImage   `yaml:"workerImage"`
 	Logs          Logs          `yaml:"logs"`
 	Telemetry     Telemetry     `yaml:"telemetry"`
 	Paths         Paths         `yaml:"paths"`
@@ -236,6 +237,43 @@ type DockerDesktop struct {
 	StopTimeout  Duration `yaml:"stopTimeout"`
 }
 
+// WorkerImage configures the disposable worker's own pinned Docker image, as
+// opposed to DockerDesktop's host application lifecycle. It is deliberately
+// its own struct rather than a field on Resources.Worker: that type also
+// backs controller.StartWorkerRequest.Limits (the per-worker container
+// resource limits passed into every Start call), so adding an unrelated
+// pull-timing concern there would leak into a struct callers reuse for a
+// different purpose. There is exactly one worker image per host (unlike
+// Resources.Worker, it is never overridden per target), so it gets a
+// dedicated, non-overridable home instead.
+//
+// PullTimeout is a deliberate, acknowledged exception to every other Duration
+// field in this file (DockerDesktop.StartTimeout/StopTimeout,
+// Drain.WarningAfter/IdleConfirmationWindow, Power.StableACWindow, and the
+// rest): those are all hard-required-positive with no code-level default,
+// because each encodes a real operator policy choice this schema deliberately
+// forces an explicit YAML value for. PullTimeout is not that kind of field --
+// it is a generic infrastructure timeout with no meaningful behavior/policy
+// tradeoff attached (unlike, say, a memory-margin knob), so requiring
+// explicit opt-in buys nothing and only risks breaking every already-deployed
+// host config.yaml on an ordinary controller upgrade the moment this field is
+// introduced. Load defaults it to defaultWorkerImagePullTimeout when omitted
+// (left at its YAML zero value); see Validate's use of "< 0" rather than
+// "<= 0" for this field specifically, reflecting that only a genuinely
+// negative explicit value is ever rejected.
+type WorkerImage struct {
+	PullTimeout Duration `yaml:"pullTimeout"`
+}
+
+// defaultWorkerImagePullTimeout is applied by Load when workerImage.pullTimeout
+// is omitted from the host YAML (see WorkerImage's doc comment for why this
+// field alone gets a code-level default). 20 minutes matches this codebase's
+// own prior considered judgment (reconcileStepWorkerImagePullBudget's history
+// in internal/app/controller_main.go) for a generous, safe bound on a
+// first-run or updated-digest pull of a multi-gigabyte CI runner image over a
+// slow link.
+const defaultWorkerImagePullTimeout = 20 * time.Minute
+
 type Logs struct {
 	Docker                    DockerLogs `yaml:"docker"`
 	Controller                LogClass   `yaml:"controller"`
@@ -295,6 +333,11 @@ func Load(r io.Reader) (Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
+	}
+	// See WorkerImage's doc comment for why this is the one Duration field in
+	// this schema that gets a code-level default instead of being required.
+	if cfg.WorkerImage.PullTimeout.Duration == 0 {
+		cfg.WorkerImage.PullTimeout.Duration = defaultWorkerImagePullTimeout
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -536,6 +579,15 @@ func (c Config) Validate() error {
 	}
 	if c.DockerDesktop.StartTimeout.Duration <= 0 || c.DockerDesktop.StopTimeout.Duration <= 0 {
 		add(errors.New("dockerDesktop: startTimeout and stopTimeout must be positive"))
+	}
+	// Unlike every other Duration field validated in this function, zero is
+	// legal here: Load defaults an omitted workerImage.pullTimeout before
+	// Validate ever runs (see WorkerImage's doc comment), so only a genuinely
+	// negative value -- reachable by direct Go construction of a Config, not
+	// through the YAML path where Duration.UnmarshalYAML already rejects a
+	// non-positive explicit value -- is rejected here.
+	if c.WorkerImage.PullTimeout.Duration < 0 {
+		add(errors.New("workerImage.pullTimeout: must not be negative"))
 	}
 	if c.Logs.Docker.Driver != "local" {
 		add(errors.New("logs.docker.driver: only Docker's local driver is supported"))
