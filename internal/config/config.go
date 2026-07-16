@@ -81,6 +81,7 @@ type Config struct {
 	Power         Power         `yaml:"power"`
 	Drain         Drain         `yaml:"drain"`
 	DockerDesktop DockerDesktop `yaml:"dockerDesktop"`
+	WorkerImage   WorkerImage   `yaml:"workerImage"`
 	Logs          Logs          `yaml:"logs"`
 	Telemetry     Telemetry     `yaml:"telemetry"`
 	Paths         Paths         `yaml:"paths"`
@@ -234,6 +235,19 @@ type Drain struct {
 type DockerDesktop struct {
 	StartTimeout Duration `yaml:"startTimeout"`
 	StopTimeout  Duration `yaml:"stopTimeout"`
+}
+
+// WorkerImage configures the disposable worker's own pinned Docker image, as
+// opposed to DockerDesktop's host application lifecycle. It is deliberately
+// its own struct rather than a field on Resources.Worker: that type also
+// backs controller.StartWorkerRequest.Limits (the per-worker container
+// resource limits passed into every Start call), so adding an unrelated
+// pull-timing concern there would leak into a struct callers reuse for a
+// different purpose. There is exactly one worker image per host (unlike
+// Resources.Worker, it is never overridden per target), so it gets a
+// dedicated, non-overridable home instead.
+type WorkerImage struct {
+	PullTimeout Duration `yaml:"pullTimeout"`
 }
 
 type Logs struct {
@@ -536,6 +550,9 @@ func (c Config) Validate() error {
 	}
 	if c.DockerDesktop.StartTimeout.Duration <= 0 || c.DockerDesktop.StopTimeout.Duration <= 0 {
 		add(errors.New("dockerDesktop: startTimeout and stopTimeout must be positive"))
+	}
+	if c.WorkerImage.PullTimeout.Duration <= 0 {
+		add(errors.New("workerImage.pullTimeout: must be positive"))
 	}
 	if c.Logs.Docker.Driver != "local" {
 		add(errors.New("logs.docker.driver: only Docker's local driver is supported"))

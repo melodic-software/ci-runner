@@ -148,6 +148,55 @@ func TestStartReportsImagePullCloseFailure(t *testing.T) {
 	}
 }
 
+// TestStartBoundsHungImagePullByConfiguredTimeout proves the fix for the
+// watchdog gap this PR closes: before ImagePullTimeout existed, ensureImage's
+// ImagePull+Wait sequence ran under whatever context Start was called with,
+// so a stalled registry pull had no independent stall detector anywhere in
+// the call chain and could sit unresponsive for as long as the caller's
+// context allowed. Simulate that stall directly against context.Background()
+// (which never expires on its own): Wait must still return promptly, bounded
+// by ImagePullTimeout, not by any deadline the caller happens to supply.
+func TestStartBoundsHungImagePullByConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.imagePresent = false
+	engine.pullBlocksForever = true
+	options := testOptions(&memoryArtifacts{})
+	options.ImagePullTimeout = 20 * time.Millisecond
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+
+	started := time.Now()
+	_, startErr := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	elapsed := time.Since(started)
+
+	if !errors.Is(startErr, context.DeadlineExceeded) {
+		t.Fatalf("Start error = %v, want context.DeadlineExceeded (through wrapping), proving ImagePullTimeout -- not the never-expiring caller context -- ended the pull", startErr)
+	}
+	// A generous multiple of the configured timeout: this must return from
+	// ImagePullTimeout firing, never from a hang lasting the full test binary
+	// timeout, so a value far below any realistic ImagePullTimeout in
+	// production (minutes) proves the fix rather than tolerating the bug.
+	if elapsed > time.Second {
+		t.Fatalf("Start with a permanently hung image pull took %s, want well under 1s (configured ImagePullTimeout=%s)", elapsed, options.ImagePullTimeout)
+	}
+}
+
+func TestNewRejectsNonPositiveImagePullTimeout(t *testing.T) {
+	t.Parallel()
+	options := testOptions(&memoryArtifacts{})
+	options.ImagePullTimeout = 0
+	if _, err := New(newFakeEngine(), options); err == nil {
+		t.Fatal("non-positive ImagePullTimeout accepted")
+	}
+}
+
 func TestRuntimeEmitsBoundedWorkerLifecycleTelemetry(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -782,7 +831,8 @@ func testOptions(sink ArtifactSink) Options {
 		HostID: "melo-desk-001", ControllerVersion: "test", Image: pinnedTestImage,
 		DockerLogMaxSizeBytes: 10 << 20, DockerLogMaxFiles: 3,
 		IdleConfirmationWindow: time.Millisecond, FinalizationTimeout: time.Second,
-		Artifacts: sink,
+		ImagePullTimeout: time.Second,
+		Artifacts:        sink,
 	}
 }
 
@@ -806,6 +856,7 @@ type fakeEngine struct {
 	pulls               int
 	pullImage           string
 	pullCloseErr        error
+	pullBlocksForever   bool
 	created             client.ContainerCreateOptions
 	containers          map[string]*fakeContainer
 	calls               []string
@@ -845,8 +896,9 @@ func (e *fakeEngine) ImagePull(_ context.Context, image string, _ client.ImagePu
 	e.pulls++
 	e.pullImage = image
 	e.imagePresent = true
+	blocks := e.pullBlocksForever
 	e.mu.Unlock()
-	return &fakePull{closeErr: e.pullCloseErr}, nil
+	return &fakePull{closeErr: e.pullCloseErr, blockWait: blocks}, nil
 }
 
 func (e *fakeEngine) Info(context.Context, client.InfoOptions) (client.SystemInfoResult, error) {
@@ -1178,11 +1230,20 @@ func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {
 	}
 }
 
-type fakePull struct{ closeErr error }
+type fakePull struct {
+	closeErr  error
+	blockWait bool
+}
 
-func (*fakePull) Read([]byte) (int, error)   { return 0, io.EOF }
-func (p *fakePull) Close() error             { return p.closeErr }
-func (*fakePull) Wait(context.Context) error { return nil }
+func (*fakePull) Read([]byte) (int, error) { return 0, io.EOF }
+func (p *fakePull) Close() error           { return p.closeErr }
+func (p *fakePull) Wait(ctx context.Context) error {
+	if p.blockWait {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
 func (*fakePull) JSONMessages(context.Context) iter.Seq2[jsonstream.Message, error] {
 	return func(func(jsonstream.Message, error) bool) {}
 }

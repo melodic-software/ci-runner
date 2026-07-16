@@ -22,6 +22,11 @@ func desktopLifecycleConfig(requestTimeout, backoffMax time.Duration, maxAttempt
 		},
 		Resources:     config.Resources{MaximumConcurrentWorkers: maxConcurrentWorkers},
 		DockerDesktop: config.DockerDesktop{StartTimeout: config.Duration{Duration: desktopStart}, StopTimeout: config.Duration{Duration: desktopStop}},
+		// Matches the recommended production default (reconcileStepWorkerImagePullBudget's
+		// doc comment), so exact-equality assertions below are unaffected by this field's
+		// introduction: they exercise the fixed-term contribution the same way regardless
+		// of whether it comes from a constant or, now, this configured value.
+		WorkerImage: config.WorkerImage{PullTimeout: config.Duration{Duration: 20 * time.Minute}},
 	}
 }
 
@@ -154,11 +159,11 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
 	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
-	// desktop-category contribution is the fixed, unconditional
-	// reconcileStepWorkerImagePullBudget term.
-	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget
+	// desktop-category contribution is the unconditional
+	// reconcileStepWorkerImagePullBudget(cfg) term, derived from cfg.WorkerImage.PullTimeout.
+	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget(cfg)
 	if got != want {
-		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the fixed image-pull floor)", got, want)
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the configured image-pull term)", got, want)
 	}
 }
 
@@ -197,11 +202,11 @@ func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) 
 	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
 	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
-	// desktop-category contribution is the fixed, unconditional
-	// reconcileStepWorkerImagePullBudget term.
-	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget
+	// desktop-category contribution is the unconditional
+	// reconcileStepWorkerImagePullBudget(cfg) term, derived from cfg.WorkerImage.PullTimeout.
+	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget(cfg)
 	if got != want {
-		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the fixed image-pull floor)", got, want)
+		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the configured image-pull term)", got, want)
 	}
 }
 
@@ -466,22 +471,22 @@ func TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride(t *te
 	}
 }
 
-// TestReconcileStepTimeoutIncludesWorkerImagePullBudget proves the fix for a
-// reviewer-flagged gap: Workers.Start's Docker runtime implementation
-// (internal/runtime/docker/runtime.go) calls ensureImage before creating a
-// container, which pulls the configured worker image whenever ImageInspect
-// reports it missing (a first-run host, or after the pinned digest changes).
-// That pull has no configured timeout of its own -- unlike every other
-// per-operation term in this budget -- and can legitimately take many
-// minutes, so the watchdog must budget reconcileStepWorkerImagePullBudget as
-// a fixed floor even when every other term (GitHub retries, desktop
-// lifecycle, idle confirmation) is at its own floor.
+// TestReconcileStepTimeoutIncludesWorkerImagePullBudget proves the watchdog
+// budgets ensureImage's own configured pull timeout: Workers.Start's Docker
+// runtime implementation (internal/runtime/docker/runtime.go) calls
+// ensureImage before creating a container, which pulls the configured worker
+// image whenever ImageInspect reports it missing (a first-run host, or after
+// the pinned digest changes), now bounded by its own WorkerImage.PullTimeout
+// (applied via context.WithTimeout around the ImagePull+Wait sequence). The
+// watchdog must budget reconcileStepWorkerImagePullBudget(cfg) even when
+// every other term (GitHub retries, desktop lifecycle, idle confirmation) is
+// at its own floor.
 func TestReconcileStepTimeoutIncludesWorkerImagePullBudget(t *testing.T) {
 	t.Parallel()
 	tiny := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1)
 	got := reconcileStepTimeout(tiny, 1)
-	if got < reconcileStepWorkerImagePullBudget {
-		t.Fatalf("reconcileStepTimeout = %s, want >= the fixed worker image-pull floor %s even with an otherwise-tiny configuration", got, reconcileStepWorkerImagePullBudget)
+	if got < reconcileStepWorkerImagePullBudget(tiny) {
+		t.Fatalf("reconcileStepTimeout = %s, want >= the configured worker image-pull term %s even with an otherwise-tiny configuration", got, reconcileStepWorkerImagePullBudget(tiny))
 	}
 }
 
@@ -511,7 +516,29 @@ func TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled(t *testing.T)
 	wantDelta := time.Duration(jitOpsDelta*attempts) * (requestTO + backoffMax)
 	wantDelta = wantDelta + wantDelta/2
 	if diff := highBudget - lowBudget; diff != wantDelta {
-		t.Fatalf("reconcileStepTimeout delta across effectiveMaxConcurrentWorkers %d->%d = %s, want exactly %s (the fixed image-pull floor must not scale with worker count; only JIT ops may)", low, high, diff, wantDelta)
+		t.Fatalf("reconcileStepTimeout delta across effectiveMaxConcurrentWorkers %d->%d = %s, want exactly %s (the configured image-pull term must not scale with worker count; only JIT ops may)", low, high, diff, wantDelta)
+	}
+}
+
+// TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout proves the
+// image-pull portion of the budget tracks WorkerImage.PullTimeout directly,
+// mirroring how TestReconcileStepTimeoutScalesWithDesktopStartTimeout proves
+// the desktop portion tracks DockerDesktop.StartTimeout.
+func TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1)
+	shorter := cfg
+	shorter.WorkerImage = config.WorkerImage{PullTimeout: config.Duration{Duration: time.Minute}}
+	longer := cfg
+	longer.WorkerImage = config.WorkerImage{PullTimeout: config.Duration{Duration: 10 * time.Minute}}
+
+	shorterBudget := reconcileStepTimeout(shorter, 1)
+	longerBudget := reconcileStepTimeout(longer, 1)
+	if longerBudget <= shorterBudget {
+		t.Fatalf("reconcileStepTimeout with 10m PullTimeout = %s, want > with 1m PullTimeout = %s", longerBudget, shorterBudget)
+	}
+	if diff, want := longerBudget-shorterBudget, 10*time.Minute-time.Minute; diff != want {
+		t.Fatalf("reconcileStepTimeout delta across WorkerImage.PullTimeout change = %s, want exactly %s", diff, want)
 	}
 }
 

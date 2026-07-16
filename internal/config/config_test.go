@@ -61,6 +61,8 @@ drain:
 dockerDesktop:
   startTimeout: 2m
   stopTimeout: 2m
+workerImage:
+  pullTimeout: 20m
 logs:
   docker:
     driver: local
