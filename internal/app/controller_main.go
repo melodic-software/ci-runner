@@ -332,56 +332,26 @@ func reconcileStepDrainGrace(cfg config.Config) time.Duration {
 	return cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration
 }
 
-// reconcileWatchdogState tracks a Step goroutine that overran the watchdog
-// deadline and then failed to unwind within its drain grace period. Step
-// holds stepMu for its entire duration, so if the blocked adapter call inside
-// it did not actually abort on context cancellation (the exact half-open /
-// stuck-operation scenario the watchdog exists to survive), starting another
-// Step would just queue forever behind the same held mutex — piling up more
-// leaked, blocked goroutines instead of making progress. Once a goroutine is
-// abandoned, readyForNextStep keeps the loop from starting a new Step until
-// that goroutine is confirmed to have released stepMu.
+// errReconcileStepAbandoned is returned by runControllerLoop when a
+// watchdog-timed-out Step goroutine fails to release Reconciler.stepMu within
+// its drain grace period. Step holds stepMu for its entire duration, so if
+// the blocked adapter call inside it did not actually abort on context
+// cancellation (the exact half-open/stuck-operation scenario the watchdog
+// exists to survive), no later Step in this process can ever acquire stepMu
+// again, and reconciler.Shutdown (which itself loops on Step and therefore
+// also blocks on the same non-context-aware sync.Mutex) would hang behind it
+// too instead of draining cleanly.
 //
-// This does not, by itself, prevent a graceful shutdown from hanging: the
-// shutdown closure below calls reconciler.Shutdown, which loops on
-// Reconciler.Step and therefore also blocks on stepMu.Lock (an ordinary
-// sync.Mutex, not context-aware) if the same goroutine is still stuck holding
-// it. Fixing that fully requires a change to Reconciler's locking (e.g. a
-// TryLock-style path) in internal/controller/reconciler.go; this fix only
-// stops the reconcile loop from compounding the problem by piling up more
-// blocked goroutines behind the same held lock.
-type reconcileWatchdogState struct {
-	abandoned <-chan error
-}
-
-// abandon records a watchdog-timed-out Step goroutine that did not unwind
-// within its drain grace period.
-func (w *reconcileWatchdogState) abandon(stepDone <-chan error) {
-	w.abandoned = stepDone
-}
-
-// readyForNextStep reports whether the loop may start a new Step this tick.
-// When a Step goroutine is currently abandoned, it performs a non-blocking
-// check for that goroutine's stepDone signal: if it has finally unwound,
-// normal reconciliation resumes; otherwise this tick is skipped so the loop
-// does not stack another goroutine behind the still-held stepMu.
-func (w *reconcileWatchdogState) readyForNextStep(logs controller.LogSink) bool {
-	if w.abandoned == nil {
-		return true
-	}
-	select {
-	case stepErr := <-w.abandoned:
-		w.abandoned = nil
-		if stepErr != nil {
-			_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
-		}
-		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-drain-recovered", Message: "a reconcile step abandoned after a watchdog timeout released its lock; resuming normal reconciliation"})
-		return true
-	default:
-		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-tick-skipped", Message: "skipping this reconcile tick: a previously abandoned step has not released its lock and starting a new one would only queue behind it"})
-		return false
-	}
-}
+// Returning this error, rather than skipping reconcile ticks indefinitely,
+// lets the process exit non-zero instead of idling forever in a permanently
+// degraded, un-reconciling state. The ci-runner-fleet Scheduled Task is
+// registered with a restart-on-failure policy (RestartCount 3,
+// RestartInterval 1 minute; see provisioning's
+// Register-CiRunnerLogonTask/Get-LogonTaskDrift), so process exit is also the
+// only way to reclaim stepMu here: Go cannot kill a single goroutine, but the
+// OS tears down the whole wedged process -- goroutine included -- on exit,
+// and the scheduled task then starts a fresh one.
+var errReconcileStepAbandoned = errors.New("reconcile step did not release its lock within the watchdog drain grace period")
 
 func runControllerLoop(
 	ctx context.Context,
@@ -421,38 +391,7 @@ func runControllerLoop(
 
 	stepTimeout := reconcileStepTimeout(cfg)
 	stepDrainGrace := reconcileStepDrainGrace(cfg)
-	var watchdog reconcileWatchdogState
 	for {
-		if !watchdog.readyForNextStep(logs) {
-			// A prior watchdog-timed-out Step goroutine has still not released
-			// stepMu. Starting a new Step now would only block forever behind
-			// it, so wait out this tick without starting one and re-check on
-			// the next iteration.
-			timer := time.NewTimer(cfg.Controller.ReconcileInterval.Duration)
-			select {
-			case signal := <-handler.ShutdownRequests():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return shutdown(signal, true)
-			case <-ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return shutdown(controller.ShutdownSignal{Reason: "process interrupt"}, true)
-			case serveErr := <-serverErrors:
-				if !timer.Stop() {
-					<-timer.C
-				}
-				if serveErr == nil {
-					serveErr = errors.New("control server exited unexpectedly")
-				}
-				return errors.Join(serveErr, shutdown(controller.ShutdownSignal{Reason: "control server exited unexpectedly"}, false))
-			case <-timer.C:
-			}
-			continue
-		}
-
 		stepContext, cancelStep := context.WithTimeout(context.Background(), stepTimeout)
 		stepDone := make(chan error, 1)
 		go func() {
@@ -507,12 +446,14 @@ func runControllerLoop(
 			case <-time.After(stepDrainGrace):
 				// The goroutine did not unwind: Step holds stepMu for its entire
 				// duration, so the blocked adapter call inside it did not actually
-				// abort on context cancellation. Leave stepDone unclaimed — the
-				// goroutine will still deliver to it once it eventually unwinds —
-				// and escalate instead of starting a new Step that would just
-				// queue behind the same held lock.
-				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-stuck", Message: fmt.Sprintf("reconcile step did not release its lock within %s of cancellation; skipping reconcile ticks until it unwinds", stepDrainGrace)})
-				watchdog.abandon(stepDone)
+				// abort on context cancellation. No future Step in this process can
+				// ever acquire stepMu again, so escalate to a controlled process
+				// exit instead of leaving the controller permanently stuck skipping
+				// reconcile ticks: the scheduled task's restart-on-failure policy
+				// starts a fresh process, which reclaims the lock because the OS
+				// tears down this entire process -- goroutine included -- on exit.
+				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-watchdog-stuck", Message: fmt.Sprintf("reconcile step did not release its lock within %s of cancellation; exiting so the scheduled task restarts the controller", stepDrainGrace)})
+				return errReconcileStepAbandoned
 			}
 		case stepErr := <-stepDone:
 			cancelStep()
