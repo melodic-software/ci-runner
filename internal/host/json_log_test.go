@@ -91,7 +91,7 @@ func TestJSONLogSinkEmitsAndRedactsCause(t *testing.T) {
 	if err := sink.Write(context.Background(), controller.LogEvent{
 		Code:    "scale-set-statistics-error",
 		Message: "scale-set poll failed (forbidden, HTTP 403)",
-		Cause:   `github_request_id="req-visible" token=ghs_causeleakabcdefghijklmnop012345`,
+		Cause:   `github_request_id="req-visible" token=ghs_abcdefghijklmnopqrstuvwxyz012345`,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestJSONLogSinkEmitsAndRedactsCause(t *testing.T) {
 	if !strings.Contains(combined.String(), `"cause"`) || !strings.Contains(combined.String(), "req-visible") {
 		t.Fatalf("underlying cause was not emitted to the structured log: %s", combined.String())
 	}
-	if strings.Contains(combined.String(), "ghs_causeleakabcdefghijklmnop") {
+	if strings.Contains(combined.String(), "ghs_abcdefghijklmnopqrstuvwxyz") {
 		t.Fatalf("cause field bypassed secret redaction: %s", combined.String())
 	}
 }
