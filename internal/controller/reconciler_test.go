@@ -568,6 +568,39 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 	}
 }
 
+// TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride
+// proves the fix for a reviewer-flagged watchdog gap: internal/app's
+// reconcile-step watchdog queries Reconciler.EffectiveMaximumConcurrentWorkers
+// before every Step to size the JIT-start portion of its budget from the same
+// effective limit BuildPlan actually applies (static cap or, when set, the
+// durable Desired.TemporaryCapacityOverride), not the static cap alone. This
+// exercises that resolution against the real durable state store: no
+// override yet returns the static cap, an override in effect returns the
+// override (even when larger), and a desired-state read failure fails safe
+// to the static cap rather than assuming an unverifiable override.
+func TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.MaximumConcurrentWorkers = 1
+
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(context.Background()); got != 1 {
+		t.Fatalf("no override: EffectiveMaximumConcurrentWorkers = %d, want static cap 1", got)
+	}
+
+	override := 10
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, TemporaryCapacityOverride: &override, UpdatedAt: harness.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(context.Background()); got != 10 {
+		t.Fatalf("override=10 > static cap=1: EffectiveMaximumConcurrentWorkers = %d, want the override 10", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := harness.controller.EffectiveMaximumConcurrentWorkers(cancelled); got != 1 {
+		t.Fatalf("desired-state read failure: EffectiveMaximumConcurrentWorkers = %d, want fail-safe static cap 1 (not the unverifiable override)", got)
+	}
+}
 
 // TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates proves the fix
 // for a third reviewer-flagged watchdog gap: RunnerRegistered runs a full

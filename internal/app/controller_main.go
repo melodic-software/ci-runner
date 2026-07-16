@@ -239,6 +239,21 @@ const reconcileStepRetirementOpsPerWorker = 1
 // picked so deferred ones are eventually checked instead of starving.
 const reconcileStepRegistrationCheckOpsPerWorker = 1
 
+// reconcileStepIdleConfirmationWaitsPerWorker is how many
+// Drain.IdleConfirmationWindow waits a Step incurs per worker it retires in
+// its worst-case legitimate registered-retirement sequence:
+// reconciler.go's plan.Remove loop calls RemoveIfIdle once after a successful
+// deregisterRunner, and the Docker runtime's RemoveIfIdle
+// (internal/runtime/docker/runtime.go) waits the full configured
+// Drain.IdleConfirmationWindow before its second idle check. That wait is not
+// a retryable GitHub operation -- it is a fixed local wait, unaffected by
+// RequestTimeout, backoff, or attempts -- so it is budgeted additively
+// alongside the desktop lifecycle budget below rather than folded into the
+// margined GitHub retry budget, and sized per the same
+// retirementDeregistrationCap this Step's registered retirements already
+// share (max(Resources.MaximumConcurrentWorkers, 1)).
+const reconcileStepIdleConfirmationWaitsPerWorker = 1
+
 // reconcileStepDesktopStartAttempts upper-bounds how many DesktopManager.Start
 // calls a single Step could make. reconciler.go has two Start call sites: an
 // eager bootstrap before resource admission and inventory (the observation
@@ -282,32 +297,39 @@ const reconcileStepDesktopStartAttempts = 2
 //
 // Step's worker-start section also calls CreateJITConfig once per worker it
 // starts, each likewise run through RetryValue for up to Retry.MaxAttempts
-// attempts. Resources.MaximumConcurrentWorkers is the host-wide cap on workers
-// started (and therefore on JIT registrations) within a single Step, so budget
-// reconcileStepJITOpsPerWorker retryable operations per unit of that cap, using
-// the same per-attempt cap and attempt count, and add it to the sweep budget
-// before the 50% margin for remaining per-worker provisioning work.
+// attempts. BuildPlan bounds workers started (and therefore JIT registrations)
+// within a single Step by the EFFECTIVE host limit -- the desired state's
+// TemporaryCapacityOverride when an operator has set one, otherwise the
+// static configured Resources.MaximumConcurrentWorkers (see
+// controller.EffectiveMaximumConcurrentWorkers in internal/controller/plan.go)
+// -- not the static cap alone: a legitimate temporary scale-up can
+// authorize starting far more workers in one Step than the static cap would
+// suggest. The caller therefore passes the effective limit in as
+// effectiveMaxConcurrentWorkers (queried fresh before every Step via
+// Reconciler.EffectiveMaximumConcurrentWorkers), and this budgets
+// reconcileStepJITOpsPerWorker retryable operations per unit of that limit,
+// using the same per-attempt cap and attempt count, adding it to the sweep
+// budget before the 50% margin for remaining per-worker provisioning work.
 //
 // Step's worker-removal section symmetrically calls deregisterRunner (a
 // RemoveRunner call run through the same RetryValue budget) once per idle
 // worker it retires from plan.Remove, before RemoveIfIdle
-// (internal/controller/reconciler.go:603-609). That retirement count is not
-// itself bounded by Resources.MaximumConcurrentWorkers — plan.Remove can
-// legitimately carry more idle workers than the current cap allows for after
-// MaximumConcurrentWorkers or warm capacity is lowered, since existing workers
-// are drained rather than force-dropped — so reconciler.go's removal loop caps
-// the deregisterRunner calls it issues in a single Step at
-// Resources.MaximumConcurrentWorkers, deferring any remainder to a later Step.
-// Budget reconcileStepRetirementOpsPerWorker retryable operations per unit of
-// that same cap, using the same per-attempt cap and attempt count, mirroring
-// the JIT budget above.
+// (internal/controller/reconciler.go:603-609). Unlike JIT starts, that
+// retirement count is capped by reconciler.go's removal loop at the STATIC
+// Resources.MaximumConcurrentWorkers regardless of any temporary override --
+// plan.Remove can legitimately carry more idle workers than that cap allows
+// for after MaximumConcurrentWorkers or warm capacity is lowered, since
+// existing workers are drained rather than force-dropped, deferring any
+// remainder to a later Step. Budget reconcileStepRetirementOpsPerWorker
+// retryable operations per unit of the static cap, using the same per-attempt
+// cap and attempt count, mirroring the JIT budget above.
 //
 // Step's registration-check section (the JIT-cancellation detector) calls
 // RunnerRegistered once per idle, job-free worker it verifies, likewise
-// through a full RetryValue budget and likewise not itself bounded by
-// Resources.MaximumConcurrentWorkers. reconciler.go caps those calls at the
-// same limit too, so budget reconcileStepRegistrationCheckOpsPerWorker
-// retryable operations per unit of that cap as well.
+// through a full RetryValue budget and likewise capped by reconciler.go at
+// the STATIC Resources.MaximumConcurrentWorkers, not any temporary override.
+// Budget reconcileStepRegistrationCheckOpsPerWorker retryable operations per
+// unit of that same static cap.
 //
 // Step also drives Docker Desktop's own lifecycle (reconciler.go's
 // r.deps.Desktop.Start/Stop call sites), independently of the GitHub retry
@@ -322,21 +344,29 @@ const reconcileStepDesktopStartAttempts = 2
 // the GitHub-retry budget (including its 50% margin) so a policy-compliant
 // desktop start or stop is never cut short by a watchdog sized only for
 // GitHub retries.
-func reconcileStepTimeout(cfg config.Config) time.Duration {
+//
+// Registered retirements also incur a Drain.IdleConfirmationWindow wait each
+// (see reconcileStepIdleConfirmationWaitsPerWorker's doc comment): a fixed
+// local wait, not a retryable GitHub operation, so it is added directly
+// alongside the desktop budget rather than folded into the margined GitHub
+// retry budget, sized per the same static retirement cap.
+func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) time.Duration {
 	attempts := cfg.GitHub.Retry.MaxAttempts
 	if attempts < reconcileStepMinRetryAttempts {
 		attempts = reconcileStepMinRetryAttempts
 	}
+	staticWorkerCap := max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
-	jitOps := reconcileStepJITOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
-	retirementOps := reconcileStepRetirementOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
-	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * max(cfg.Resources.MaximumConcurrentWorkers, 1)
+	jitOps := reconcileStepJITOpsPerWorker * max(effectiveMaxConcurrentWorkers, 1)
+	retirementOps := reconcileStepRetirementOpsPerWorker * staticWorkerCap
+	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * staticWorkerCap
 	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
 		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
 	retryBudget := time.Duration((stepOps+jitOps+retirementOps+registrationCheckOps)*attempts) * (cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff)
 	githubBudget := retryBudget + retryBudget/2
 	desktopBudget := reconcileStepDesktopStartAttempts*cfg.DockerDesktop.StartTimeout.Duration + cfg.DockerDesktop.StopTimeout.Duration
-	return githubBudget + desktopBudget
+	idleConfirmationBudget := time.Duration(reconcileStepIdleConfirmationWaitsPerWorker*staticWorkerCap) * cfg.Drain.IdleConfirmationWindow.Duration
+	return githubBudget + desktopBudget + idleConfirmationBudget
 }
 
 // reconcileStepDrainGrace bounds how long the reconcile loop waits, after
@@ -410,9 +440,15 @@ func runControllerLoop(
 		return completeControllerShutdown(context.Background(), result, signal, restartReceipts, processID, version)
 	}
 
-	stepTimeout := reconcileStepTimeout(cfg)
 	stepDrainGrace := reconcileStepDrainGrace(cfg)
 	for {
+		// The effective worker limit is queried fresh before every Step (rather
+		// than once outside the loop) because Desired.TemporaryCapacityOverride
+		// is dynamic operator state that can change between Steps: sizing the
+		// JIT-start portion of the watchdog budget from a stale effective limit
+		// could let a later legitimate temporary scale-up exceed the budget this
+		// Step actually gets. See reconcileStepTimeout's doc comment.
+		stepTimeout := reconcileStepTimeout(cfg, reconciler.EffectiveMaximumConcurrentWorkers(ctx))
 		stepContext, cancelStep := context.WithTimeout(context.Background(), stepTimeout)
 		stepDone := make(chan error, 1)
 		go func() {

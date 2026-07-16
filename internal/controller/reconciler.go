@@ -134,6 +134,23 @@ func (r *Reconciler) setWatchIntervalForTest(interval time.Duration) error {
 	return nil
 }
 
+// EffectiveMaximumConcurrentWorkers reports the host-wide worker cap the next
+// Step's BuildPlan will apply, honoring any active
+// Desired.TemporaryCapacityOverride. internal/app's per-step watchdog budget
+// calls this before starting each Step so a legitimate temporary scale-up
+// widens the JIT-start portion of the budget instead of tripping the watchdog
+// on a policy-compliant burst reconcile. A desired-state read failure fails
+// safe to the static configured cap -- the same value step() itself falls
+// back to when it cannot load desired state -- rather than assuming an
+// override might be in effect that cannot be verified.
+func (r *Reconciler) EffectiveMaximumConcurrentWorkers(ctx context.Context) int {
+	desired, err := r.deps.State.LoadDesired(ctx)
+	if err != nil {
+		return r.config.Resources.MaximumConcurrentWorkers
+	}
+	return EffectiveMaximumConcurrentWorkers(r.config.Resources, desired)
+}
+
 // Step performs one serialized reconciliation. Polling scale-set statistics
 // (and therefore advertising capacity) happens before any idle worker removal.
 func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultErr error) {
