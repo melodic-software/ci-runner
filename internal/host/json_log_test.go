@@ -145,3 +145,94 @@ func TestJSONLogSinkBoundsCanceledPathWhenFileWorkerStalls(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestJSONLogSinkCloseRemainsBoundedWhenFileWorkerNeverRecovers(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(1024), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(1024),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.writeTimeout = 10 * time.Millisecond
+	sink.closeTimeout = 10 * time.Millisecond
+
+	// Keep the worker stalled for the remainder of the test. Close must not
+	// rely on the test eventually releasing this injected storage stall.
+	sink.mu.Lock()
+	if err := sink.Write(context.Background(), controller.LogEvent{Code: "permanent-stall"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled write error = %v, want deadline exceeded", err)
+	}
+	started := time.Now()
+	err = sink.Close()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled close error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("stalled close took %s, want a bounded return", elapsed)
+	}
+	if health := sink.Health(); health.WriteTimeouts != 1 || health.CloseTimeouts != 1 {
+		t.Fatalf("sink health = %#v, want one write and close timeout", health)
+	}
+}
+
+func TestJSONLogSinkCloseDrainsAcceptedWrites(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(4096), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(4096),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, code := range []string{"first", "second", "third"} {
+		if err := sink.Write(context.Background(), controller.LogEvent{Code: code}); err != nil {
+			t.Fatalf("write %q: %v", code, err)
+		}
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("log files = %d, want 1", len(entries))
+	}
+	contents, err := os.ReadFile(filepath.Join(directory, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	first, second, third := strings.Index(text, `"code":"first"`), strings.Index(text, `"code":"second"`), strings.Index(text, `"code":"third"`)
+	if first < 0 || second <= first || third <= second {
+		t.Fatalf("accepted events were not drained in FIFO order: %s", text)
+	}
+}
+
+func TestJSONLogSinkHealthReportsQueueTimeoutWithoutBlocking(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(1024), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(1024),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.writeTimeout = 2 * time.Millisecond
+	sink.closeTimeout = 2 * time.Millisecond
+	sink.mu.Lock()
+
+	// One request stalls in the worker and the next queue-capacity requests
+	// fill the buffer. Each caller returns on its own delivery deadline.
+	for index := 0; index <= structuredLogQueueCapacity; index++ {
+		_ = sink.Write(context.Background(), controller.LogEvent{Code: "fill-queue"})
+	}
+	if err := sink.Write(context.Background(), controller.LogEvent{Code: "queue-overflow"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("full-queue write error = %v, want deadline exceeded", err)
+	}
+	if health := sink.Health(); health.QueueTimeouts != 1 || health.WriteTimeouts != structuredLogQueueCapacity+1 {
+		t.Fatalf("sink health = %#v, want one queue timeout and %d write timeouts", health, structuredLogQueueCapacity+1)
+	}
+	_ = sink.Close()
+}

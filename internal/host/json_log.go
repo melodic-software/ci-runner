@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
@@ -22,6 +23,7 @@ const (
 	maximumStructuredLogEvent  = 1 << 20
 	structuredLogQueueCapacity = 64
 	structuredLogWriteTimeout  = 2 * time.Second
+	structuredLogCloseTimeout  = 2 * time.Second
 )
 
 var (
@@ -53,14 +55,29 @@ type JSONLogSink struct {
 	lifecycle    sync.RWMutex
 	closed       bool
 	requests     chan structuredLogWriteRequest
+	queueSpace   chan struct{}
 	workerDone   chan struct{}
 	closeErr     error
 	writeTimeout time.Duration
+	closeTimeout time.Duration
+
+	queueTimeouts atomic.Uint64
+	writeTimeouts atomic.Uint64
+	closeTimeouts atomic.Uint64
 }
 
 type structuredLogWriteRequest struct {
 	event  controller.LogEvent
 	result chan error
+}
+
+// JSONLogSinkHealth is a lock-free process-lifetime snapshot of diagnostic
+// delivery failures. Callers can inspect it even when the file worker is
+// stalled and therefore cannot emit its own failure diagnostic.
+type JSONLogSinkHealth struct {
+	QueueTimeouts uint64
+	WriteTimeouts uint64
+	CloseTimeouts uint64
 }
 
 func NewJSONLogSink(directory string, policy config.LogClass, cleanupEvery time.Duration, acl LogAccessController) (*JSONLogSink, error) {
@@ -85,7 +102,8 @@ func NewJSONLogSink(directory string, policy config.LogClass, cleanupEvery time.
 	sink := &JSONLogSink{
 		directory: filepath.Clean(directory), policy: policy, cleanupEvery: cleanupEvery, acl: acl,
 		now: func() time.Time { return time.Now().UTC() }, requests: make(chan structuredLogWriteRequest, structuredLogQueueCapacity),
-		workerDone: make(chan struct{}), writeTimeout: structuredLogWriteTimeout,
+		queueSpace: make(chan struct{}, 1), workerDone: make(chan struct{}),
+		writeTimeout: structuredLogWriteTimeout, closeTimeout: structuredLogCloseTimeout,
 	}
 	sink.mu.Lock()
 	err := sink.cleanupLocked(sink.now())
@@ -102,30 +120,57 @@ func (s *JSONLogSink) Write(ctx context.Context, event controller.LogEvent) erro
 	defer cancel()
 	request := structuredLogWriteRequest{event: event, result: make(chan error, 1)}
 
-	s.lifecycle.RLock()
-	if s.closed {
-		s.lifecycle.RUnlock()
-		return errors.New("controller log sink is closed")
-	}
-	select {
-	case s.requests <- request:
-		s.lifecycle.RUnlock()
-	case <-writeContext.Done():
-		s.lifecycle.RUnlock()
-		return fmt.Errorf("queue controller log event: %w", writeContext.Err())
+	for {
+		// Keep the lifecycle lock around only a nonblocking send. Close can
+		// therefore acquire the writer lock and start its own deadline even
+		// when the file worker and queue are both stalled.
+		s.lifecycle.RLock()
+		if s.closed {
+			s.lifecycle.RUnlock()
+			return errors.New("controller log sink is closed")
+		}
+		select {
+		case s.requests <- request:
+			s.lifecycle.RUnlock()
+			goto accepted
+		default:
+			s.lifecycle.RUnlock()
+		}
+		select {
+		case <-writeContext.Done():
+			s.queueTimeouts.Add(1)
+			return fmt.Errorf("queue controller log event: %w", writeContext.Err())
+		case <-s.queueSpace:
+		}
 	}
 
+accepted:
 	select {
 	case err := <-request.result:
 		return err
 	case <-writeContext.Done():
+		s.writeTimeouts.Add(1)
 		return fmt.Errorf("write controller log event: %w", writeContext.Err())
+	}
+}
+
+// Health reports diagnostic delivery failures without taking either sink
+// lock. This remains safe to call when a platform file write is hung.
+func (s *JSONLogSink) Health() JSONLogSinkHealth {
+	return JSONLogSinkHealth{
+		QueueTimeouts: s.queueTimeouts.Load(),
+		WriteTimeouts: s.writeTimeouts.Load(),
+		CloseTimeouts: s.closeTimeouts.Load(),
 	}
 }
 
 func (s *JSONLogSink) run() {
 	defer close(s.workerDone)
 	for request := range s.requests {
+		select {
+		case s.queueSpace <- struct{}{}:
+		default:
+		}
 		request.result <- s.write(request.event)
 	}
 	s.mu.Lock()
@@ -202,8 +247,13 @@ func (s *JSONLogSink) Close() error {
 		close(s.requests)
 	}
 	s.lifecycle.Unlock()
-	<-s.workerDone
-	return s.closeErr
+	select {
+	case <-s.workerDone:
+		return s.closeErr
+	case <-time.After(s.closeTimeout):
+		s.closeTimeouts.Add(1)
+		return fmt.Errorf("close controller log sink: %w", context.DeadlineExceeded)
+	}
 }
 
 func (s *JSONLogSink) closeFileLocked() error {
