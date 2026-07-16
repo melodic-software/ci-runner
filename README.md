@@ -238,6 +238,8 @@ and PID validation. For example, this relevant excerpt keeps the ordinary pool
 at 2 CPU/8 GiB while giving a CodeQL pool a larger profile:
 
 ```yaml
+schemaVersion: 2
+
 resources:
   maximumConcurrentWorkers: 5
   minimumAvailableMemoryPercent: 25
@@ -279,6 +281,8 @@ contract. An increase must additionally clear
 `memoryCapacityIncreaseMarginPercent` of that target's effective worker memory;
 inside the band, the last advertised capacity is retained. The margin applies to
 capacity growth only and is not charged as a permanent memory reservation.
+Schema version 1 remains accepted without the margin and preserves the legacy
+zero-margin behavior; the margin is required only by schema version 2.
 
 ## Credential boundary
 

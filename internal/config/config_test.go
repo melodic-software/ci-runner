@@ -7,7 +7,7 @@ import (
 )
 
 const validYAML = `
-schemaVersion: 1
+schemaVersion: 2
 host:
   id: melo-desk-001
   runnerNamePrefix: melo-desk-001
@@ -103,6 +103,19 @@ func TestLoadValidConfiguration(t *testing.T) {
 	worker, ok := cfg.WorkerForTarget("melodic-org")
 	if !ok || worker != cfg.Resources.Worker {
 		t.Fatalf("default effective worker = %#v, found=%v", worker, ok)
+	}
+}
+
+func TestLoadLegacySchemaVersionOneDefaultsMemoryCapacityIncreaseMarginToZero(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1)
+	input = strings.Replace(input, "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1)
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != LegacySchemaVersion || cfg.Resources.MemoryCapacityIncreaseMarginPct != 0 {
+		t.Fatalf("legacy config = schema %d, margin %g", cfg.SchemaVersion, cfg.Resources.MemoryCapacityIncreaseMarginPct)
 	}
 }
 
@@ -336,6 +349,9 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
       maxCapacity: 1
       priority: 1`, 1),
 		"threshold inversion":         strings.Replace(validYAML, "cpuResumePercent: 60", "cpuResumePercent: 80", 1),
+		"v1 field extension":          strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1),
+		"v2 missing margin":           strings.Replace(validYAML, "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
+		"v2 null margin":              strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: null", 1),
 		"zero memory increase margin": strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: 0", 1),
 		"malformed URL":               strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
 		"raw diagnostics bound":       strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),

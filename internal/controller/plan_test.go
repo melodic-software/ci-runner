@@ -888,8 +888,9 @@ func healthyInput() PlanInput {
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	return PlanInput{
 		Config: config.Config{
-			Host:   config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
-			GitHub: config.GitHub{Targets: []config.Target{{ID: "org", MaxCapacity: 3, WarmIdle: 1, Priority: 0}}},
+			SchemaVersion: config.SupportedSchemaVersion,
+			Host:          config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
+			GitHub:        config.GitHub{Targets: []config.Target{{ID: "org", MaxCapacity: 3, WarmIdle: 1, Priority: 0}}},
 			Resources: config.Resources{
 				MaximumConcurrentWorkers:        3,
 				Worker:                          config.Worker{Memory: config.ByteSize(8 << 30)},

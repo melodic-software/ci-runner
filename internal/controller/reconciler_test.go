@@ -1307,7 +1307,7 @@ func (l *testJobLookup) ActiveJob(_ context.Context, poolID, runnerName string) 
 
 func validControllerConfig() config.Config {
 	return config.Config{
-		SchemaVersion: 1,
+		SchemaVersion: config.SupportedSchemaVersion,
 		Host:          config.Host{ID: "melo-desk-001", RunnerNamePrefix: "melo-desk-001"},
 		Controller: config.Controller{
 			ReconcileInterval:    config.Duration{Duration: 5 * time.Second},
