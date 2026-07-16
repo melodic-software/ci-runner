@@ -419,12 +419,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			continue
 		}
 		polls.Add(1)
-		go func() {
+		go func(index int, pool PoolSnapshot) {
 			defer polls.Done()
 			advertised := pollPlan.AdvertisedCapacity[pool.TargetID]
 			stats, identity, statsErr := r.statistics(ctx, r.target(pool.TargetID), pool.Identity, advertised)
 			pollResults <- pollResult{index: index, stats: stats, identity: identity, advertised: advertised, err: statsErr}
-		}()
+		}(index, pool)
 	}
 	polls.Wait()
 	cadenceResult := pollCadenceResult{observed: checkpoint}
