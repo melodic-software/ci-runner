@@ -6,9 +6,9 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const ciWorkflowsSha = "b927829fd0f8888b4dbccccdf7b27596ba453940";
-const ciWorkflowsVersion = "v0.4.0";
-const expectedCiWorkflowsReferences = 18;
+const ciWorkflowsSha = "c36e8810832f27a2715af9422af6e191b0c5df66";
+const ciWorkflowsVersion = "v0.5.0";
+const expectedCiWorkflowsReferences = 20;
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 
@@ -101,20 +101,20 @@ test("ci-workflows references use a full SHA with one release version", () => {
   assert.equal(
     references.length,
     expectedCiWorkflowsReferences,
-    "the 17 existing ci-workflows references plus go-quality must remain inventoried",
+    "the 18 pre-gate ci-workflows references plus the do-not-merge and pr-issue-linkage gate callers must remain inventoried",
   );
   assert.equal(
     new Set(references).size,
     1,
     "ci-workflows references must move as one reviewed compatibility pin",
   );
-  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.4.0 SHA");
+  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.5.0 SHA");
   assert.equal(
     new Set(versions).size,
     1,
     "ci-workflows references must name one release version for online pin verification",
   );
-  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.4.0");
+  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.5.0");
 });
 
 test("go-quality uses the exact reusable caller contract", () => {
