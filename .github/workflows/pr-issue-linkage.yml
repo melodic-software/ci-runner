@@ -1,0 +1,24 @@
+name: pr-issue-linkage
+
+# Requires the PR body to carry a native closing keyword (or the literal
+# "No linked issue") and a non-empty "## Related" section. Thin caller of the
+# shared pr-issue-linkage reusable; the emitted required-check context is
+# `pr-issue-linkage / pr-issue-linkage`. pull_request_target runs the
+# base-branch definition (the gate reads PR body metadata only — no head code
+# runs); `edited` re-validates on a body edit. Public repo: runs on the
+# reusable's hosted default runner.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-issue-linkage:
+    permissions: {}
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@c36e8810832f27a2715af9422af6e191b0c5df66 # v0.5.0
