@@ -37,6 +37,13 @@ func (d DockerDesktopCLI) Status(ctx context.Context) (DesktopStatus, error) {
 	}
 	out, err := d.runner().Run(ctx, executable, "desktop", "status", "--format", "json")
 	if err != nil {
+		// A canceled or expired context kills the probe process, which also
+		// surfaces as *exec.ExitError; that is an aborted probe, not evidence the
+		// desktop is stopped, and misreading it would let a timed-out probe skip
+		// the Docker worker inventory. Propagate the context error instead.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DesktopStatusUnknown, ctxErr
+		}
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
 			return DesktopStatusUnknown, err

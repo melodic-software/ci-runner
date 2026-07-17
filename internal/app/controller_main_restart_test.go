@@ -57,6 +57,34 @@ func TestCompleteControllerShutdownPersistsExactRestartReceipt(t *testing.T) {
 	}
 }
 
+func TestCompleteControllerShutdownDegradedDrainCompletesRestartOnly(t *testing.T) {
+	t.Parallel()
+	writer := &recordingRestartReceiptWriter{}
+	err := completeControllerShutdown(context.Background(), controller.ErrShutdownDegraded, controller.ShutdownSignal{
+		RequestID: "restart-request-1", Reason: "degraded restart", Restart: true,
+	}, writer, 4242, "1.2.3")
+	if !errors.Is(err, ErrControllerRestartRequested) {
+		t.Fatalf("error = %v, want restart sentinel for a degraded drain under restart", err)
+	}
+	if len(writer.receipts) != 1 {
+		t.Fatalf("receipts = %#v, want one", writer.receipts)
+	}
+}
+
+func TestCompleteControllerShutdownDegradedDrainFailsClosedWithoutRestart(t *testing.T) {
+	t.Parallel()
+	writer := &recordingRestartReceiptWriter{}
+	err := completeControllerShutdown(context.Background(), controller.ErrShutdownDegraded, controller.ShutdownSignal{
+		Reason: "stop for update", Restart: false,
+	}, writer, 4242, "1.2.3")
+	if !errors.Is(err, controller.ErrShutdownDegraded) || errors.Is(err, ErrControllerRestartRequested) {
+		t.Fatalf("error = %v, want the degraded drain surfaced, not a safe-stop result", err)
+	}
+	if len(writer.receipts) != 0 {
+		t.Fatalf("receipts = %#v, want none", writer.receipts)
+	}
+}
+
 func TestCompleteControllerShutdownFailsClosedWithoutReceipt(t *testing.T) {
 	t.Parallel()
 	shutdownFailure := errors.New("runtime close failed")

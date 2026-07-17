@@ -71,6 +71,31 @@ func TestDockerDesktopStatusClassifiesNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestDockerDesktopStatusPreservesContextCancellation(t *testing.T) {
+	t.Parallel()
+	// A canceled or expired context kills the probe process, which also surfaces
+	// as an *exec.ExitError. That aborted probe must propagate the context error
+	// instead of classifying the desktop as stopped: in watchdog and shutdown
+	// paths a timed-out probe otherwise records a known-stopped desktop and
+	// skips the Docker worker inventory.
+	exitErr := exec.CommandContext(context.Background(), "cmd", "/c", "exit 1").Run()
+	var asExit *exec.ExitError
+	if !errors.As(exitErr, &asExit) {
+		t.Fatalf("prerequisite: %v is not an *exec.ExitError", exitErr)
+	}
+	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := &recordingCommandRunner{out: nil, err: exitErr}
+	status, err := DockerDesktopCLI{Runner: runner, executablePath: executable}.Status(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the context cancellation preserved", err)
+	}
+	if status != DesktopStatusUnknown {
+		t.Fatalf("status = %v, want DesktopStatusUnknown for an aborted probe", status)
+	}
+}
+
 func TestDockerInspectorPinsLocalEngineHost(t *testing.T) {
 	t.Parallel()
 	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`

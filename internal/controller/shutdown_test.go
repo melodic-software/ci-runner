@@ -55,8 +55,11 @@ func TestShutdownTerminatesOnPersistentStepErrors(t *testing.T) {
 	go func() { done <- harness.controller.Shutdown(context.Background()) }()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Shutdown returned %v, want nil so a restart signal still completes its handshake", err)
+		// The bounded escape must not present an unverified drain as a clean
+		// stop: restart handling accepts the sentinel, everything else fails
+		// closed on it.
+		if !errors.Is(err, ErrShutdownDegraded) {
+			t.Fatalf("Shutdown returned %v, want ErrShutdownDegraded for the bounded escape", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown did not terminate under persistent Step errors")

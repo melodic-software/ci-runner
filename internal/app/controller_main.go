@@ -797,7 +797,16 @@ func completeControllerShutdown(
 	processID uint32,
 	version string,
 ) error {
-	if shutdownErr != nil || !signal.Restart {
+	// A degraded drain (bounded escape after persistent Step errors) is
+	// completable for restart only: the scheduled task starts a fresh controller
+	// either way, and refusing the restart sentinel would strand the wedge the
+	// escape exists to break. Every other shutdown flavor fails closed -- a
+	// stop-for-update or process interrupt must not report an unverified drain
+	// as a safe stop.
+	if shutdownErr != nil && (!signal.Restart || !errors.Is(shutdownErr, controller.ErrShutdownDegraded)) {
+		return shutdownErr
+	}
+	if !signal.Restart {
 		return shutdownErr
 	}
 	if restartReceipts == nil || signal.RequestID == "" || processID == 0 || version == "" {

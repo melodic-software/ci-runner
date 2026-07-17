@@ -39,9 +39,16 @@ func (r *Reconciler) isShuttingDown() bool {
 // intentionally stopped, or an external dependency is down) can make Step return
 // an error forever. Rather than loop until the process is externally killed, the
 // controller terminates the drain after this many consecutive failures. A clean
-// Step resets the count, so transient blips never trip it. Termination returns
-// no error so a controller-restart signal still completes its restart handshake.
+// Step resets the count, so transient blips never trip it.
 const shutdownDegradedStepBudget = 3
+
+// ErrShutdownDegraded reports that Shutdown terminated through the bounded
+// degraded escape: the drain was never verified as complete because Step kept
+// erroring. Restart handling treats it as completable -- the scheduled task
+// starts a fresh controller either way -- while every other shutdown flavor
+// (disable, stop-for-update, process interrupt) must fail closed rather than
+// report an unverified drain as a safe stop.
+var ErrShutdownDegraded = errors.New("shutdown drain degraded: consecutive reconcile steps failed before the drain was verified")
 
 // Shutdown advertises zero capacity, conditionally removes idle workers, waits
 // for busy work to finish naturally, then closes message sessions and the
@@ -51,6 +58,7 @@ const shutdownDegradedStepBudget = 3
 func (r *Reconciler) Shutdown(ctx context.Context) error {
 	r.BeginShutdown()
 	degradedSteps := 0
+	degraded := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -64,6 +72,7 @@ func (r *Reconciler) Shutdown(ctx context.Context) error {
 		} else {
 			degradedSteps++
 			if degradedSteps >= shutdownDegradedStepBudget {
+				degraded = true
 				break
 			}
 		}
@@ -73,6 +82,9 @@ func (r *Reconciler) Shutdown(ctx context.Context) error {
 	}
 
 	var closeErrors []error
+	if degraded {
+		closeErrors = append(closeErrors, ErrShutdownDegraded)
+	}
 	if closer, ok := r.deps.ScaleSets.(interface{ Close(context.Context) error }); ok {
 		closeErrors = append(closeErrors, closer.Close(ctx))
 	}
