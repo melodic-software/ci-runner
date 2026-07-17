@@ -37,7 +37,25 @@ func (d DockerDesktopCLI) Status(ctx context.Context) (DesktopStatus, error) {
 	}
 	out, err := d.runner().Run(ctx, executable, "desktop", "status", "--format", "json")
 	if err != nil {
-		return DesktopStatusUnknown, err
+		// A canceled or expired context kills the probe process, which also
+		// surfaces as *exec.ExitError; that is an aborted probe, not evidence the
+		// desktop is stopped, and misreading it would let a timed-out probe skip
+		// the Docker worker inventory. Propagate the context error instead.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DesktopStatusUnknown, ctxErr
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return DesktopStatusUnknown, err
+		}
+		// `docker desktop status` exits non-zero precisely when Docker Desktop is
+		// not running -- the same signal EngineReachable maps to a factual state
+		// rather than a hard error. Trust a concrete state named in the captured
+		// output; otherwise a non-zero exit is itself the stopped signal.
+		if status, parseErr := parseDesktopStatus(out); parseErr == nil {
+			return status, nil
+		}
+		return DesktopStatusStopped, nil
 	}
 	return parseDesktopStatus(out)
 }

@@ -362,7 +362,16 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			workers = latest
 		}
 	}
-	if observationFailed {
+	// The host resource monitor reads physical RAM and CPU independent of Docker,
+	// so a valid observation stays valid even when a Docker-side probe fails. When
+	// the desktop is known to be down (stopped by gaming teardown, or not yet
+	// started), preserve that real observation rather than zeroing it: an invalid
+	// snapshot would trip evaluateResourceGate closed and block the StartDesktop
+	// bootstrap that re-enable depends on, and no worker scheduling happens while
+	// the desktop is down anyway. A running or unknown-state desktop still fails
+	// closed, so a stale inventory can never admit work against an empty snapshot.
+	desktopKnownDown := desktopStatusKnown && !desktop.DesktopRunning && !desktop.EngineReachable
+	if observationFailed && !desktopKnownDown {
 		resources = model.ResourceSnapshot{} // invalid observation fails closed in BuildPlan
 	}
 	jobStateKnown := true

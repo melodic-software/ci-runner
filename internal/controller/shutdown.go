@@ -33,19 +33,48 @@ func (r *Reconciler) isShuttingDown() bool {
 	return r.shuttingDown
 }
 
+// shutdownDegradedStepBudget bounds how many consecutive erroring drain Steps
+// Shutdown tolerates before terminating. A clean drain is verified only through
+// Step, but persistently failing probes (for example after Docker Desktop was
+// intentionally stopped, or an external dependency is down) can make Step return
+// an error forever. Rather than loop until the process is externally killed, the
+// controller terminates the drain after this many consecutive failures. A clean
+// Step resets the count, so transient blips never trip it.
+const shutdownDegradedStepBudget = 3
+
+// ErrShutdownDegraded reports that Shutdown terminated through the bounded
+// degraded escape: the drain was never verified as complete because Step kept
+// erroring. Restart handling treats it as completable -- the scheduled task
+// starts a fresh controller either way -- while every other shutdown flavor
+// (disable, stop-for-update, process interrupt) must fail closed rather than
+// report an unverified drain as a safe stop.
+var ErrShutdownDegraded = errors.New("shutdown drain degraded: consecutive reconcile steps failed before the drain was verified")
+
 // Shutdown advertises zero capacity, conditionally removes idle workers, waits
 // for busy work to finish naturally, then closes message sessions and the
 // worker runtime. Cancellation leaves active work intact and never implies a
-// force stop.
+// force stop. A Step that succeeds but is not yet drained keeps waiting
+// indefinitely for active work; only persistent Step errors are bounded.
 func (r *Reconciler) Shutdown(ctx context.Context) error {
 	r.BeginShutdown()
+	degradedSteps := 0
+	degraded := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		result, err := r.Step(ctx)
-		if err == nil && shutdownDrained(result.Observed, r.config.GitHub.Targets) {
-			break
+		if err == nil {
+			degradedSteps = 0
+			if shutdownDrained(result.Observed, r.config.GitHub.Targets) {
+				break
+			}
+		} else {
+			degradedSteps++
+			if degradedSteps >= shutdownDegradedStepBudget {
+				degraded = true
+				break
+			}
 		}
 		if err := r.deps.Clock.Sleep(ctx, r.config.Controller.ShutdownPollInterval.Duration); err != nil {
 			return err
@@ -53,6 +82,9 @@ func (r *Reconciler) Shutdown(ctx context.Context) error {
 	}
 
 	var closeErrors []error
+	if degraded {
+		closeErrors = append(closeErrors, ErrShutdownDegraded)
+	}
 	if closer, ok := r.deps.ScaleSets.(interface{ Close(context.Context) error }); ok {
 		closeErrors = append(closeErrors, closer.Close(ctx))
 	}

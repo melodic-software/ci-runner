@@ -171,14 +171,19 @@ func BuildPlan(input PlanInput) Plan {
 		plan.Phase = model.PhasePowerSuspended
 		return plan
 	}
-	if !resourceHealthy {
-		applyOutstandingAssignments(&plan, input, workersByPool, targetIDs, activeWorkers)
-		plan.Phase = model.PhaseResourceConstrained
-		return plan
-	}
+	// Docker Desktop is a host prerequisite, not a worker-admission decision, so
+	// its start must precede the resource gate: a blocked gate (for example the
+	// invalid observation that intentional teardown produces) must never prevent
+	// the start that re-enable depends on. The gate still fails closed for worker
+	// scheduling below once the desktop is up.
 	if !input.Desktop.DesktopRunning || !input.Desktop.EngineReachable {
 		plan.StartDesktop = true
 		plan.Phase = model.PhaseStarting
+		return plan
+	}
+	if !resourceHealthy {
+		applyOutstandingAssignments(&plan, input, workersByPool, targetIDs, activeWorkers)
+		plan.Phase = model.PhaseResourceConstrained
 		return plan
 	}
 
