@@ -19,7 +19,11 @@ type DoctorCheck struct {
 	Name    string `json:"name"`
 	Healthy bool   `json:"healthy"`
 	Skipped bool   `json:"skipped,omitempty"`
-	Detail  string `json:"detail"`
+	// Advisory marks a check whose unhealthy result is expected operational
+	// state to surface, not a fault: it renders as WARN and never degrades the
+	// doctor exit code.
+	Advisory bool   `json:"advisory,omitempty"`
+	Detail   string `json:"detail"`
 }
 
 func (a *Application) doctor(ctx context.Context, args []string) int {
@@ -157,16 +161,19 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	} else {
 		for _, check := range checks {
 			status := "PASS"
-			if check.Skipped {
+			switch {
+			case check.Skipped:
 				status = "SKIP"
-			} else if !check.Healthy {
+			case !check.Healthy && check.Advisory:
+				status = "WARN"
+			case !check.Healthy:
 				status = "FAIL"
 			}
 			writef(a.out, "[%s] %s: %s\n", status, check.Name, check.Detail)
 		}
 	}
 	for _, check := range checks {
-		if !check.Skipped && !check.Healthy {
+		if !check.Skipped && !check.Advisory && !check.Healthy {
 			return ExitDegraded
 		}
 	}

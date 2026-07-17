@@ -135,6 +135,59 @@ func TestDoctorIncludeElevatedWarnsBeforeInspectionAndPreservesJSON(t *testing.T
 	}
 }
 
+func TestDoctorAdvisoryPendingRebootWarnsWithoutDegradingExitCode(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{
+		{Name: "pending-os-reboot", Advisory: true, Detail: "OS reboot pending (component-servicing)"},
+	}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
+		t.Fatalf("advisory pending reboot degraded doctor exit code to %d; output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "[WARN] pending-os-reboot: OS reboot pending (component-servicing)") {
+		t.Fatalf("advisory pending reboot was not surfaced as WARN:\n%s", out.String())
+	}
+}
+
+func TestDoctorJSONPreservesAdvisoryClassification(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{
+		{Name: "pending-os-reboot", Advisory: true, Detail: "OS reboot pending (windows-update)"},
+	}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json"}); code != ExitOK {
+		t.Fatalf("advisory pending reboot degraded JSON doctor exit code to %d; output:\n%s", code, out.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, out.String())
+	}
+	check := doctorCheckNamed(t, result.Checks, "pending-os-reboot")
+	if !check.Advisory || check.Healthy || check.Skipped {
+		t.Fatalf("JSON pending reboot check = %#v, want an unhealthy advisory", check)
+	}
+}
+
 func TestDoctorRejectsPersistedReadyStateWhenControllerIsUnavailable(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)

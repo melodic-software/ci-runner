@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/melodic-software/ci-runner/internal/host"
 )
 
 type recordingDoctorBitLocker struct {
@@ -44,6 +46,64 @@ func TestLocalDoctorInspectorRunsAndEnforcesBitLockerWhenExplicitlyIncluded(t *t
 	}
 	if check.Skipped || check.Healthy || !strings.Contains(check.Detail, "protection is off") {
 		t.Fatalf("opted-in BitLocker failure was weakened: %#v", check)
+	}
+}
+
+func TestLocalDoctorInspectorReportsPendingRebootAsNonFailingAdvisory(t *testing.T) {
+	t.Parallel()
+	inspector := &LocalDoctorInspector{PendingReboot: func() (host.PendingReboot, error) {
+		return host.PendingReboot{ComponentServicing: true, WindowsUpdate: true}, nil
+	}}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "pending-os-reboot")
+
+	if !check.Advisory || check.Healthy || check.Skipped {
+		t.Fatalf("pending reboot check = %#v, want an unhealthy non-skipped advisory", check)
+	}
+	if !strings.Contains(check.Detail, "component-servicing") || !strings.Contains(check.Detail, "windows-update") {
+		t.Fatalf("pending reboot detail %q does not name the fired signals", check.Detail)
+	}
+}
+
+func TestLocalDoctorInspectorPassesPendingRebootWhenNoSignalFires(t *testing.T) {
+	t.Parallel()
+	inspector := &LocalDoctorInspector{PendingReboot: func() (host.PendingReboot, error) {
+		return host.PendingReboot{}, nil
+	}}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "pending-os-reboot")
+
+	if !check.Healthy || !check.Advisory || check.Skipped {
+		t.Fatalf("clean pending reboot check = %#v, want a healthy advisory", check)
+	}
+}
+
+func TestLocalDoctorInspectorKeepsPendingRebootProbeErrorsAdvisory(t *testing.T) {
+	t.Parallel()
+	inspector := &LocalDoctorInspector{PendingReboot: func() (host.PendingReboot, error) {
+		return host.PendingReboot{FileRenameOperations: true}, errors.New("windows update: access denied")
+	}}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "pending-os-reboot")
+
+	if !check.Advisory || check.Healthy || check.Skipped {
+		t.Fatalf("partially failed pending reboot check = %#v, want an unhealthy advisory", check)
+	}
+	if !strings.Contains(check.Detail, "pending-file-renames") || !strings.Contains(check.Detail, "access denied") {
+		t.Fatalf("pending reboot detail %q hides the fired signal or the probe failure", check.Detail)
+	}
+}
+
+func TestLocalDoctorInspectorSkipsPendingRebootOffWindows(t *testing.T) {
+	t.Parallel()
+	inspector := &LocalDoctorInspector{PendingReboot: func() (host.PendingReboot, error) {
+		return host.PendingReboot{}, host.ErrPendingRebootUnsupported
+	}}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "pending-os-reboot")
+
+	if !check.Skipped || !strings.Contains(check.Detail, "Windows") {
+		t.Fatalf("unsupported pending reboot check = %#v, want an explicit non-failing skip", check)
 	}
 }
 

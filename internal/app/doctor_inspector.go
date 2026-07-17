@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/buildinfo"
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/secret"
 )
 
@@ -28,12 +30,13 @@ type doctorSecretInspector interface {
 type doctorEngineProbe func(context.Context) (string, string, error)
 
 type LocalDoctorInspector struct {
-	Config    config.Config
-	ACL       doctorACLVerifier
-	BitLocker secret.BitLockerVerifier
-	Secrets   doctorSecretInspector
-	Engine    doctorEngineProbe
-	Now       func() time.Time
+	Config        config.Config
+	ACL           doctorACLVerifier
+	BitLocker     secret.BitLockerVerifier
+	Secrets       doctorSecretInspector
+	Engine        doctorEngineProbe
+	PendingReboot func() (host.PendingReboot, error)
+	Now           func() time.Time
 }
 
 func NewLocalDoctorInspector(
@@ -45,7 +48,8 @@ func NewLocalDoctorInspector(
 ) *LocalDoctorInspector {
 	return &LocalDoctorInspector{
 		Config: cfg, ACL: acl, BitLocker: bitLocker, Secrets: secrets, Engine: engine,
-		Now: func() time.Time { return time.Now().UTC() },
+		PendingReboot: host.ProbePendingReboot,
+		Now:           func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -153,12 +157,43 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 		checks = append(checks, DoctorCheck{Name: "local-docker-engine", Healthy: healthy, Detail: detail})
 	}
 
+	checks = append(checks, i.pendingRebootCheck())
+
 	checks = append(checks, DoctorCheck{
 		Name:    "github-jit-proof",
 		Skipped: true,
 		Detail:  "not performed by doctor because JIT creation mutates GitHub runner inventory; the first enable on a rolling-host rollout performs this proof under real traffic",
 	})
 	return checks
+}
+
+// pendingRebootCheck surfaces pending-OS-reboot state as advisory only: with
+// updates auto-installed but never auto-rebooted while a session exists, a
+// pending reboot is the expected standing residual the operator finishes
+// during a deliberate drain window, not a fault.
+func (i *LocalDoctorInspector) pendingRebootCheck() DoctorCheck {
+	check := DoctorCheck{Name: "pending-os-reboot", Advisory: true}
+	if i.PendingReboot == nil {
+		check.Detail = "pending-reboot probe is unavailable"
+		return check
+	}
+	pending, err := i.PendingReboot()
+	if errors.Is(err, host.ErrPendingRebootUnsupported) {
+		return DoctorCheck{Name: check.Name, Skipped: true, Detail: err.Error()}
+	}
+	switch {
+	case pending.Pending():
+		check.Detail = fmt.Sprintf("OS reboot pending (%s); expected under the never-auto-reboot update policy, finish it during the next deliberate drain window", strings.Join(pending.Signals(), ", "))
+		if err != nil {
+			check.Detail += "; partial probe failure: " + err.Error()
+		}
+	case err != nil:
+		check.Detail = err.Error()
+	default:
+		check.Healthy = true
+		check.Detail = "no reboot-pending signal from component servicing, session-manager file renames, or Windows Update"
+	}
+	return check
 }
 
 func (i *LocalDoctorInspector) verifyACLTree(root string) (int, error) {
