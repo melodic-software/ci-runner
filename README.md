@@ -134,6 +134,13 @@ explicitly enables the full BitLocker verification and writes a warning before
 the verifier can open an Administrator UAC prompt; use it only in an interactive
 session where that prompt is expected.
 
+`host doctor` also surfaces pending-OS-reboot state from the standard registry
+signals (component servicing, session-manager pending file renames, and Windows
+Update). Because updates auto-install but the host never auto-reboots while a
+session exists, a pending reboot is expected operational state the operator
+finishes during a deliberate drain window: the check is advisory, renders as
+`WARN`, and never degrades the doctor exit code.
+
 The windowless `ci-runner-controller.exe` runs from a current-user logon task
 because Docker Desktop is user-session software. A controller restart first
 uses the authenticated control plane to bind the shutdown reservation to the
