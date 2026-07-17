@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	statefs "github.com/melodic-software/ci-runner/internal/state/fs"
@@ -17,6 +18,11 @@ import (
 const (
 	jobsFilename    = "jobs.json"
 	maximumJobState = 8 << 20
+	// The load tolerance exceeds the save cap so a file that breached the cap
+	// under an older controller (or was restored from a backup) still loads;
+	// the next save compacts it back under the cap instead of bricking the
+	// index until someone hand-edits state.
+	maximumJobStateLoad = 4 * maximumJobState
 )
 
 type FileStore struct {
@@ -195,12 +201,12 @@ func (s *FileStore) loadUnlocked() (_ Catalog, resultErr error) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("close jobs.json: %w", closeErr))
 		}
 	}()
-	contents, err := io.ReadAll(io.LimitReader(file, maximumJobState+1))
+	contents, err := io.ReadAll(io.LimitReader(file, maximumJobStateLoad+1))
 	if err != nil {
 		return Catalog{}, fmt.Errorf("read jobs.json: %w", err)
 	}
-	if len(contents) > maximumJobState {
-		return Catalog{}, fmt.Errorf("jobs.json exceeds the %d-byte safety limit", maximumJobState)
+	if len(contents) > maximumJobStateLoad {
+		return Catalog{}, fmt.Errorf("jobs.json exceeds the %d-byte load safety limit", maximumJobStateLoad)
 	}
 	var catalog Catalog
 	decoder := json.NewDecoder(bytes.NewReader(contents))
@@ -231,13 +237,9 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	if err := s.acl.Verify(s.directory); err != nil {
 		return fmt.Errorf("verify jobs state directory ACL: %w", err)
 	}
-	encoded, err := json.MarshalIndent(catalog, "", "  ")
+	encoded, err := encodeWithinCapacity(&catalog)
 	if err != nil {
-		return fmt.Errorf("encode jobs.json: %w", err)
-	}
-	encoded = append(encoded, '\n')
-	if len(encoded) > maximumJobState {
-		return fmt.Errorf("jobs.json exceeds the %d-byte safety limit", maximumJobState)
+		return err
 	}
 	temporary, err := os.CreateTemp(s.directory, ".jobs.json-*")
 	if err != nil {
@@ -284,6 +286,79 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 		return fmt.Errorf("flush jobs state directory: %w", err)
 	}
 	return nil
+}
+
+// encodeWithinCapacity marshals the catalog, compacting the oldest tombstoned
+// records when the encoding would exceed the save cap. A tombstoned record is
+// dead bookkeeping whose only remaining value is retention history, so
+// capacity pressure outranks the retention window: without this, jobs.json
+// reaches the safety limit, every subsequent index write fails permanently,
+// and worker finalization retries livelock reconciliation. The cap can then
+// only be exceeded by live records alone, which the per-worker record model
+// makes unreachable at supported worker counts.
+func encodeWithinCapacity(catalog *Catalog) ([]byte, error) {
+	for {
+		encoded, err := json.MarshalIndent(catalog, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("encode jobs.json: %w", err)
+		}
+		encoded = append(encoded, '\n')
+		if len(encoded) <= maximumJobState {
+			return encoded, nil
+		}
+		if compactOldestTombstones(catalog, len(encoded)-maximumJobState, len(encoded)) == 0 {
+			return nil, fmt.Errorf("jobs.json exceeds the %d-byte safety limit with no tombstoned records left to compact", maximumJobState)
+		}
+	}
+}
+
+// compactOldestTombstones removes the oldest tombstoned records, sized from
+// the average encoded record so one pass usually suffices; the caller's
+// re-encode loop guarantees convergence regardless.
+func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int) (removed int) {
+	if len(catalog.Records) == 0 {
+		return 0
+	}
+	tombstoned := make([]int, 0, len(catalog.Records))
+	for i, record := range catalog.Records {
+		if record.TombstonedAt != nil {
+			tombstoned = append(tombstoned, i)
+		}
+	}
+	if len(tombstoned) == 0 {
+		return 0
+	}
+	sort.Slice(tombstoned, func(a, b int) bool {
+		left, right := catalog.Records[tombstoned[a]], catalog.Records[tombstoned[b]]
+		if !left.TombstonedAt.Equal(*right.TombstonedAt) {
+			return left.TombstonedAt.Before(*right.TombstonedAt)
+		}
+		if left.PoolID != right.PoolID {
+			return left.PoolID < right.PoolID
+		}
+		return left.RunnerName < right.RunnerName
+	})
+	averageRecordBytes := encodedBytes / len(catalog.Records)
+	if averageRecordBytes < 1 {
+		averageRecordBytes = 1
+	}
+	dropCount := overshootBytes/averageRecordBytes + 1
+	if dropCount > len(tombstoned) {
+		dropCount = len(tombstoned)
+	}
+	drop := make(map[int]struct{}, dropCount)
+	for _, index := range tombstoned[:dropCount] {
+		drop[index] = struct{}{}
+	}
+	kept := catalog.Records[:0]
+	for i, record := range catalog.Records {
+		if _, dropped := drop[i]; dropped {
+			continue
+		}
+		kept = append(kept, record)
+	}
+	catalog.Records = kept
+	return dropCount
 }
 
 var _ Store = (*FileStore)(nil)
