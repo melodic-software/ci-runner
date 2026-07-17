@@ -415,6 +415,63 @@ func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.
 	}
 }
 
+func TestSupersededListenerPollIsNotRecordedAsStatisticsError(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	now := harness.clock.Now()
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org",
+			TotalAssignedJobs: 3, MaxCapacity: 3, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 3}
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 41 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	type outcome struct {
+		result ReconcileResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := harness.controller.Step(context.Background())
+		done <- outcome{result: result, err: err}
+	}()
+	waitForSignal(t, blocking.entered, "memory-funded listener poll did not begin")
+
+	// Withdraw memory below the advertised capacity. watchPollCadence cancels the
+	// open long poll with errReconcileInputsChanged; the in-flight poll unblocks
+	// with context.Canceled (firstBlockingScaleSet returns ctx.Err()) and Step
+	// reruns. The canceled poll must not surface as a scale-set failure.
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("benign supersession returned an error: %v", got.err)
+		}
+		if got.result.Observed.Phase == model.PhaseDegraded {
+			t.Fatalf("benign supersession forced a degraded phase: %#v", got.result.Observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("memory withdrawal did not restart the listener poll")
+	}
+	if !logs.contains("listener-poll-superseded") {
+		t.Fatalf("supersession precondition was not exercised: %s", logs)
+	}
+	if logs.contains("scale-set-statistics-error") {
+		t.Fatalf("benign supersession was misreported as a scale-set poll failure: %s", logs)
+	}
+}
+
 func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -587,14 +644,19 @@ type mutableResources struct {
 }
 
 func (s *testLogSink) contains(code string) bool {
+	_, found := s.find(code)
+	return found
+}
+
+func (s *testLogSink) find(code string) (LogEvent, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, event := range s.events {
 		if event.Code == code {
-			return true
+			return event, true
 		}
 	}
-	return false
+	return LogEvent{}, false
 }
 
 type blockingPollFailure struct {

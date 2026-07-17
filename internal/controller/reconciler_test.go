@@ -1865,6 +1865,52 @@ func (p *countingPower) Snapshot(context.Context) (model.PowerSnapshot, error) {
 }
 func (p *countingPower) callCount() int { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
 
+func TestGenuinePollFailureRecordsStatisticsErrorWithUnderlyingCause(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	// A forbidden classification is non-retryable (no backoff loop) and does not
+	// trigger the not-found recreate path, so the drain loop records it directly.
+	harness.scaleSets.Errors["statistics:1"] = &scaleset.Error{
+		Kind: scaleset.ErrorForbidden, StatusCode: 403, Operation: "statistics",
+		Err: errors.New(`activity_id="act-123" github_request_id="req-xyz"`),
+	}
+
+	result, _ := harness.controller.Step(context.Background())
+
+	assertProblemCode(t, result.Observed.Problems, "scale-set-statistics-error")
+	if result.Observed.Phase != model.PhaseDegraded {
+		t.Fatalf("genuine poll failure did not degrade the phase: %#v", result.Observed)
+	}
+	event, found := logs.find("scale-set-statistics-error")
+	if !found {
+		t.Fatalf("genuine poll failure was not logged: %s", logs)
+	}
+	if !strings.Contains(event.Message, "HTTP 403") {
+		t.Fatalf("poll failure message dropped the classified status: %q", event.Message)
+	}
+	if !strings.Contains(event.Cause, "github_request_id") || !strings.Contains(event.Cause, "req-xyz") {
+		t.Fatalf("poll failure log dropped the underlying GitHub detail: %q", event.Cause)
+	}
+}
+
+func TestPollSupersededConsultsOnlyTheResultError(t *testing.T) {
+	t.Parallel()
+	// With multiple ready pools, the cadence watcher's cancellation sets the step
+	// cause for every queued result; a genuine failure from another pool must not
+	// inherit benign-supersession treatment from that shared cause.
+	if pollSuperseded(&scaleset.Error{Kind: scaleset.ErrorTransport, Operation: "statistics", Err: errors.New("connection reset")}) {
+		t.Fatal("a genuine scale-set failure was classified as a benign supersession")
+	}
+	if !pollSuperseded(context.Canceled) {
+		t.Fatal("a canceled in-flight poll was not classified as a supersession")
+	}
+	if !pollSuperseded(fmt.Errorf("poll: %w", context.Canceled)) {
+		t.Fatal("a wrapped cancellation was not classified as a supersession")
+	}
+}
+
 type delayedScaleSet struct {
 	scaleset.Client
 	mu    sync.Mutex

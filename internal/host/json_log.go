@@ -189,11 +189,13 @@ func (s *JSONLogSink) write(event controller.LogEvent) error {
 		At       time.Time `json:"at"`
 		Code     string    `json:"code"`
 		Message  string    `json:"message"`
+		Cause    string    `json:"cause,omitempty"`
 		Source   string    `json:"source,omitempty"`
 		PoolID   string    `json:"poolId,omitempty"`
 		WorkerID string    `json:"workerId,omitempty"`
 	}{
 		At: event.At.UTC(), Code: redactLogValue(event.Code), Message: redactLogValue(event.Message),
+		Cause:  redactLogValue(event.Cause),
 		Source: redactLogValue(event.Source), PoolID: redactLogValue(event.PoolID), WorkerID: redactLogValue(event.WorkerID),
 	}
 	encoded, err := json.Marshal(record)
@@ -202,7 +204,11 @@ func (s *JSONLogSink) write(event controller.LogEvent) error {
 	}
 	if len(encoded) > maximumStructuredLogEvent {
 		record.Code = truncateLogValue(record.Code, 256)
-		record.Message = truncateLogValue(record.Message, maximumStructuredLogEvent/2)
+		// Message and Cause each cap at a quarter of the ceiling so their combined
+		// worst case, plus the small fields and JSON overhead, still fits after the
+		// single retry below.
+		record.Message = truncateLogValue(record.Message, maximumStructuredLogEvent/4)
+		record.Cause = truncateLogValue(record.Cause, maximumStructuredLogEvent/4)
 		record.Source = truncateLogValue(record.Source, 256)
 		record.PoolID = truncateLogValue(record.PoolID, 256)
 		record.WorkerID = truncateLogValue(record.WorkerID, 256)

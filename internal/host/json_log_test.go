@@ -80,6 +80,44 @@ func TestJSONLogSinkRotatesRetainsAndRedacts(t *testing.T) {
 	}
 }
 
+func TestJSONLogSinkEmitsAndRedactsCause(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(4096), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(8192),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Write(context.Background(), controller.LogEvent{
+		Code:    "scale-set-statistics-error",
+		Message: "scale-set poll failed (forbidden, HTTP 403)",
+		Cause:   `github_request_id="req-visible" token=ghs_abcdefghijklmnopqrstuvwxyz012345`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var combined strings.Builder
+	for _, entry := range entries {
+		contents, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined.Write(contents)
+	}
+	if !strings.Contains(combined.String(), `"cause"`) || !strings.Contains(combined.String(), "req-visible") {
+		t.Fatalf("underlying cause was not emitted to the structured log: %s", combined.String())
+	}
+	if strings.Contains(combined.String(), "ghs_abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("cause field bypassed secret redaction: %s", combined.String())
+	}
+}
+
 func TestJSONLogSinkWritesAfterContextCancellation(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "controller")
 	sink, err := NewJSONLogSink(directory, config.LogClass{
