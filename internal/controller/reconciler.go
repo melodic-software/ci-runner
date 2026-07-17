@@ -493,7 +493,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pool := &pools[result.index]
 		if result.err != nil {
 			pool.Ready = false
-			if pollSuperseded(ctx, result.err) {
+			if pollSuperseded(result.err) {
 				// The cadence watcher cancels an open listener long poll on purpose
 				// (errReconcileInputsChanged) when reconciliation safety inputs
 				// change, and Step reruns. The in-flight poll then unblocks with
@@ -1177,10 +1177,12 @@ func sameAdmissionIntent(left, right model.DesiredState) bool {
 // designed supersession rather than a GitHub or transport failure.
 // watchPollCadence cancels the open poll with errReconcileInputsChanged when
 // reconciliation safety inputs change; the in-flight poll then returns
-// context.Canceled and Step reruns. A genuine failure is a *scaleset.Error and
-// never a bare cancellation, so neither form is misreported as a poll failure.
-func pollSuperseded(ctx context.Context, err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(context.Cause(ctx), errReconcileInputsChanged)
+// context.Canceled and Step reruns. Only the result's own error is consulted:
+// once the cadence watcher cancels, the step cancellation cause is set for
+// every queued result, and a genuine *scaleset.Error from another pool must
+// still surface its log line even though the step result is discarded.
+func pollSuperseded(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 func safeScaleSetMessage(operation string, err error) string {

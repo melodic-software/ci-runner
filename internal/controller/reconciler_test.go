@@ -1872,6 +1872,22 @@ func TestGenuinePollFailureRecordsStatisticsErrorWithUnderlyingCause(t *testing.
 	}
 }
 
+func TestPollSupersededConsultsOnlyTheResultError(t *testing.T) {
+	t.Parallel()
+	// With multiple ready pools, the cadence watcher's cancellation sets the step
+	// cause for every queued result; a genuine failure from another pool must not
+	// inherit benign-supersession treatment from that shared cause.
+	if pollSuperseded(&scaleset.Error{Kind: scaleset.ErrorTransport, Operation: "statistics", Err: errors.New("connection reset")}) {
+		t.Fatal("a genuine scale-set failure was classified as a benign supersession")
+	}
+	if !pollSuperseded(context.Canceled) {
+		t.Fatal("a canceled in-flight poll was not classified as a supersession")
+	}
+	if !pollSuperseded(fmt.Errorf("poll: %w", context.Canceled)) {
+		t.Fatal("a wrapped cancellation was not classified as a supersession")
+	}
+}
+
 type delayedScaleSet struct {
 	scaleset.Client
 	mu    sync.Mutex
