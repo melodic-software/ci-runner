@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -315,6 +316,136 @@ func containsPath(paths []string, expected string) bool {
 func newFileStoreForTest(t *testing.T, directory string) *FileStore {
 	t.Helper()
 	return newFileStoreWithDependencies(t, directory, &testLocker{})
+}
+
+func TestSaveCompactsOldestTombstonesUnderCapacityPressure(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	store := newFileStoreForTest(t, directory)
+	now := time.Unix(500, 0).UTC()
+	store.now = func() time.Time { return now }
+	// A synthetic catalog just over the save cap: mostly old tombstones plus
+	// one live record and one fresh tombstone that must both survive.
+	catalog := Catalog{SchemaVersion: SchemaVersion}
+	padding := strings.Repeat("x", 512)
+	recordCount := maximumJobState/len(padding) + 64
+	for index := range recordCount {
+		tombstone := now.Add(-time.Duration(recordCount-index) * time.Minute)
+		catalog.Records = append(catalog.Records, Record{
+			PoolID: "org", RunnerName: fmt.Sprintf("runner-%07d", index),
+			JobID:     fmt.Sprintf("job-%07d-%s", index, padding),
+			UpdatedAt: now, TombstonedAt: &tombstone,
+		})
+	}
+	live := Record{PoolID: "org", RunnerName: "runner-live", JobID: "job-live", JobStartedAt: now, UpdatedAt: now}
+	catalog.Records = append(catalog.Records, live)
+	Sort(&catalog)
+	if encoded, err := json.MarshalIndent(catalog, "", "  "); err != nil {
+		t.Fatal(err)
+	} else if len(encoded) <= maximumJobState {
+		t.Fatalf("fixture must exceed the save cap, got %d bytes", len(encoded))
+	}
+	if err := store.saveUnlocked(catalog); err != nil {
+		t.Fatalf("save under capacity pressure = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(directory, jobsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maximumJobState {
+		t.Fatalf("saved jobs.json is %d bytes, above the %d-byte cap", info.Size(), maximumJobState)
+	}
+	reloaded, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	survivors := make(map[string]Record, len(reloaded.Records))
+	for _, record := range reloaded.Records {
+		survivors[record.RunnerName] = record
+	}
+	if _, ok := survivors["runner-live"]; !ok {
+		t.Fatal("live record was compacted away")
+	}
+	newestTombstoneName := fmt.Sprintf("runner-%07d", recordCount-1)
+	if _, ok := survivors[newestTombstoneName]; !ok {
+		t.Fatal("newest tombstone was compacted before older ones")
+	}
+	oldestTombstoneName := "runner-0000000"
+	if _, ok := survivors[oldestTombstoneName]; ok {
+		t.Fatal("oldest tombstone survived capacity compaction")
+	}
+	if len(reloaded.Records) >= recordCount+1 {
+		t.Fatalf("no records were compacted: %d", len(reloaded.Records))
+	}
+}
+
+func TestSaveFailsClosedWhenLiveRecordsAloneExceedCapacity(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	store := newFileStoreForTest(t, directory)
+	now := time.Unix(600, 0).UTC()
+	catalog := Catalog{SchemaVersion: SchemaVersion}
+	padding := strings.Repeat("y", 512)
+	recordCount := maximumJobState/len(padding) + 64
+	for index := range recordCount {
+		catalog.Records = append(catalog.Records, Record{
+			PoolID: "org", RunnerName: fmt.Sprintf("runner-%07d", index),
+			JobID:        fmt.Sprintf("job-%07d-%s", index, padding),
+			JobStartedAt: now, UpdatedAt: now,
+		})
+	}
+	Sort(&catalog)
+	err := store.saveUnlocked(catalog)
+	if err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("expected safety-limit failure, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(directory, jobsFilename)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed save must not leave jobs.json behind: %v", statErr)
+	}
+}
+
+func TestLoadToleratesFilesAboveTheSaveCapAndNextSaveCompacts(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	store := newFileStoreForTest(t, directory)
+	now := time.Unix(700, 0).UTC()
+	store.now = func() time.Time { return now }
+	catalog := Catalog{SchemaVersion: SchemaVersion}
+	padding := strings.Repeat("z", 512)
+	recordCount := maximumJobState/len(padding) + 512
+	for index := range recordCount {
+		tombstone := now.Add(-time.Duration(recordCount-index) * time.Minute)
+		catalog.Records = append(catalog.Records, Record{
+			PoolID: "org", RunnerName: fmt.Sprintf("runner-%07d", index),
+			JobID:     fmt.Sprintf("job-%07d-%s", index, padding),
+			UpdatedAt: now, TombstonedAt: &tombstone,
+		})
+	}
+	Sort(&catalog)
+	encoded, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, '\n')
+	if len(encoded) <= maximumJobState || len(encoded) > maximumJobStateLoad {
+		t.Fatalf("fixture must sit between the save cap and load limit, got %d bytes", len(encoded))
+	}
+	if err := os.WriteFile(filepath.Join(directory, jobsFilename), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(context.Background()); err != nil {
+		t.Fatalf("load of a cap-breached file = %v", err)
+	}
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "runner-recovery", JobID: "job-recovery"}); err != nil {
+		t.Fatalf("upsert against a cap-breached file = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(directory, jobsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maximumJobState {
+		t.Fatalf("recovered jobs.json is %d bytes, above the %d-byte cap", info.Size(), maximumJobState)
+	}
 }
 
 func newFileStoreWithDependencies(t *testing.T, directory string, locker *testLocker) *FileStore {
