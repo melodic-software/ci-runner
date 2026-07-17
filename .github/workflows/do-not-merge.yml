@@ -1,0 +1,25 @@
+name: do-not-merge
+
+# Blocks the merge while the PR carries the do-not-merge label. Thin caller of
+# the shared do-not-merge-gate reusable; the emitted required-check context is
+# `do-not-merge / do-not-merge`. pull_request_target runs the base-branch
+# definition (the gate reads label metadata only — no head code runs);
+# labeled/unlabeled re-evaluate the gate when the label changes. Public repo:
+# runs on the reusable's hosted default runner.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  merge_group:
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  do-not-merge:
+    permissions:
+      pull-requests: read
+    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@885302176345486ca6c2c392d83131f9b5389251 # 8853021 2026-07-16
