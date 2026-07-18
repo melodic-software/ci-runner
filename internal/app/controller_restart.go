@@ -118,23 +118,39 @@ func (a *Application) stopController(ctx context.Context, restart bool) int {
 		writeln(a.out, "Controller stopped safely for update without changing desired mode.")
 		return ExitOK
 	}
+	receiptContext, cancelReceipt := a.localProbeContext(ctx)
+	receipt, receiptErr := a.dependencies.RestartReceipts.LoadRestartReceipt(receiptContext)
+	cancelReceipt()
+	receiptVerified := receiptErr == nil && receipt.SchemaVersion == 1 && !receipt.CompletedAt.IsZero() &&
+		receipt.RequestID == restartRequestID && receipt.ProcessID == status.ProcessID && receipt.Version == status.Version
+	// The durable receipt, not the process exit code, is the restart
+	// authorization: the receipt is written only after the drain, runtime
+	// close, and listener close all completed, while the exit code can be
+	// clobbered by an external termination racing a finished drain. A
+	// verified receipt therefore authorizes the task start even under a
+	// non-restart exit code; without one the command still fails closed.
 	if exitCode != ControllerRestartExitCode {
-		writef(a.errOut, "controller exited with code %d instead of dedicated restart code %d; scheduled task was not started\n", exitCode, ControllerRestartExitCode)
+		if receiptVerified {
+			writef(a.out, "Controller exited with code %d instead of dedicated restart code %d, but the exact durable completion receipt is verified; starting the scheduled task.\n", exitCode, ControllerRestartExitCode)
+			return a.startControllerTaskAndWait(ctx, buildinfo.Version, status.ProcessID)
+		}
+		if receiptErr != nil && !errors.Is(receiptErr, state.ErrNotFound) {
+			writef(a.errOut, "controller exited with code %d instead of dedicated restart code %d and the completion receipt could not be read: %v; scheduled task was not started\n", exitCode, ControllerRestartExitCode, receiptErr)
+			return ExitRuntime
+		}
+		writef(a.errOut, "controller exited with code %d instead of dedicated restart code %d and no matching completion receipt exists; scheduled task was not started\n", exitCode, ControllerRestartExitCode)
+		writef(a.errOut, "the old process (pid %d) has exited; after confirming the drain outcome, recover with: Start-ScheduledTask %s\n", status.ProcessID, controllerTaskName)
 		return ExitStateChanged
 	}
-	receiptContext, cancelReceipt := a.localProbeContext(ctx)
-	receipt, err := a.dependencies.RestartReceipts.LoadRestartReceipt(receiptContext)
-	cancelReceipt()
-	if errors.Is(err, state.ErrNotFound) {
+	if errors.Is(receiptErr, state.ErrNotFound) {
 		writeln(a.errOut, "controller exited without a durable restart completion receipt; scheduled task was not started")
 		return ExitStateChanged
 	}
-	if err != nil {
-		writef(a.errOut, "read restart completion receipt: %v; scheduled task was not started\n", err)
+	if receiptErr != nil {
+		writef(a.errOut, "read restart completion receipt: %v; scheduled task was not started\n", receiptErr)
 		return ExitRuntime
 	}
-	if receipt.SchemaVersion != 1 || receipt.CompletedAt.IsZero() ||
-		receipt.RequestID != restartRequestID || receipt.ProcessID != status.ProcessID || receipt.Version != status.Version {
+	if !receiptVerified {
 		writeln(a.errOut, "restart completion receipt does not match the authenticated request, old process, and exact version; scheduled task was not started")
 		return ExitStateChanged
 	}
