@@ -318,9 +318,12 @@ materialization is a same-load wash — so per-lane shape changes cannot move th
 only cone narrowing (or Phase 5 fan-out reduction) can. Rollout = medley PR #1577 (merged):
 detect-changes gains a `.github` cone, 150.8s → 2s live on the critical path; everything else
 KEEP as ticked above. runner-policy cone candidates failed twice (its policy gates read the
-whole repo by design) — KEEP full checkout. Sanity caveat: the forced-hosted-fallback route
-run is outstanding (org hosted runners billing-blocked all day); the shipped change is
-input-identical across routes. Goal-2 note: typescript-lane checkout p90 < 60s is NOT
+whole repo by design) — KEEP full checkout. Sanity deviation, deferred with trigger: the
+forced-hosted-fallback route run could not execute (org hosted runners billing-blocked all
+day) — tracked as medley#1580, to run when hosted runners accept jobs again; the shipped
+change is input-identical across routes, so the phase closes on that evidence with the
+fallback run as tracked residue rather than silently waived. Goal-2 note:
+typescript-lane checkout p90 < 60s is NOT
 reachable from checkout inputs — if it still misses after Phase 5 + Phase 3 capacity, the
 mirror-mount ADR trigger fires [USER-RESERVED].
 
