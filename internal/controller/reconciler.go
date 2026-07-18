@@ -89,6 +89,14 @@ type ReconcileResult struct {
 	Plan               Plan
 	CheckpointAge      time.Duration
 	CheckpointAgeValid bool
+	// NewWorkBlocked reports that this step failed in a way that blocks all
+	// new work: a failed resource, worker-inventory, desktop, power, or
+	// job-index observation, or an unreadable desired state (which forces
+	// every listener to zero) — as opposed to a per-target error that leaves
+	// the remaining pools reconciling. The persistent-failure escalation in
+	// the controller loop keys off this so a single misconfigured target can
+	// never consume the scheduled task's bounded restart budget.
+	NewWorkBlocked bool
 }
 
 func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Reconciler, error) {
@@ -248,7 +256,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		// desired file, but it must never overwrite one after installation.
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now}
 		if err := r.deps.State.SaveDesired(ctx, desired); err != nil {
-			return ReconcileResult{}, fmt.Errorf("initialize desired state: %w", err)
+			// Nothing was reconciled and no capacity was drained: a persistent
+			// state-directory failure here is globally blocking, so the exit
+			// escalation must see it as such.
+			return ReconcileResult{NewWorkBlocked: true}, fmt.Errorf("initialize desired state: %w", err)
 		}
 	} else if err != nil {
 		// A desired-state read failure must fail capacity closed. Preserve the
@@ -275,10 +286,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if err != nil && !errors.Is(err, statepkg.ErrNotFound) {
 		quarantiner, ok := r.deps.State.(interface{ QuarantineObserved(context.Context) error })
 		if !ok {
-			return ReconcileResult{}, errors.Join(ErrUnsafeObservedState, err)
+			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err)
 		}
 		if quarantineErr := quarantiner.QuarantineObserved(ctx); quarantineErr != nil {
-			return ReconcileResult{}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
+			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
 		}
 		// Preserve the corrupt source until SaveObserved atomically replaces it,
 		// then reconstruct the exact configured scale set solely to advertise
@@ -566,10 +577,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if mayHaveManagedWorkers(desktop, desktopStatusKnown) {
 		if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
 			jobStateKnown = false
+			observationFailed = true
 			resources = model.ResourceSnapshot{}
 			record("worker-refresh-error", "managed-worker refresh failed after capacity update; new work is blocked", "", true, listErr)
 		} else if enriched, lookupErr := r.enrichWorkerJobs(ctx, latest); lookupErr != nil {
 			jobStateKnown = false
+			observationFailed = true
 			resources = model.ResourceSnapshot{}
 			record("job-index-refresh-error", "durable job lifecycle state could not be refreshed after the capacity update; automatic retirement is blocked", "", true, lookupErr)
 		} else {
@@ -961,6 +974,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	return ReconcileResult{
 		Observed: observed, Plan: postPlan,
 		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
+		NewWorkBlocked: observationFailed || desiredLoadErr != nil,
 	}, errors.Join(operationErrors...)
 }
 
