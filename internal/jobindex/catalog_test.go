@@ -379,6 +379,72 @@ func TestSaveCompactsOldestTombstonesUnderCapacityPressure(t *testing.T) {
 	}
 }
 
+func TestSaveCompactsOldestCompletedRecordsWhenNoTombstonesRemain(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	store := newFileStoreForTest(t, directory)
+	now := time.Unix(550, 0).UTC()
+	store.now = func() time.Time { return now }
+	// The #98 incident shape: a catalog over the save cap made entirely of
+	// completed, never-tombstoned records, plus an open record and an active
+	// (started, not completed) record that must both survive compaction.
+	catalog := Catalog{SchemaVersion: SchemaVersion}
+	padding := strings.Repeat("w", 512)
+	recordCount := maximumJobState/len(padding) + 64
+	for index := range recordCount {
+		completed := now.Add(-time.Duration(recordCount-index) * time.Minute)
+		catalog.Records = append(catalog.Records, Record{
+			PoolID: "org", RunnerName: fmt.Sprintf("runner-%07d", index),
+			JobID:  fmt.Sprintf("job-%07d-%s", index, padding),
+			Result: "succeeded", JobStartedAt: completed.Add(-time.Minute),
+			CompletedAt: completed, FinalizedAt: completed, UpdatedAt: now,
+		})
+	}
+	open := Record{PoolID: "org", RunnerName: "runner-open", ContainerID: "container-open", Open: true, UpdatedAt: now}
+	active := Record{PoolID: "org", RunnerName: "runner-active", JobID: "job-active", JobStartedAt: now, UpdatedAt: now}
+	catalog.Records = append(catalog.Records, open, active)
+	Sort(&catalog)
+	if encoded, err := json.MarshalIndent(catalog, "", "  "); err != nil {
+		t.Fatal(err)
+	} else if len(encoded) <= maximumJobState {
+		t.Fatalf("fixture must exceed the save cap, got %d bytes", len(encoded))
+	}
+	if err := store.saveUnlocked(catalog); err != nil {
+		t.Fatalf("save under capacity pressure = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(directory, jobsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maximumJobState {
+		t.Fatalf("saved jobs.json is %d bytes, above the %d-byte cap", info.Size(), maximumJobState)
+	}
+	reloaded, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	survivors := make(map[string]Record, len(reloaded.Records))
+	for _, record := range reloaded.Records {
+		survivors[record.RunnerName] = record
+	}
+	if _, ok := survivors["runner-open"]; !ok {
+		t.Fatal("open record was compacted away")
+	}
+	if _, ok := survivors["runner-active"]; !ok {
+		t.Fatal("active record was compacted away")
+	}
+	newestCompletedName := fmt.Sprintf("runner-%07d", recordCount-1)
+	if _, ok := survivors[newestCompletedName]; !ok {
+		t.Fatal("newest completed record was compacted before older ones")
+	}
+	if _, ok := survivors["runner-0000000"]; ok {
+		t.Fatal("oldest completed record survived capacity compaction")
+	}
+	if len(reloaded.Records) >= recordCount+2 {
+		t.Fatalf("no records were compacted: %d", len(reloaded.Records))
+	}
+}
+
 func TestSaveFailsClosedWhenLiveRecordsAloneExceedCapacity(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
