@@ -1643,6 +1643,93 @@ func TestStepProbesEngineMemoryOncePerVMLifecycle(t *testing.T) {
 	}
 }
 
+func TestStepKeepsEngineMemoryProbeThroughUnknownDesktopStatus(t *testing.T) {
+	t.Parallel()
+	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
+	probe := &testEngineMemory{total: 8 << 30}
+	cfg := validControllerConfig()
+	cfg.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+	controller := newProbeReconciler(t, cfg, desktop, probe)
+
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 1 {
+		t.Fatalf("probe calls after first step = %d, want 1", probe.callCount())
+	}
+
+	// A failed status query is not a down observation: the VM was never seen
+	// down, so the cache must survive - discarding it would leave the
+	// oversized budget unverified if the follow-up re-probe also failed.
+	desktop.mu.Lock()
+	desktop.statusErr = errors.New("status query timed out for the test")
+	desktop.mu.Unlock()
+	_, _ = controller.Step(context.Background())
+	if controller.engineMemoryTotal != 8<<30 {
+		t.Fatalf("cached probe after unknown status = %d, want the 8GiB probe retained", controller.engineMemoryTotal)
+	}
+
+	// With the cache retained, recovery must not re-probe - and a re-probe
+	// failure therefore cannot strip the cross-check (BuildPlan's clamp from
+	// a cached probe is covered by the plan-level clamp tests).
+	desktop.mu.Lock()
+	desktop.statusErr = nil
+	desktop.mu.Unlock()
+	probe.mu.Lock()
+	probe.err = errors.New("re-probe blocked for the test")
+	probe.mu.Unlock()
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 1 {
+		t.Fatalf("probe calls after recovery = %d, want the cached probe with no re-probe", probe.callCount())
+	}
+	if controller.engineMemoryTotal != 8<<30 {
+		t.Fatalf("cached probe after recovery = %d, want the 8GiB probe retained", controller.engineMemoryTotal)
+	}
+}
+
+func TestBudgetBasisStartBurstDoesNotDeflateFloorInput(t *testing.T) {
+	t.Parallel()
+	// Containers started earlier in a Step already charge the static budget
+	// through the fresh worker inventory; deflating the host reading as well
+	// would let worker growth alone trip the binary floor mid-burst - the
+	// exact worker-to-host coupling the budget basis exists to remove.
+	store := statepkg.NewMemoryStore()
+	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	if err := store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &testRuntime{}
+	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
+	cfg := validControllerConfig()
+	cfg.GitHub.Targets[0].WarmIdle = 3
+	cfg.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+	// 20GiB available against the 16GiB floor (25% of 64GiB): every start in
+	// the 3x8GiB burst is admissible only if started workers are not also
+	// synthetically subtracted from the host reading.
+	controller, err := NewReconciler(cfg, "test-version", Dependencies{
+		ScaleSets:    scaleset.NewFake(),
+		Workers:      runtime,
+		Desktop:      desktop,
+		Power:        staticPower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: now}},
+		Resources:    staticResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 20 << 30, CPUUtilizationPercent: 10}},
+		State:        store,
+		Jobs:         &testJobLookup{active: map[string]string{}},
+		Clock:        clockpkg.NewFake(now),
+		EngineMemory: &testEngineMemory{total: 40 << 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runtime.startRequests()); got != 3 {
+		t.Fatalf("start requests = %d, want the full 3-worker warm burst", got)
+	}
+}
+
 func TestStepSkipsEngineMemoryProbeWithoutBudget(t *testing.T) {
 	t.Parallel()
 	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
@@ -1900,6 +1987,7 @@ func (r *testRuntime) closedValue() bool { r.mu.Lock(); defer r.mu.Unlock(); ret
 type testDesktop struct {
 	mu           sync.Mutex
 	status       model.DesktopStatus
+	statusErr    error
 	startErr     error
 	starts       int
 	stops        int
@@ -1910,6 +1998,9 @@ type testDesktop struct {
 func (d *testDesktop) Status(context.Context) (model.DesktopStatus, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.statusErr != nil {
+		return model.DesktopStatus{}, d.statusErr
+	}
 	return d.status, nil
 }
 func (d *testDesktop) Start(context.Context, time.Duration) error {

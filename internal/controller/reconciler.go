@@ -969,13 +969,19 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 // only after Docker Desktop and its engine are confirmed up (the VM may not
 // exist at process start), and again after any down observation, because
 // desktop teardown (gaming mode) recycles the WSL2 VM and a stale probe must
-// not vouch for the next VM's size. A probe failure is a warning, not a gate:
-// the configured budget is used unverified.
+// not vouch for the next VM's size. An UNKNOWN status (a failed status query)
+// keeps the cache: the VM was never observed down, and discarding the probe
+// would leave an oversized budget unverified if the follow-up re-probe also
+// failed. A probe failure is a warning, not a gate: the configured budget is
+// used unverified.
 func (r *Reconciler) probeEngineMemory(ctx context.Context, desktopStatusKnown bool, desktop model.DesktopStatus, note func(code, message, poolID string)) {
 	if r.config.Resources.WorkerMemoryBudget == 0 {
 		return
 	}
-	if !desktopStatusKnown || !desktop.DesktopRunning || !desktop.EngineReachable {
+	if !desktopStatusKnown {
+		return
+	}
+	if !desktop.DesktopRunning || !desktop.EngineReachable {
 		r.engineMemoryTotal = 0
 		return
 	}
@@ -1188,9 +1194,16 @@ func (r *Reconciler) freshStartAllowed(
 	workers = enriched
 
 	// A host monitor may not reflect containers started earlier in this Step.
-	// Reserve the exact sum of their target profiles against every fresh
-	// observation so a stale snapshot cannot over-admit mixed worker sizes.
-	resources.AvailableMemoryBytes = availableAfterMemoryReservation(resources.AvailableMemoryBytes, reservedMemory)
+	// Under the legacy host-headroom basis, reserve the exact sum of their
+	// target profiles against every fresh observation so a stale snapshot
+	// cannot over-admit mixed worker sizes. Under the static budget basis the
+	// fresh worker list above already charges them against the budget, and
+	// the host reading only feeds the binary floor - synthetically deflating
+	// it would let worker growth alone trip the floor, the exact coupling the
+	// budget basis exists to remove (stress-test C1).
+	if r.config.Resources.WorkerMemoryBudget == 0 {
+		resources.AvailableMemoryBytes = availableAfterMemoryReservation(resources.AvailableMemoryBytes, reservedMemory)
+	}
 
 	now := r.deps.Clock.Now().UTC()
 	plan := BuildPlan(PlanInput{
