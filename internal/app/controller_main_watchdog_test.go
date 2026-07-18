@@ -671,3 +671,42 @@ func TestErrReconcileStepAbandonedIsDistinctSentinel(t *testing.T) {
 		t.Fatal("errReconcileStepAbandoned must not match ErrControllerRestartRequested: a wedged-step exit has not completed an authenticated drain and must not claim the dedicated restart exit code")
 	}
 }
+
+func TestReconcileFailureStreakEscalatesOnlyOnUnbrokenErrorRun(t *testing.T) {
+	t.Parallel()
+	var streak reconcileFailureStreak
+	stepErr := errors.New("adopt workers before artifact cleanup: lock jobs index: context canceled")
+	for i := 1; i < maxConsecutiveReconcileStepErrors; i++ {
+		if streak.observe(stepErr) {
+			t.Fatalf("streak escalated at %d errors, before the %d threshold", i, maxConsecutiveReconcileStepErrors)
+		}
+	}
+	if !streak.observe(stepErr) {
+		t.Fatalf("streak did not escalate at %d consecutive errors", maxConsecutiveReconcileStepErrors)
+	}
+}
+
+func TestReconcileFailureStreakResetsOnAnyCleanStep(t *testing.T) {
+	t.Parallel()
+	var streak reconcileFailureStreak
+	stepErr := errors.New("worker inventory failed")
+	for i := 0; i < maxConsecutiveReconcileStepErrors-1; i++ {
+		streak.observe(stepErr)
+	}
+	if streak.observe(nil) {
+		t.Fatal("clean step escalated")
+	}
+	if streak.count != 0 {
+		t.Fatalf("clean step left streak count %d, want 0", streak.count)
+	}
+	if streak.observe(stepErr) {
+		t.Fatal("first error after a clean step escalated")
+	}
+}
+
+func TestErrReconcilePersistentlyFailingDoesNotClaimRestartExitCode(t *testing.T) {
+	t.Parallel()
+	if errors.Is(errReconcilePersistentlyFailing, ErrControllerRestartRequested) {
+		t.Fatal("errReconcilePersistentlyFailing must not match ErrControllerRestartRequested: a persistent-failure exit has not completed an authenticated drain and must not claim the dedicated restart exit code")
+	}
+}

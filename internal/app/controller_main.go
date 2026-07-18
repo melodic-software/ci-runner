@@ -608,6 +608,45 @@ func reconcileStepDrainGrace(cfg config.Config) time.Duration {
 // and the scheduled task then starts a fresh one.
 var errReconcileStepAbandoned = errors.New("reconcile step did not release its lock within the watchdog drain grace period")
 
+// maxConsecutiveReconcileStepErrors bounds how many reconcile Steps may
+// complete with an error in unbroken succession before the controller
+// escalates to a controlled process exit. The Step watchdog only catches a
+// Step that never returns; a Step that fails fast every cycle (a saturated
+// jobs index, a wedged state lock) reconciles nothing for hours while the
+// process looks alive — the completes-with-error outage class of #54/#93/#98.
+// Both observed incidents recovered on process restart, and the scheduled
+// task's restart-on-failure policy provides exactly that. At the default
+// reconcile interval this threshold escalates after roughly ten minutes of
+// continuous failure; any single clean Step resets the count, so ordinary
+// transient errors and flapping adapters never approach it. Sized as a fixed
+// multiple of the reconcile cadence rather than a new tunable, matching the
+// watchdog-mechanism constants above.
+const maxConsecutiveReconcileStepErrors = 20
+
+// errReconcilePersistentlyFailing is returned by runControllerLoop when every
+// recent reconcile Step completed with an error. Exiting non-zero (rather
+// than degrading forever) hands recovery to the scheduled task's
+// restart-on-failure policy: a fresh process reclaims any wedged in-process
+// state (locks, leaked tokens), and a fresh controller re-adopts surviving
+// worker containers at startup. Graceful shutdown is deliberately skipped —
+// reconciler.Shutdown exercises the same failing subsystem and would either
+// hang or fail the same way.
+var errReconcilePersistentlyFailing = errors.New("every recent reconcile step completed with an error; exiting so the scheduled task restarts the controller")
+
+// reconcileFailureStreak counts consecutive completed-with-error Steps; any
+// clean Step resets it. observe reports whether the streak has reached the
+// escalation threshold.
+type reconcileFailureStreak struct{ count int }
+
+func (s *reconcileFailureStreak) observe(stepErr error) bool {
+	if stepErr == nil {
+		s.count = 0
+		return false
+	}
+	s.count++
+	return s.count >= maxConsecutiveReconcileStepErrors
+}
+
 func runControllerLoop(
 	ctx context.Context,
 	cfg config.Config,
@@ -645,6 +684,14 @@ func runControllerLoop(
 	}
 
 	stepDrainGrace := reconcileStepDrainGrace(cfg)
+	var failureStreak reconcileFailureStreak
+	noteStepOutcome := func(stepErr error) error {
+		if !failureStreak.observe(stepErr) {
+			return nil
+		}
+		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-persistent-failure", Message: fmt.Sprintf("%d consecutive reconcile steps completed with an error; exiting so the scheduled task restarts the controller", failureStreak.count)})
+		return errReconcilePersistentlyFailing
+	}
 	for {
 		// The effective worker limit is queried fresh before every Step (rather
 		// than once outside the loop) because Desired.TemporaryCapacityOverride
@@ -721,6 +768,9 @@ func runControllerLoop(
 				if stepErr != nil {
 					_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
 				}
+				if escalate := noteStepOutcome(stepErr); escalate != nil {
+					return escalate
+				}
 			case <-time.After(stepDrainGrace):
 				// The goroutine did not unwind: Step holds stepMu for its entire
 				// duration, so the blocked adapter call inside it did not actually
@@ -758,6 +808,9 @@ func runControllerLoop(
 			cancelStep()
 			if stepErr != nil {
 				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
+			}
+			if escalate := noteStepOutcome(stepErr); escalate != nil {
+				return escalate
 			}
 		}
 
