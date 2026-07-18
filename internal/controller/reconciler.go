@@ -577,10 +577,12 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if mayHaveManagedWorkers(desktop, desktopStatusKnown) {
 		if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
 			jobStateKnown = false
+			observationFailed = true
 			resources = model.ResourceSnapshot{}
 			record("worker-refresh-error", "managed-worker refresh failed after capacity update; new work is blocked", "", true, listErr)
 		} else if enriched, lookupErr := r.enrichWorkerJobs(ctx, latest); lookupErr != nil {
 			jobStateKnown = false
+			observationFailed = true
 			resources = model.ResourceSnapshot{}
 			record("job-index-refresh-error", "durable job lifecycle state could not be refreshed after the capacity update; automatic retirement is blocked", "", true, lookupErr)
 		} else {
