@@ -167,6 +167,32 @@ func TestLoadLegacySchemaVersionOneDefaultsMemoryCapacityIncreaseMarginToZero(t 
 	}
 }
 
+func TestLoadWorkerMemoryBudget(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 36GiB\n  minimumAvailableMemoryPercent: 25\n", 1)
+	if input == validYAML {
+		t.Fatal("test fixture did not contain the expected resources block")
+	}
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.WorkerMemoryBudget != ByteSize(36<<30) {
+		t.Fatalf("workerMemoryBudget = %d, want 36GiB", cfg.Resources.WorkerMemoryBudget)
+	}
+}
+
+func TestLoadOmittedWorkerMemoryBudgetStaysZero(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.WorkerMemoryBudget != 0 {
+		t.Fatalf("workerMemoryBudget = %d, want unset zero", cfg.Resources.WorkerMemoryBudget)
+	}
+}
+
 func TestLoadConfiguredTelemetry(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "paths:\n", `telemetry:
@@ -401,6 +427,11 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
 		"v2 missing margin":           strings.Replace(validYAML, "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
 		"v2 null margin":              strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: null", 1),
 		"zero memory increase margin": strings.Replace(validYAML, "memoryCapacityIncreaseMarginPercent: 25", "memoryCapacityIncreaseMarginPercent: 0", 1),
+		"v1 worker memory budget": strings.Replace(
+			strings.Replace(strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1), "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
+			"  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 36GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"null worker memory budget": strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: null\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"zero worker memory budget": strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 0GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
 		"malformed URL":               strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
 		"raw diagnostics bound":       strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
 		"UNC path":                    strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),

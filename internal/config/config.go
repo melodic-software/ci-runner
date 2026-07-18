@@ -170,8 +170,16 @@ type WorkerOverrides struct {
 }
 
 type Resources struct {
-	MaximumConcurrentWorkers        int      `yaml:"maximumConcurrentWorkers"`
-	Worker                          Worker   `yaml:"worker"`
+	MaximumConcurrentWorkers int    `yaml:"maximumConcurrentWorkers"`
+	Worker                   Worker `yaml:"worker"`
+	// WorkerMemoryBudget, when set, re-bases memory-affordable slot math on a
+	// static budget for worker reservations instead of host AvailablePhysical.
+	// Workers run inside the WSL2 VM, whose own host footprint (vmmem) grows
+	// with worker load, so a host-physical basis clamps advertised capacity
+	// under exactly the load it should serve. Zero means unset: the legacy
+	// host-physical basis stays in effect, which keeps an old deployed YAML
+	// valid under a new binary.
+	WorkerMemoryBudget              ByteSize `yaml:"workerMemoryBudget"`
 	MinimumAvailableMemoryPct       float64  `yaml:"minimumAvailableMemoryPercent"`
 	MemoryCapacityIncreaseMarginPct float64  `yaml:"memoryCapacityIncreaseMarginPercent"`
 	CPUBlockPercent                 float64  `yaml:"cpuBlockPercent"`
@@ -377,6 +385,9 @@ func validateResourceSchemaSyntax(document *yaml.Node) error {
 	resources = dereferenceYAMLNode(resources)
 	if resources == nil {
 		return nil
+	}
+	if budget, present := yamlMappingValue(resources, "workerMemoryBudget"); present && yamlNodeIsNull(dereferenceYAMLNode(budget)) {
+		return errors.New("resources.workerMemoryBudget: must not be null or blank")
 	}
 	margin, present := yamlMappingValue(resources, "memoryCapacityIncreaseMarginPercent")
 	switch schemaVersion {
@@ -604,6 +615,9 @@ func (c Config) Validate() error {
 	if c.SchemaVersion == LegacySchemaVersion {
 		if resources.MemoryCapacityIncreaseMarginPct != 0 {
 			add(errors.New("resources.memoryCapacityIncreaseMarginPercent: schemaVersion 1 requires the legacy zero default"))
+		}
+		if resources.WorkerMemoryBudget != 0 {
+			add(errors.New("resources.workerMemoryBudget: not defined by schemaVersion 1"))
 		}
 	} else {
 		add(validatePercent("resources.memoryCapacityIncreaseMarginPercent", resources.MemoryCapacityIncreaseMarginPct, false))
