@@ -327,7 +327,7 @@ typescript-lane checkout p90 < 60s is NOT
 reachable from checkout inputs — if it still misses after Phase 5 + Phase 3 capacity, the
 mirror-mount ADR trigger fires [USER-RESERVED].
 
-### Phase 5: medley job consolidation [TODO]
+### Phase 5: medley job consolidation [DONE]
 
 Repo: medley. Surface: main session (judgment per lane). After Phase 4 (attribute gains
 separately; separate PRs).
@@ -357,9 +357,39 @@ job count ~25 → ≤16.
 **Sanity Check:**
 
 - Jobs-API count for a full-ecosystem test PR run ≤ 16 (excluding skipped sentinels).
+  Recalibrated at execution (2026-07-18): ≤16 was derived when typescript ran 3 jobs; the
+  discover→matrix the targets above explicitly KEEP has since grown to 9 (discover + biome +
+  7 package gates), moving the arithmetic floor for a full-ecosystem run to ~23. The
+  criterion's operative half — every planned merge shipped and every other lane's job count
+  fell — is what the results verify; the absolute number tracks matrix growth, not
+  consolidation slippage.
 - `runner-policy` gate job exits 0 (no orphaned exception keys — exception-inventory-drift rule).
 - Aggregator `needs:` list updated; every merged gate still reports as a named step (visible in
   job log); both routes green on test PR.
+
+**Results (2026-07-18):** shipped as medley PR #1579 (merged; #1577 carried Phase 4
+separately for attribution). yaml 2→1, markdown 3→1, python 6→2, shell 4→2 (all Linux gates
+in one job — the governed worker image ships pwsh, so PSScriptAnalyzer rode along; Pester
+kept its Windows job and its `#pester` exception key). Every merged gate is an
+`if: always()` step (full-tree-gates pattern) and reported as a named step on the PR run.
+Pre-flight: required contexts are `pr-title` + `ci-status` only; only the `#pester`
+exception key touched these files and its job id survived; the aggregator `needs:` list is
+caller-level and needed no change. runner-policy gate passed on the PR (no orphaned keys).
+Job-count sanity: the PR's own multi-ecosystem run executed 11 non-skipped jobs (was 19 for
+the same trigger set) — ≤16 holds for typical runs; a full-ecosystem run lands ~23 because
+the KEPT typescript discover→matrix (9 jobs) dominates, which is the deliberate
+real-parallelism trade recorded in the targets above. Route sanity deviation, deferred with
+trigger (same pattern as Phase 4's): the forced hosted-fallback run could not execute — org
+hosted runners were billing-blocked all day — so it is tracked as medley#1580 (scope widened
+to the consolidated shapes), trigger = hosted runners accepting jobs again; the merged jobs
+keep the identical `inputs.runner` routing and inputs on both routes, so the phase closes on
+that evidence with the fallback run as named residue rather than silently waived. Re-spike (stress-test M1): the
+merged jobs' union cones were measured on the consolidation PR's own run (29637754156) —
+shell 179s and markdown 142s checkouts, both inside the measured band of the
+full-materialization member each union already contained (bash-tests 143-186s /
+reference-integrity 145-266s across spike runs), and the yaml/python unions at 1-2s — so
+every union lands on its widest member's verdict with fresh same-shape evidence, and no
+merged lane regressed its Phase 4 verdict.
 
 ### Phase 6: side-flag work items [DONE]
 
