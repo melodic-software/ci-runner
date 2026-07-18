@@ -379,9 +379,13 @@ Job-count sanity: the PR's own multi-ecosystem run executed 11 non-skipped jobs 
 the same trigger set) — ≤16 holds for typical runs; a full-ecosystem run lands ~23 because
 the KEPT typescript discover→matrix (9 jobs) dominates, which is the deliberate
 real-parallelism trade recorded in the targets above. Route caveat shared with Phase 4:
-hosted-fallback run tracked in medley#1580 (billing outage). No cone widened beyond a
-lane's existing read set except by union of its own merged gates, and every union member's
-Phase 4 verdict was KEEP — no re-spike triggered (stress-test M1).
+hosted-fallback run tracked in medley#1580 (billing outage). Re-spike (stress-test M1): the
+merged jobs' union cones were measured on the consolidation PR's own run (29637754156) —
+shell 179s and markdown 142s checkouts, both inside the measured band of the
+full-materialization member each union already contained (bash-tests 143-186s /
+reference-integrity 145-266s across spike runs), and the yaml/python unions at 1-2s — so
+every union lands on its widest member's verdict with fresh same-shape evidence, and no
+merged lane regressed its Phase 4 verdict.
 
 ### Phase 6: side-flag work items [DONE]
 
