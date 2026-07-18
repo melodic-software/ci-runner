@@ -5,6 +5,8 @@ FROM ghcr.io/actions/actions-runner:2.335.1@sha256:08c30b0a7105f64bddfc485d2487a
 
 ARG POWERSHELL_VERSION=7.6.3
 ARG POWERSHELL_SHA256=856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7
+ARG GH_VERSION=2.96.0
+ARG GH_SHA256=83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
 
 USER root
 
@@ -13,7 +15,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Keep the compatibility layer deliberately small. Versioned language runtimes
 # belong in their official setup actions so hosted and self-hosted workflows use
 # the same declarations. PowerShell is installed from Microsoft's checksummed
-# release asset because it is not in Ubuntu's first-party repository.
+# release asset because it is not in Ubuntu's first-party repository. The
+# GitHub CLI is installed from its checksummed official release asset at the
+# hosted-image manifest version; Ubuntu's archive carries a years-stale gh.
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
       ca-certificates \
@@ -36,13 +40,20 @@ RUN apt-get update \
  && tar --extract --gzip --file=/tmp/powershell.tar.gz --directory=/opt/microsoft/powershell/7 \
  && chmod 0755 /opt/microsoft/powershell/7/pwsh \
  && ln --symbolic /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh \
+ && curl --fail --location --proto '=https' --tlsv1.2 \
+      --output /tmp/gh.tar.gz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+ && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum --check --strict \
+ && tar --extract --gzip --file=/tmp/gh.tar.gz --directory=/usr/local/bin \
+      --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh" \
+ && chmod 0755 /usr/local/bin/gh \
  && git lfs install --system \
  && install --directory --owner=runner --group=runner --mode=0755 \
       /home/runner/.dotnet \
       /home/runner/.dotnet/tools \
       /home/runner/.nuget \
       /home/runner/.nuget/packages \
- && rm --force /tmp/powershell.tar.gz \
+ && rm --force /tmp/powershell.tar.gz /tmp/gh.tar.gz \
  && rm --recursive --force /var/lib/apt/lists/*
 
 COPY --chmod=0555 worker/set-state.sh /usr/local/libexec/ci-runner-set-state

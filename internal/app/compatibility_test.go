@@ -26,6 +26,7 @@ func validCompatibilityManifest() CompatibilityManifest {
 		Dependencies: CompatibilityDependencies{
 			RunnerVersion: "2.335.1", ScaleSetClientVersion: strings.TrimPrefix(scaleset.OfficialClientVersion, "v"),
 			ScaleSetClientCommit: scaleset.OfficialClientCommit, GoToolchain: runtime.Version(), PowerShellVersion: "7.5.2",
+			GHVersion: "2.95.0", GHLinuxAMD64ArchiveSHA256: strings.Repeat("9", 64),
 			BuildxVersion: "0.35.0", BuildxLinuxAMD64SHA256: strings.Repeat("d", 64),
 			BuildKitVersion: "0.31.1", BuildKitDigest: "sha256:" + strings.Repeat("e", 64),
 			BuildKitLinuxAMD64Digest: "sha256:" + strings.Repeat("f", 64),
