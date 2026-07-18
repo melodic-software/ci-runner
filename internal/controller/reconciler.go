@@ -210,6 +210,7 @@ func telemetrySnapshot(result ReconcileResult) telemetry.ReconcileSnapshot {
 		Valid: observed.SchemaVersion > 0, Phase: string(observed.Phase),
 		CPUPercent:           observed.Resources.CPUUtilizationPercent,
 		AvailableMemoryBytes: observed.Resources.AvailableMemoryBytes,
+		MemoryHeadroomBytes:  result.Plan.MemoryHeadroom,
 		ResourceGateBlocked:  observed.ResourceGate.Blocked,
 		PowerGateBlocked:     result.Plan.Phase == model.PhasePowerSuspended,
 		CheckpointAge:        result.CheckpointAge,
@@ -222,6 +223,7 @@ func telemetrySnapshot(result ReconcileResult) telemetry.ReconcileSnapshot {
 		snapshot.Pools = append(snapshot.Pools, telemetry.ReconcilePool{
 			ID: pool.ID, Advertised: pool.MaxCapacity,
 			Assigned: pool.TotalAssignedJobs, Desired: pool.DesiredWorkers,
+			AffordableWorkers:              result.Plan.MemoryAffordable[pool.ID],
 			CapacityAcknowledged:           pool.CapacityAcknowledged,
 			AcknowledgementPendingAge:      observed.HeartbeatAt.Sub(pool.UpdatedAt),
 			AcknowledgementPendingAgeValid: acknowledgementAgeValid,
@@ -920,6 +922,15 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			DrainServiceCapacity:      pool.DrainServiceCapacity,
 			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: updatedAt,
 		})
+	}
+	// The memory clamp was previously invisible: capacity silently advertised
+	// below pool max whenever the memory term bound. A log line (not a
+	// problem) keeps the routine legacy-basis clamp from flipping the fleet
+	// phase while still leaving a queryable trail.
+	for _, target := range r.config.GitHub.Targets {
+		if postPlan.MemoryClamped[target.ID] {
+			note("memory-clamped-capacity", "the memory term or host-floor backstop clamped worker starts or advertised capacity below host and pool limits", target.ID)
+		}
 	}
 	problems := append([]model.Problem(nil), postPlan.Problems...)
 	problems = append(problems, operationProblems...)

@@ -37,6 +37,7 @@ type ReconcilePool struct {
 	Advertised                     int
 	Assigned                       int
 	Desired                        int
+	AffordableWorkers              int
 	CapacityAcknowledged           bool
 	AcknowledgementPendingAge      time.Duration
 	AcknowledgementPendingAgeValid bool
@@ -54,6 +55,7 @@ type ReconcileSnapshot struct {
 	Workers              []ReconcileWorker
 	CPUPercent           float64
 	AvailableMemoryBytes uint64
+	MemoryHeadroomBytes  uint64
 	ResourceGateBlocked  bool
 	PowerGateBlocked     bool
 	CheckpointAge        time.Duration
@@ -170,6 +172,8 @@ type recorder struct {
 	transientLag              metric.Int64Gauge
 	cpuPercent                metric.Float64Gauge
 	availableMemory           metric.Int64Gauge
+	memoryHeadroom            metric.Int64Gauge
+	memoryAffordable          metric.Int64Gauge
 	resourceGate              metric.Int64Gauge
 	powerGate                 metric.Int64Gauge
 	workerStarts              metric.Int64Counter
@@ -243,6 +247,12 @@ func newRecorder(tracerProvider trace.TracerProvider, meterProvider metric.Meter
 		return nil, err
 	}
 	if r.availableMemory, err = meter.Int64Gauge("ci_runner.host.memory.available", metric.WithUnit("By"), metric.WithDescription("Available host physical memory.")); err != nil {
+		return nil, err
+	}
+	if r.memoryHeadroom, err = meter.Int64Gauge("ci_runner.capacity.memory.headroom", metric.WithUnit("By"), metric.WithDescription("Memory headroom left unspent by the last plan under the active basis (static worker budget, or legacy host headroom).")); err != nil {
+		return nil, err
+	}
+	if r.memoryAffordable, err = meter.Int64Gauge("ci_runner.capacity.memory.affordable", metric.WithUnit("{worker}"), metric.WithDescription("Additional workers the remaining memory headroom funds at the pool's effective worker profile.")); err != nil {
 		return nil, err
 	}
 	if r.resourceGate, err = meter.Int64Gauge("ci_runner.gate.resource.blocked", metric.WithUnit("1"), metric.WithDescription("Whether resource admission is blocked.")); err != nil {
@@ -373,6 +383,7 @@ func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapsho
 		}
 		r.assigned.Record(ctx, int64(pool.Assigned), attrs)
 		r.desired.Record(ctx, int64(pool.Desired), attrs)
+		r.memoryAffordable.Record(ctx, int64(pool.AffordableWorkers), attrs)
 		counts[pool.ID] = make(map[string]int64, len(workerStates))
 	}
 	for _, worker := range snapshot.Workers {
@@ -412,6 +423,7 @@ func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapsho
 		available = math.MaxInt64
 	}
 	r.availableMemory.Record(ctx, int64(available))
+	r.memoryHeadroom.Record(ctx, clampUint64(snapshot.MemoryHeadroomBytes))
 	r.resourceGate.Record(ctx, boolInt64(snapshot.ResourceGateBlocked))
 	r.powerGate.Record(ctx, boolInt64(snapshot.PowerGateBlocked))
 	if snapshot.CheckpointAgeValid {

@@ -33,9 +33,11 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	ctx, finish := recorder.BeginReconcile(context.Background())
 	snapshot := ReconcileSnapshot{
 		Valid: true, Phase: "ready", CPUPercent: 22.5, AvailableMemoryBytes: 24 << 30,
-		CheckpointAge: 11 * time.Second, CheckpointAgeValid: true,
+		MemoryHeadroomBytes: 4 << 30,
+		CheckpointAge:       11 * time.Second, CheckpointAgeValid: true,
 		Pools: []ReconcilePool{{
 			ID: "org", Advertised: 6, Assigned: 3, Desired: 3,
+			AffordableWorkers:         2,
 			AcknowledgementPendingAge: 7 * time.Second, AcknowledgementPendingAgeValid: true,
 		}},
 		Workers: []ReconcileWorker{
@@ -86,6 +88,8 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 		"ci_runner.accounting.transient_lag",
 		"ci_runner.host.cpu.utilization",
 		"ci_runner.host.memory.available",
+		"ci_runner.capacity.memory.headroom",
+		"ci_runner.capacity.memory.affordable",
 		"ci_runner.gate.resource.blocked",
 		"ci_runner.gate.power.blocked",
 		"ci_runner.worker.starts",
@@ -119,6 +123,9 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	}
 	if got := intGaugeValue(t, metrics["ci_runner.jobs.active"], "ci_runner.pool.id", "org"); got != 1 {
 		t.Errorf("active jobs = %d, want 1", got)
+	}
+	if got := intGaugeValue(t, metrics["ci_runner.capacity.memory.affordable"], "ci_runner.pool.id", "org"); got != 2 {
+		t.Errorf("memory-affordable workers = %d, want 2", got)
 	}
 	if got := intGaugeValue(t, metrics["ci_runner.accounting.assignment.gap"], "ci_runner.pool.id", "org"); got != 1 {
 		t.Errorf("assignment gap = %d, want 1", got)
