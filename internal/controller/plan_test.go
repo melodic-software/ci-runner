@@ -947,6 +947,224 @@ func TestBuildPlanStartsDesktopDespiteInvalidResourceObservation(t *testing.T) {
 	}
 }
 
+// budgetInput mirrors the live 3-pool host shape measured in Phase 1 of the
+// runner-performance effort: 2GiB default workers, a static budget sized above
+// the worst-case reservation sum, and a host snapshot whose low
+// AvailablePhysical would clamp the legacy host-basis slot math.
+func budgetInput() PlanInput {
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 12
+	input.Config.Resources.Worker = config.Worker{Memory: config.ByteSize(2 << 30)}
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+	input.Config.Resources.MinimumAvailableMemoryPct = 15
+	input.Config.GitHub.Targets = []config.Target{{ID: "default", MaxCapacity: 8, WarmIdle: 0, Priority: 0}}
+	input.Pools = []PoolSnapshot{{TargetID: "default", Ready: true}}
+	input.Resources = model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 17 << 30, CPUUtilizationPercent: 10}
+	return input
+}
+
+func TestBudgetBasisAdvertisesFullPoolMaxAcrossHeterogeneousPools(t *testing.T) {
+	t.Parallel()
+	buildMemory := config.ByteSize(4 << 30)
+	input := budgetInput()
+	input.Config.GitHub.Targets = append(input.Config.GitHub.Targets,
+		config.Target{ID: "build", MaxCapacity: 2, Priority: 1, Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &buildMemory}}},
+		config.Target{ID: "review", MaxCapacity: 2, Priority: 2, Resources: config.TargetResources{Worker: &config.WorkerOverrides{Memory: &buildMemory}}},
+	)
+	input.Pools = append(input.Pools,
+		PoolSnapshot{TargetID: "build", Ready: true},
+		PoolSnapshot{TargetID: "review", Ready: true},
+	)
+
+	plan := BuildPlan(input)
+
+	// Worst-case reservations 8*2GiB + 2*4GiB + 2*4GiB = 32GiB fit the 36GiB
+	// budget, so the memory term must not bind even though the host snapshot
+	// (17GiB available, 15% floor) would fund only 3 legacy slots.
+	if plan.AdvertisedCapacity["default"] != 8 || plan.AdvertisedCapacity["build"] != 2 || plan.AdvertisedCapacity["review"] != 2 {
+		t.Fatalf("advertised = %#v, want full pool max 8/2/2", plan.AdvertisedCapacity)
+	}
+	if plan.MemoryHeadroom != 4<<30 {
+		t.Fatalf("memory headroom = %d, want 4GiB remaining of the budget", plan.MemoryHeadroom)
+	}
+	if plan.MemoryAffordable["default"] != 2 || plan.MemoryAffordable["build"] != 1 || plan.MemoryAffordable["review"] != 1 {
+		t.Fatalf("affordable workers = %#v, want 2/1/1 from the 4GiB remainder", plan.MemoryAffordable)
+	}
+	if plan.MemoryClamped["default"] || plan.MemoryClamped["build"] || plan.MemoryClamped["review"] {
+		t.Fatalf("memory clamp signal = %#v, want none", plan.MemoryClamped)
+	}
+}
+
+func TestBudgetBasisSubtractsAllActiveWorkersUpFrontWithoutDoubleCounting(t *testing.T) {
+	t.Parallel()
+	input := budgetInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 4
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
+	input.Config.GitHub.Targets[0].MaxCapacity = 4
+	input.Config.GitHub.Targets[0].WarmIdle = 4
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Workers = []model.Worker{
+		{ID: "w1", PoolID: "default", State: model.WorkerBusy},
+		{ID: "w2", PoolID: "default", State: model.WorkerBusy},
+		{ID: "w3", PoolID: "default", State: model.WorkerIdle},
+	}
+
+	plan := BuildPlan(input)
+
+	// Budget 8GiB minus 3 active reservations (2GiB each) funds exactly one new
+	// start. Counting the idle worker again inside allocation would fund zero;
+	// not subtracting busy workers up front would fund two.
+	if got := totalStarts(plan.Start); got != 1 {
+		t.Fatalf("starts = %d, want exactly 1", got)
+	}
+	if plan.DesiredWorkers["default"] != 4 {
+		t.Fatalf("desired = %d, want 4", plan.DesiredWorkers["default"])
+	}
+	if plan.MemoryHeadroom != 0 {
+		t.Fatalf("memory headroom = %d, want 0 after the fourth reservation", plan.MemoryHeadroom)
+	}
+}
+
+func TestBudgetBasisFloorGateBlocksNewStartsAndGrowthWhenHostMemoryCritical(t *testing.T) {
+	t.Parallel()
+	input := budgetInput()
+	input.Config.GitHub.Targets[0].WarmIdle = 4
+	// 9GiB available is at or below the 15% floor of 64GiB (9.6GiB): the
+	// backstop must stop new starts and advertised growth while holding the
+	// previously acknowledged capacity.
+	input.Resources.AvailableMemoryBytes = 9 << 30
+	input.Previous.Pools = []model.PoolObservation{{ID: "default", MaxCapacity: 3, CapacityAcknowledged: true}}
+
+	plan := BuildPlan(input)
+
+	if got := totalStarts(plan.Start); got != 0 {
+		t.Fatalf("starts = %d, want 0 under the floor", got)
+	}
+	if plan.AdvertisedCapacity["default"] != 3 {
+		t.Fatalf("advertised = %d, want previously held 3 with no growth", plan.AdvertisedCapacity["default"])
+	}
+	if !plan.MemoryClamped["default"] {
+		t.Fatalf("memory clamp signal = %#v, want default clamped", plan.MemoryClamped)
+	}
+}
+
+func TestBudgetBasisFloorGateIsNotTrippedByWorkerDrivenMemoryDrop(t *testing.T) {
+	t.Parallel()
+	// 17GiB available mirrors the Phase 1 measured minimum under full worker
+	// load: worker-driven vmmem growth alone must never reach the floor.
+	input := budgetInput()
+	input.Previous.Pools = []model.PoolObservation{{ID: "default", MaxCapacity: 3, CapacityAcknowledged: true}}
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["default"] != 8 {
+		t.Fatalf("advertised = %d, want full pool max 8", plan.AdvertisedCapacity["default"])
+	}
+	if plan.MemoryClamped["default"] {
+		t.Fatalf("memory clamp signal = %#v, want none", plan.MemoryClamped)
+	}
+}
+
+func TestBudgetBasisAdvertisedCapacityKeepsSchmittTriggerAtSlotBoundaries(t *testing.T) {
+	t.Parallel()
+	const gibibyte = uint64(1 << 30)
+	tests := []struct {
+		name             string
+		previousCapacity int
+		budgetBytes      uint64
+		wantCapacity     int
+	}{
+		{name: "zero to one waits below upper boundary", budgetBytes: 2*gibibyte + gibibyte/2 - 1, wantCapacity: 0},
+		{name: "zero to one grows at upper boundary", budgetBytes: 2*gibibyte + gibibyte/2, wantCapacity: 1},
+		{name: "existing slot holds at lower boundary", previousCapacity: 1, budgetBytes: 2 * gibibyte, wantCapacity: 1},
+		{name: "existing slot drops below lower boundary", previousCapacity: 1, budgetBytes: 2*gibibyte - 1, wantCapacity: 0},
+		{name: "multi-slot decrease is immediate", previousCapacity: 3, budgetBytes: 4 * gibibyte, wantCapacity: 2},
+		{name: "second slot waits for its upper boundary", previousCapacity: 1, budgetBytes: 4*gibibyte + gibibyte/2 - 1, wantCapacity: 1},
+		{name: "second slot grows at its upper boundary", previousCapacity: 1, budgetBytes: 4*gibibyte + gibibyte/2, wantCapacity: 2},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input := budgetInput()
+			input.Config.Resources.WorkerMemoryBudget = config.ByteSize(test.budgetBytes)
+			input.Previous.Pools = []model.PoolObservation{{
+				ID: "default", MaxCapacity: test.previousCapacity, CapacityAcknowledged: true,
+			}}
+
+			plan := BuildPlan(input)
+
+			if got := plan.AdvertisedCapacity["default"]; got != test.wantCapacity {
+				t.Fatalf("advertised capacity = %d, want %d", got, test.wantCapacity)
+			}
+		})
+	}
+}
+
+func TestBudgetClampsToProbedEngineMemoryWithProblem(t *testing.T) {
+	t.Parallel()
+	input := budgetInput()
+	input.EngineMemoryTotalBytes = 8 << 30
+
+	plan := BuildPlan(input)
+
+	// Effective budget clamps from the configured 36GiB to the probed 8GiB:
+	// growth affords (8GiB - 0.5GiB margin) / 2GiB = 3 slots.
+	if plan.AdvertisedCapacity["default"] != 3 {
+		t.Fatalf("advertised = %d, want probe-clamped 3", plan.AdvertisedCapacity["default"])
+	}
+	if !hasProblem(plan.Problems, "worker-memory-budget-exceeds-engine-memory", "") {
+		t.Fatalf("problems = %#v, want worker-memory-budget-exceeds-engine-memory", plan.Problems)
+	}
+}
+
+func TestBudgetWithinProbedEngineMemoryIsNotClamped(t *testing.T) {
+	t.Parallel()
+	input := budgetInput()
+	input.EngineMemoryTotalBytes = 40 << 30
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["default"] != 8 {
+		t.Fatalf("advertised = %d, want full pool max 8", plan.AdvertisedCapacity["default"])
+	}
+	if hasProblem(plan.Problems, "worker-memory-budget-exceeds-engine-memory", "") {
+		t.Fatalf("problems = %#v, want no budget cross-check problem", plan.Problems)
+	}
+}
+
+func TestMemoryClampSignalFiresWhenBudgetBindsAdvertisedBelowPoolMax(t *testing.T) {
+	t.Parallel()
+	input := budgetInput()
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(4*(1<<30) + (1<<30)/2)
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["default"] != 2 {
+		t.Fatalf("advertised = %d, want budget-bound 2", plan.AdvertisedCapacity["default"])
+	}
+	if !plan.MemoryClamped["default"] {
+		t.Fatalf("memory clamp signal = %#v, want default clamped", plan.MemoryClamped)
+	}
+}
+
+func TestMemoryClampSignalFiresOnLegacyHostBasisToo(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 6
+	input.Config.GitHub.Targets[0].MaxCapacity = 6
+	input.Resources.AvailableMemoryBytes = 40 << 30 // funds 2 advertised slots of 6
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 2 {
+		t.Fatalf("advertised = %d, want legacy memory-bound 2", plan.AdvertisedCapacity["org"])
+	}
+	if !plan.MemoryClamped["org"] {
+		t.Fatalf("memory clamp signal = %#v, want org clamped", plan.MemoryClamped)
+	}
+}
+
 func healthyInput() PlanInput {
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	return PlanInput{

@@ -34,7 +34,13 @@ type PlanInput struct {
 	Resources          model.ResourceSnapshot
 	Power              model.PowerSnapshot
 	Desktop            model.DesktopStatus
-	Now                time.Time
+	// EngineMemoryTotalBytes is the probed total memory of the VM backing the
+	// Docker engine (WSL2 on Windows), or zero when unknown. It only
+	// cross-checks a configured WorkerMemoryBudget: a budget larger than the
+	// VM promises memory the workers' kernel does not have, so the effective
+	// budget clamps to the probe.
+	EngineMemoryTotalBytes uint64
+	Now                    time.Time
 }
 
 type StartDecision struct {
@@ -54,6 +60,16 @@ type Plan struct {
 	ResourceGate       model.ResourceGateState
 	PowerGate          model.PowerGateState
 	Problems           []model.Problem
+	// MemoryHeadroom is the memory left unspent by this plan under whichever
+	// basis was active (static worker-memory budget, or legacy host physical
+	// headroom). MemoryAffordable is the additional worker count that
+	// remainder funds per pool at its effective worker profile. MemoryClamped
+	// marks pools whose starts or advertised capacity the memory term (or the
+	// host-floor backstop) bound below what host and pool limits allowed --
+	// the previously silent clamp condition.
+	MemoryHeadroom   uint64
+	MemoryAffordable map[string]int
+	MemoryClamped    map[string]bool
 }
 
 // EffectiveMaximumConcurrentWorkers resolves the host-wide worker cap
@@ -79,10 +95,14 @@ func BuildPlan(input PlanInput) Plan {
 		Phase:              model.PhaseStarting,
 		AdvertisedCapacity: make(map[string]int, len(input.Config.GitHub.Targets)),
 		DesiredWorkers:     make(map[string]int, len(input.Config.GitHub.Targets)),
+		MemoryAffordable:   make(map[string]int, len(input.Config.GitHub.Targets)),
+		MemoryClamped:      make(map[string]bool, len(input.Config.GitHub.Targets)),
 	}
 	for _, target := range input.Config.GitHub.Targets {
 		plan.AdvertisedCapacity[target.ID] = 0
 		plan.DesiredWorkers[target.ID] = 0
+		plan.MemoryAffordable[target.ID] = 0
+		plan.MemoryClamped[target.ID] = false
 	}
 	if input.Now.IsZero() {
 		input.Now = time.Now().UTC()
@@ -217,7 +237,11 @@ func BuildPlan(input PlanInput) Plan {
 	// Busy workers are immutable reservations. They consume global capacity
 	// before any target receives assigned-job or warm-idle capacity.
 	remaining := hostLimit - busyWorkers
-	memoryRemaining := availableMemoryHeadroom(input.Resources, input.Config.Resources)
+	gate := evaluateMemoryBasis(input)
+	if gate.budgetClamped {
+		plan.Problems = append(plan.Problems, problem(input.Now, "worker-memory-budget-exceeds-engine-memory", "configured workerMemoryBudget exceeds the probed engine VM memory; the effective budget is clamped to the probe", "", false))
+	}
+	memoryRemaining := gate.remaining
 	if remaining < 0 {
 		remaining = 0
 		plan.Problems = append(plan.Problems, problem(input.Now, "capacity-below-busy-count", "configured host capacity is below the current busy-worker count; active work is preserved and no new work is admitted", "", false))
@@ -273,7 +297,14 @@ func BuildPlan(input PlanInput) Plan {
 
 		prospective := minInt(need-existing, remaining)
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
-		starts := minInt(prospective, affordableWorkerCount(memoryRemaining, workerMemory))
+		affordable := affordableWorkerCount(memoryRemaining, workerMemory)
+		if gate.floorBlocked {
+			affordable = 0
+		}
+		starts := minInt(prospective, affordable)
+		if starts < prospective {
+			plan.MemoryClamped[target.ID] = true
+		}
 		plan.DesiredWorkers[target.ID] += starts
 		remaining -= starts
 		memoryRemaining -= uint64(starts) * uint64(workerMemory)
@@ -442,7 +473,17 @@ func BuildPlan(input PlanInput) Plan {
 					input.Config.Resources.MemoryCapacityIncreaseMarginPct,
 				),
 			)
+			// The floor backstop stops advertised growth but never withdraws
+			// already-acknowledged (held) capacity: withdrawal under a transient
+			// host-memory dip would flap listeners the Schmitt trigger exists to
+			// keep stable.
+			if gate.floorBlocked {
+				growth = 0
+			}
 			additional := held + growth
+			if additional < additionalLimit {
+				plan.MemoryClamped[target.ID] = true
+			}
 			if additional <= 0 {
 				continue
 			}
@@ -451,6 +492,10 @@ func BuildPlan(input PlanInput) Plan {
 			advertisedBudget -= additional
 			memoryRemaining -= uint64(additional) * uint64(workerMemory)
 		}
+	}
+	plan.MemoryHeadroom = memoryRemaining
+	for _, target := range targets {
+		plan.MemoryAffordable[target.ID] = affordableWorkerCount(memoryRemaining, target.EffectiveWorker(input.Config.Resources.Worker).Memory)
 	}
 	if len(plan.Problems) > 0 {
 		plan.Phase = model.PhaseDegraded
@@ -493,9 +538,14 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	if remaining < 0 {
 		remaining = 0
 	}
-	memoryRemaining := availableMemoryHeadroom(input.Resources, input.Config.Resources)
-	memoryObservationValid := input.Resources.TotalMemoryBytes > 0 &&
-		input.Resources.AvailableMemoryBytes <= input.Resources.TotalMemoryBytes
+	gate := evaluateMemoryBasis(input)
+	memoryRemaining := gate.remaining
+	// The static budget stays authoritative even when the host observation is
+	// invalid; the legacy host basis must not treat its synthetic zero headroom
+	// as authoritative for work GitHub already assigned.
+	memoryObservationValid := gate.budgetActive ||
+		(input.Resources.TotalMemoryBytes > 0 &&
+			input.Resources.AvailableMemoryBytes <= input.Resources.TotalMemoryBytes)
 	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
 	sort.SliceStable(targets, func(i, j int) bool {
 		if targets[i].Priority == targets[j].Priority {
@@ -525,6 +575,9 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		// assigned under the last acknowledged, memory-bounded capacity.
 		if memoryObservationValid {
 			start = minInt(start, affordableWorkerCount(memoryRemaining, workerMemory))
+		}
+		if gate.floorBlocked {
+			start = 0
 		}
 		if start > 0 {
 			plan.Start = append(plan.Start, StartDecision{PoolID: target.ID, Count: start})
@@ -633,6 +686,75 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 		state.HealthySince = nil
 	}
 	return state, false, ""
+}
+
+// memoryBasis is the memory admission input for one plan. With a configured
+// WorkerMemoryBudget the slot math runs on remaining = budget minus every
+// active worker's reservation: a static basis the workers' own host footprint
+// (vmmem) cannot erode, unlike host AvailablePhysical, which falls as workers
+// run and re-clamps capacity under exactly the load it should serve. The host
+// snapshot then only backs a coarse hard floor that blocks NEW starts and
+// advertised growth when the host is genuinely out of memory; the floor sits
+// far below any level worker growth alone can reach because the VM's size caps
+// the workers' total host footprint.
+type memoryBasis struct {
+	budgetActive  bool
+	budgetClamped bool
+	floorBlocked  bool
+	remaining     uint64
+}
+
+func evaluateMemoryBasis(input PlanInput) memoryBasis {
+	budget := uint64(input.Config.Resources.WorkerMemoryBudget)
+	if budget == 0 {
+		return memoryBasis{remaining: availableMemoryHeadroom(input.Resources, input.Config.Resources)}
+	}
+	basis := memoryBasis{budgetActive: true}
+	if input.EngineMemoryTotalBytes > 0 && budget > input.EngineMemoryTotalBytes {
+		budget = input.EngineMemoryTotalBytes
+		basis.budgetClamped = true
+	}
+	reservations := activeWorkerReservations(input.Config, input.Workers)
+	if reservations < budget {
+		basis.remaining = budget - reservations
+	}
+	basis.floorBlocked = hostMemoryAtFloor(input.Resources, input.Config.Resources)
+	return basis
+}
+
+// activeWorkerReservations sums the effective worker memory profile of every
+// busy, starting, and idle worker. A static budget seed must subtract busy
+// workers explicitly: the legacy host reading excluded them implicitly because
+// their consumption had already lowered AvailablePhysical. Workers in unknown
+// pools still occupy VM memory, so they reserve the global default profile.
+func activeWorkerReservations(cfg config.Config, workers []model.Worker) uint64 {
+	memoryByPool := make(map[string]config.ByteSize, len(cfg.GitHub.Targets))
+	for _, target := range cfg.GitHub.Targets {
+		memoryByPool[target.ID] = target.EffectiveWorker(cfg.Resources.Worker).Memory
+	}
+	var total uint64
+	for _, worker := range workers {
+		if !worker.Active() {
+			continue
+		}
+		memory, known := memoryByPool[worker.PoolID]
+		if !known {
+			memory = cfg.Resources.Worker.Memory
+		}
+		total = saturatingAddUint64(total, uint64(memory))
+	}
+	return total
+}
+
+// hostMemoryAtFloor reports the budget-basis backstop: host AvailablePhysical
+// at or below the MinimumAvailableMemoryPct reserve. Invalid observations are
+// not judged here; evaluateResourceGate already fails them closed.
+func hostMemoryAtFloor(snapshot model.ResourceSnapshot, policy config.Resources) bool {
+	if snapshot.TotalMemoryBytes == 0 || snapshot.AvailableMemoryBytes > snapshot.TotalMemoryBytes {
+		return false
+	}
+	reserved := uint64(math.Ceil(float64(snapshot.TotalMemoryBytes) * policy.MinimumAvailableMemoryPct / 100))
+	return snapshot.AvailableMemoryBytes <= reserved
 }
 
 func availableMemoryHeadroom(snapshot model.ResourceSnapshot, policy config.Resources) uint64 {

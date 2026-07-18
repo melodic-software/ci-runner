@@ -102,6 +102,8 @@ completed reconciliation; counters are monotonic process-lifetime events.
 | `ci_runner.accounting.transient_lag` | Bounded short-job lag classification, `0` or `1` | `ci_runner.pool.id` |
 | `ci_runner.host.cpu.utilization` | Host CPU utilization percent | none |
 | `ci_runner.host.memory.available` | Available physical memory in bytes | none |
+| `ci_runner.capacity.memory.headroom` | Memory left unspent by the last plan under the active basis (static worker budget, or legacy host headroom) | none |
+| `ci_runner.capacity.memory.affordable` | Additional workers the remaining memory headroom funds at the pool's effective worker profile | `ci_runner.pool.id` |
 | `ci_runner.gate.resource.blocked` | Resource gate, `0` or `1` | none |
 | `ci_runner.gate.power.blocked` | Power gate, `0` or `1` | none |
 | `ci_runner.worker.starts` | Worker start attempts | `ci_runner.pool.id`, bounded outcome |
@@ -149,6 +151,25 @@ controller records bounded `unknown` finalization and `missing` resource
 evidence instead of `runtime_error` and `unavailable`. If the stopped container
 still exists, its inspected exit code supplies the lifecycle outcome even when
 the wait stream failed.
+
+## Memory capacity basis and clamp visibility
+
+Memory-affordable slot math runs on a static `resources.workerMemoryBudget`
+when one is configured, otherwise on legacy host physical headroom. The two
+gauges above report the basis outcome each reconcile: headroom is the unspent
+remainder, and the per-pool affordable count is how many more workers that
+remainder funds. When the memory term (or, under a budget, the host-floor
+backstop at `minimumAvailableMemoryPercent`) binds worker starts or advertised
+capacity below what host and pool limits allowed, the controller writes a
+`memory-clamped-capacity` log line for the pool — previously this clamp was
+silent. It is a log line, not a problem: the legacy basis clamps routinely
+under load, and that alone must not report the fleet degraded.
+
+Two budget-specific signals are problems or warnings: a configured budget
+larger than the probed engine VM memory raises the
+`worker-memory-budget-exceeds-engine-memory` problem and clamps the effective
+budget to the probe, and a failed probe writes `engine-memory-probe-error`
+while the configured budget stays in effect unverified.
 
 ## Fast-job accounting freshness
 
@@ -212,7 +233,9 @@ CPU, and both admission gates. Useful alerts include:
 - unacknowledged capacity persisting beyond one listener request timeout plus
   two reconciliation intervals;
 - repeated reconcile errors or worker finalization runtime errors;
-- sustained resource-gate activation; and
+- sustained resource-gate activation;
+- recurring `memory-clamped-capacity` log lines while a `workerMemoryBudget`
+  is configured (a correctly sized budget should never clamp); and
 - desired workers that remain in `starting` without becoming `idle` or `busy`.
 
 Only explicit controller shutdown is classified as an expected worker

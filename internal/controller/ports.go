@@ -66,6 +66,19 @@ type ResourceMonitor interface {
 	Snapshot(context.Context) (model.ResourceSnapshot, error)
 }
 
+// EngineMemoryProbe reports the total memory of the VM backing the Docker
+// engine (the WSL2 VM on Windows), the kernel-truth ceiling a configured
+// worker memory budget is cross-checked against.
+type EngineMemoryProbe interface {
+	EngineMemoryTotal(context.Context) (uint64, error)
+}
+
+// unknownEngineMemory is the default probe: total unknown, so a configured
+// budget is trusted as-is.
+type unknownEngineMemory struct{}
+
+func (unknownEngineMemory) EngineMemoryTotal(context.Context) (uint64, error) { return 0, nil }
+
 type SecretMaterial = scaleset.SecretMaterial
 type SecretStore = scaleset.SecretStore
 
