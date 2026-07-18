@@ -591,10 +591,50 @@ func TestControllerRestartRequiresDurableReceiptInsteadOfExitCode(t *testing.T) 
 	}
 }
 
-func TestControllerRestartRejectsOrdinaryNonzeroExitEvenWithReceipt(t *testing.T) {
+func TestControllerRestartAuthorizesWrongExitCodeWithVerifiedReceipt(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, out, _ := newTestApplication(t, "", store, nil)
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{
+		statuses: []control.Status{
+			{ProcessID: 100, Version: buildinfo.Version},
+			{},
+			{ProcessID: 200, Version: buildinfo.Version, Phase: model.PhaseStarting},
+		},
+		statusErrors: []error{nil, control.ErrUnavailable, nil},
+	}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 143}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Config.Controller.ShutdownPollInterval.Duration = time.Millisecond
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitOK {
+		t.Fatalf("exit code %d, want success", code)
+	}
+	if len(tasks.names) != 1 || !strings.Contains(out.String(), "durable completion receipt is verified") {
+		t.Fatalf("verified receipt did not authorize restart under wrong exit code: tasks=%#v out=%s", tasks.names, out.String())
+	}
+}
+
+func TestControllerRestartRejectsWrongExitCodeWithoutReceipt(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.RestartReceipts = &fakeRestartReceiptReader{err: state.ErrNotFound}
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
+		t.Fatalf("exit code %d, want state-changed", code)
+	}
+	if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "no matching completion receipt") {
+		t.Fatalf("ordinary failure without receipt authorized restart: tasks=%#v error=%s", tasks.names, errOut.String())
+	}
+}
+
+func TestControllerRestartRejectsWrongExitCodeWithMismatchedReceipt(t *testing.T) {
 	store := state.NewMemoryStore()
 	application, _, errOut := newTestApplication(t, "", store, nil)
 	receipts := application.dependencies.RestartReceipts.(*fakeRestartReceiptReader)
+	receipts.receipt.RequestID = "other-request"
 	tasks := &fakeTaskStarter{}
 	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
 	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
@@ -602,8 +642,8 @@ func TestControllerRestartRejectsOrdinaryNonzeroExitEvenWithReceipt(t *testing.T
 	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitStateChanged {
 		t.Fatalf("exit code %d, want state-changed", code)
 	}
-	if receipts.loads != 0 || len(tasks.names) != 0 || !strings.Contains(errOut.String(), "instead of dedicated restart code") {
-		t.Fatalf("ordinary failure authorized restart: receipt loads=%d tasks=%#v error=%s", receipts.loads, tasks.names, errOut.String())
+	if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "no matching completion receipt") {
+		t.Fatalf("mismatched receipt authorized restart under wrong exit code: tasks=%#v error=%s", tasks.names, errOut.String())
 	}
 }
 
