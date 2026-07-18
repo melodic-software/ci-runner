@@ -85,7 +85,7 @@ If the critical-security no-grace clause is quoted verbatim, re-fetch its source
 
 **Sanity Check:** `npx markdownlint-cli2 "docs/topics/ci-runner-alignment/**/*.md"` exits 0 (run from repo root); all six acceptance-criteria rows recorded PASS with per-criterion basis.
 
-### Phase 3: Commit + PR [TODO] — user-gated
+### Phase 3: Commit + PR [DONE] — user-gated
 
 Branch `docs/ci-runner-alignment` off main; commit REPORT.md + PLAN.md + design-resolution.md (contract tier is branch — `docs/topics/` is tracked); PR per repo source-control conventions. **Gate:** confirm PR timing with the user — before or after the one-by-one walkthrough (walkthrough may amend the report with decisions).
 

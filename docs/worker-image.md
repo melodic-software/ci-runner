@@ -147,6 +147,20 @@ security boundary is that no reusable App key, observer credential, controller
 JWT, installation token, Docker control socket, or host filesystem enters the
 worker; the writable layer and its one-job credentials are destroyed after use.
 
+Two residual risks are explicitly accepted rather than left implicit. First,
+the CI engine is shared with non-CI host workloads: workers run on the same
+Docker Desktop/WSL2 engine as the host's other containers. The measured
+surfaces are closed (loopback-only dashboards on a separate bridge, no worker
+Docker socket, digest pinning, per-worker resource caps); the irreducible
+remainder is a shared-kernel escape — the same residual any container-based
+runner carries. Revisit when (i) a higher-value workload lands on the same
+engine, or (ii) concurrent cross-repo worker isolation becomes load-bearing;
+the roadmap's isolated-VM backend is the escalation path. Second, concurrent
+workers share the default bridge with inter-container communication enabled,
+so sibling workers can reach each other — acceptable while all jobs are
+single-tenant, first-party, and equally trusted; it is the finding that scales
+with multi-repo tenancy, and the isolated-VM backend also resolves it.
+
 For controller restart recovery, the image uses GitHub's documented
 `ACTIONS_RUNNER_HOOK_JOB_STARTED` and `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`
 hooks. A root-owned entrypoint atomically initializes
