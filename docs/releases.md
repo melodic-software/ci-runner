@@ -146,15 +146,17 @@ This policy is deliberately stricter than GitHub's platform enforcement for
 update-disabled runners, which stops queuing jobs to a runner more than 30 days
 behind the latest release and pauses queuing immediately when a critical
 security update is published. The 14-day hard-fail satisfies the 30-day rule
-with margin, and the drift check's critical/CVE release detection satisfies the
-no-grace clause; this reconciliation is a maintained invariant, not a
-coincidence — relaxing the 14-day window or the critical detection requires
-re-verifying it. See the
+with margin. The critical/CVE clause has no grace period the drift check could
+beat: the check is daily-scheduled detection (up to ~24 h latency, alerting
+only — it neither rebuilds nor stops deployed workers), so the required
+control for a critical release is the expedited rebuild fast-path in the
+provisioning rolling-upgrade runbook, with GitHub's platform-side queuing
+pause as the enforcement backstop. This reconciliation is a maintained
+invariant, not a coincidence — relaxing the 14-day window, the critical
+detection, or the fast-path requires re-verifying it. See the
 [self-hosted runner reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 and the
 [minimum-version enforcement timeline](https://github.blog/changelog/2026-06-12-github-actions-minimum-version-enforcement-timeline-for-self-hosted-runners/).
-The expedited critical-security rebuild path lives in the provisioning
-rolling-upgrade runbook.
 
 Optional OTLP export is disabled by default and follows the same release,
 compatibility, and rollback policy as the controller. Enabling telemetry does
