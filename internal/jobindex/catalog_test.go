@@ -402,7 +402,13 @@ func TestSaveCompactsOldestCompletedRecordsWhenNoTombstonesRemain(t *testing.T) 
 	}
 	open := Record{PoolID: "org", RunnerName: "runner-open", ContainerID: "container-open", Open: true, UpdatedAt: now}
 	active := Record{PoolID: "org", RunnerName: "runner-active", JobID: "job-active", JobStartedAt: now, UpdatedAt: now}
-	catalog.Records = append(catalog.Records, open, active)
+	// Finalized by stale-open reconciliation while its completion event is
+	// still in flight — ActiveJob treats this as active, so it must survive.
+	finalizedActive := Record{
+		PoolID: "org", RunnerName: "runner-finalized-active", JobID: "job-finalized-active",
+		JobStartedAt: now.Add(-2 * time.Minute), FinalizedAt: now.Add(-time.Minute), UpdatedAt: now,
+	}
+	catalog.Records = append(catalog.Records, open, active, finalizedActive)
 	Sort(&catalog)
 	if encoded, err := json.MarshalIndent(catalog, "", "  "); err != nil {
 		t.Fatal(err)
@@ -433,6 +439,9 @@ func TestSaveCompactsOldestCompletedRecordsWhenNoTombstonesRemain(t *testing.T) 
 	if _, ok := survivors["runner-active"]; !ok {
 		t.Fatal("active record was compacted away")
 	}
+	if _, ok := survivors["runner-finalized-active"]; !ok {
+		t.Fatal("finalized-but-still-active record was compacted away")
+	}
 	newestCompletedName := fmt.Sprintf("runner-%07d", recordCount-1)
 	if _, ok := survivors[newestCompletedName]; !ok {
 		t.Fatal("newest completed record was compacted before older ones")
@@ -440,7 +449,7 @@ func TestSaveCompactsOldestCompletedRecordsWhenNoTombstonesRemain(t *testing.T) 
 	if _, ok := survivors["runner-0000000"]; ok {
 		t.Fatal("oldest completed record survived capacity compaction")
 	}
-	if len(reloaded.Records) >= recordCount+2 {
+	if len(reloaded.Records) >= recordCount+3 {
 		t.Fatalf("no records were compacted: %d", len(reloaded.Records))
 	}
 }

@@ -391,6 +391,12 @@ func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) 
 		if record.TombstonedAt != nil || record.Open || terminalTime(record).IsZero() {
 			continue
 		}
+		// A finalized record whose job completion has not arrived yet is still
+		// the durable job mapping ActiveJob and worker enrichment rely on;
+		// evicting it would unmark a busy worker until the event lands.
+		if record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero() {
+			continue
+		}
 		completed = append(completed, i)
 	}
 	if len(completed) == 0 {
