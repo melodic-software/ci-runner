@@ -205,7 +205,7 @@ Carried forward honestly rather than laundered into findings:
 - **Out-of-scope observation:** intermittent claude-review *job* failures in dotfiles/github-iac runs are downstream review-execution issues on the review tier, not runner routing (selection jobs succeed; recent runs pass). Noted, not a routing defect.
 - **Known not-covered remainders:** the exhaustive communication-domains table and IP-range endpoint (no egress allowlist is operated; trigger: adopting one); enterprise-level runner surfaces (Team org; trigger: GHEC move); which callers draw on the runner-registration rate bucket (informational); two secondary doc pages (workflow job-targeting syntax, runner removal) covered only indirectly.
 - **melo-lap-001 live verification deferred** per the Brief; trigger: drift suspected from repo or API evidence.
-- **Non-runner-surface hygiene items surfaced in passing:** the stale "inert until" comment (D2 residual) and the over-broad Dependabot ignore patterns in four consumers (D5 note) belong to their owning repos at triage time.
+- **Non-runner-surface hygiene items surfaced in passing:** the stale "inert until" comment (D2 residual) and the stale Dependabot ignore-pattern comments in four consumers (D5 note; the patterns themselves are deliberate — see the D5 erratum) belong to their owning repos at triage time.
 
 ## Walkthrough dispositions (2026-07-18)
 
