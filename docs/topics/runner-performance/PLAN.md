@@ -171,7 +171,7 @@ host cap 12). Per-busy-worker vmmem growth ≈ 1.6–3 GB (page cache; exceeds 2
 limit at VM level). Evidence: `.work/runner-performance/verification/clamp-correlation.md`
 + `baselines/` (memory tier). Phase 2 gate: PROCEED.
 
-### Phase 2: ci-runner gate re-base + clamp observability [TODO]
+### Phase 2: ci-runner gate re-base + clamp observability [DONE]
 
 Repo: ci-runner. Surface: main session (TDD, judgment-heavy). Depends on Phase 1 confirmation.
 Review: code-design, concurrency.
@@ -196,6 +196,28 @@ TDD: Red-Green-Refactor; new plan_test cases written first against the budget ba
 - With a heterogeneous test config (budget per Phase 1 sizing; pools 2GiB default + 4GiB
   build/review), BuildPlan advertises full pool max — asserted in a named test.
 
+**Results (2026-07-18, fresh-context verifier 6/6 PASS):** budget basis shipped —
+`workerMemoryBudget` (ByteSize, v2-only, zero=unset=legacy) re-bases slot math to
+`budget − Σ active-worker reservations` (busy+starting+idle up front; allocate()
+verified no-double-count). Backstop = binary hard floor at the
+`MinimumAvailableMemoryPct` reserve gating NEW starts/advertised growth only (held
+capacity never withdrawn; no `min(budget, host-headroom)` composition — C1 honored;
+does-not-bind case fixtures the Phase 1 measured 17 GiB minimum). Cross-check probe =
+Docker Engine `info .MemTotal` (pinned npipe host), once per VM lifecycle, reset on
+down observation; config > probe clamps + `worker-memory-budget-exceeds-engine-memory`
+problem, probe failure warns + trusts config. Gauges
+`ci_runner.capacity.memory.headroom` + `ci_runner.capacity.memory.affordable` and the
+`memory-clamped-capacity` log line (log, not problem — legacy clamps must not flip
+phase) cataloged in observability docs. Named test
+`TestBudgetBasisAdvertisesFullPoolMaxAcrossHeterogeneousPools` proves 8/2/2 full-max
+advertisement at 36GiB budget vs 32GiB worst case under a host snapshot that legacy
+basis would clamp to 3. Cross-build linux + vet clean. Known-environmental exemption:
+`internal/control` named-pipe test fails locally (live controller owns the pipe) —
+reproduced identically at baseline 324386c. Phase 3 flag: deployed
+`minimumAvailableMemoryPercent` 15 (≈10.2 GB) is a marginal floor once the VM is 40GB —
+decide a lower value (e.g. 5) in the Phase 3 config change. Handoff:
+`.work/handoffs/2026-07-18-runner-performance-phase-2.md` (memory tier).
+
 ### Phase 3: provisioning — WSL2 sizing, budget wiring, drift fix [TODO]
 
 Repo: provisioning (+ operator apply on host). Surface: main session (destructive host steps are
@@ -211,6 +233,7 @@ operator-gated). Depends on Phase 2 release (config field must exist before depl
 | `runbooks/melo-lap-001.md` (or equivalent) | Modify | Lap apply steps |
 
 **Sanity Check:**
+
 - Rendered deployed `config.yaml` contains `workerMemoryBudget` and 3 pools (`grep` on live file
   post-apply).
 - `$env:USERPROFILE\.wslconfig` exists with `memory=40GB`; `wsl.exe cat /proc/meminfo` inside the
@@ -274,6 +297,7 @@ Deferred (upstream, SHA-pinned contract): `ci-workflows/claude-review.yml:196,23
 separate follow-up work item; allowlist lockstep cost ≫ gain.
 
 **Sanity Check:**
+
 - Spike report `.work/runner-performance/verification/checkout-matrix.md` exists: per-lane rows
   (lane, class, lazy-fetch count/time before, candidate shape, after-seconds, verdict).
 - Every inventory row ticked with a recorded verdict (MODIFIED with shape, or KEEP with reason).
@@ -310,6 +334,7 @@ discover→matrix (real parallelism), dotnet build lanes, secret-scan. Expected 
 job count ~25 → ≤16.
 
 **Sanity Check:**
+
 - Jobs-API count for a full-ecosystem test PR run ≤ 16 (excluding skipped sentinels).
 - `runner-policy` gate job exits 0 (no orphaned exception keys — exception-inventory-drift rule).
 - Aggregator `needs:` list updated; every merged gate still reports as a named step (visible in
@@ -343,6 +368,7 @@ post-Phase-4/5 workflows — the baseline runs' exact job graph no longer exists
 baseline stats provide the before-picture, not a like-for-like A/B.
 
 **Sanity Check:**
+
 - Comparison table in this file: queue p90, medley checkout p90, medley run p90, success rate —
   each against its Brief target, PASS/FAIL per criterion.
 - Worker-invariant criterion explicit: zero invariant-violation problem codes in controller logs
