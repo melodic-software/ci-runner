@@ -430,16 +430,16 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
 		"v1 worker memory budget": strings.Replace(
 			strings.Replace(strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1), "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
 			"  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 36GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
-		"null worker memory budget": strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: null\n  minimumAvailableMemoryPercent: 25\n", 1),
-		"zero worker memory budget": strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 0GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
-		"malformed URL":               strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
-		"raw diagnostics bound":       strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
-		"UNC path":                    strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),
-		"device namespace":            strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\?\C:\ci-runner\state'`, 1),
-		"alternate data stream":       strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\state:evil'`, 1),
-		"reserved device":             strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\CON\state'`, 1),
-		"nested runtime roots":        strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'C:\Users\runner\AppData\Local\ci-runner\state\diagnostics'`, 1),
-		"canonical equivalent roots":  strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'c:/users/RUNNER/AppData/Local/ci-runner/state'`, 1),
+		"null worker memory budget":  strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: null\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"zero worker memory budget":  strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 0GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"malformed URL":              strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
+		"raw diagnostics bound":      strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
+		"UNC path":                   strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),
+		"device namespace":           strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\?\C:\ci-runner\state'`, 1),
+		"alternate data stream":      strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\state:evil'`, 1),
+		"reserved device":            strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'C:\ci-runner\CON\state'`, 1),
+		"nested runtime roots":       strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'C:\Users\runner\AppData\Local\ci-runner\state\diagnostics'`, 1),
+		"canonical equivalent roots": strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'c:/users/RUNNER/AppData/Local/ci-runner/state'`, 1),
 	}
 	for name, input := range tests {
 		name, input := name, input

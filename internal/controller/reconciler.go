@@ -468,8 +468,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			desired: desired, observed: checkpoint, pools: pools, workers: workers, desktop: desktop,
 			advertised: pollPlan.AdvertisedCapacity, operationProblems: operationProblems,
 			engineMemoryTotal: r.engineMemoryTotal,
-			forcedZero:    recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
-			checkpointErr: checkpointErr,
+			forcedZero:        recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
+			checkpointErr:     checkpointErr,
 		}
 		go func() {
 			pollWatchDone <- r.watchPollCadence(pollWatchContext, cancel, cadenceState)
