@@ -129,7 +129,7 @@ plan-shaping findings:
    material serial selector wait in standalone workflows (pr-title, actions-lint, osv-scanner,
    secret-scan-scheduled).
 
-### Phase 1: Verify clamp live + materialize baseline [TODO]
+### Phase 1: Verify clamp live + materialize baseline [DONE]
 
 Repo: ci-runner (memory tier only — no committed changes). Surface: main session (live host).
 
@@ -158,6 +158,18 @@ Repo: ci-runner (memory tier only — no committed changes). Surface: main sessi
 - `ls .work/runner-performance/baselines/*.json` returns ≥3 files.
 - Live 3-pool worst-case reservation sum recorded (needs the live-only review pool's worker
   memory) — feeds Phase 2 test fixtures and Phase 3 budget value.
+
+**Results (2026-07-18, verified by fresh-context agent, 5/5 criteria PASS):** clamp
+REPRODUCED — 67 samples over a 25-min organic busy window; advertised < pool max 12 in
+62/67 while demand ≥ 11; exact formula match at window start (computed slots 9 = advertised
+9 < assigned 10). vmmem↔host-available coupling measured: slope −0.79 GB available per
++1 GB vmmem, r −0.90 (confirms C1 — no naive host-physical backstop). Desk RAM reconciled:
+64 GiB installed = 67.94 decimal GB controller-reported (Brief 68GB / runbook 64GB = same
+hardware, unit confusion); lap-001 = 64 GB. WSL2 VM unmanaged (no `.wslconfig`), in-VM
+MemTotal 31.0 GiB < 32 GiB worst-case 3-pool reservation sum (8×2 + 2×4 + 2×4 GiB under
+host cap 12). Per-busy-worker vmmem growth ≈ 1.6–3 GB (page cache; exceeds 2GiB container
+limit at VM level). Evidence: `.work/runner-performance/verification/clamp-correlation.md`
++ `baselines/` (memory tier). Phase 2 gate: PROCEED.
 
 ### Phase 2: ci-runner gate re-base + clamp observability [TODO]
 
