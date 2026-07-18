@@ -288,14 +288,18 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	return nil
 }
 
-// encodeWithinCapacity marshals the catalog, compacting the oldest tombstoned
-// records when the encoding would exceed the save cap. A tombstoned record is
-// dead bookkeeping whose only remaining value is retention history, so
-// capacity pressure outranks the retention window: without this, jobs.json
+// encodeWithinCapacity marshals the catalog, compacting records when the
+// encoding would exceed the save cap. Tombstoned records go first: they are
+// dead bookkeeping whose only remaining value is retention history. When no
+// tombstones remain, the oldest completed records go next — the catalog keys
+// one record per ephemeral JIT runner per job, so completed records grow with
+// job churn (not concurrent worker count) and can saturate the cap before the
+// artifact-retention pass ever tombstones them. In both tiers capacity
+// pressure outranks the retention window: without compaction, jobs.json
 // reaches the safety limit, every subsequent index write fails permanently,
 // and worker finalization retries livelock reconciliation. The cap can then
-// only be exceeded by live records alone, which the per-worker record model
-// makes unreachable at supported worker counts.
+// only be exceeded by open or still-running records alone, which the
+// concurrent worker ceiling makes unreachable at supported worker counts.
 func encodeWithinCapacity(catalog *Catalog) ([]byte, error) {
 	for {
 		encoded, err := json.MarshalIndent(catalog, "", "  ")
@@ -306,9 +310,14 @@ func encodeWithinCapacity(catalog *Catalog) ([]byte, error) {
 		if len(encoded) <= maximumJobState {
 			return encoded, nil
 		}
-		if compactOldestTombstones(catalog, len(encoded)-maximumJobState, len(encoded)) == 0 {
-			return nil, fmt.Errorf("jobs.json exceeds the %d-byte safety limit with no tombstoned records left to compact", maximumJobState)
+		overshoot := len(encoded) - maximumJobState
+		if compactOldestTombstones(catalog, overshoot, len(encoded)) != 0 {
+			continue
 		}
+		if compactOldestCompleted(catalog, overshoot, len(encoded)) != 0 {
+			continue
+		}
+		return nil, fmt.Errorf("jobs.json exceeds the %d-byte safety limit with no tombstoned or completed records left to compact", maximumJobState)
 	}
 }
 
@@ -348,6 +357,72 @@ func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int)
 	}
 	drop := make(map[int]struct{}, dropCount)
 	for _, index := range tombstoned[:dropCount] {
+		drop[index] = struct{}{}
+	}
+	kept := catalog.Records[:0]
+	for i, record := range catalog.Records {
+		if _, dropped := drop[i]; dropped {
+			continue
+		}
+		kept = append(kept, record)
+	}
+	catalog.Records = kept
+	return dropCount
+}
+
+// compactOldestCompleted removes the oldest terminal (closed and completed or
+// finalized, never tombstoned) records once no tombstones remain to compact.
+// Evicting a terminal record before its artifacts are cleaned leaves those
+// files to the age-based orphan sweep instead of record-driven cleanup — an
+// accepted trade against livelocking the index. Open records and records
+// without a terminal marker are never touched here.
+func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) (removed int) {
+	if len(catalog.Records) == 0 {
+		return 0
+	}
+	terminalTime := func(record Record) time.Time {
+		if !record.FinalizedAt.IsZero() {
+			return record.FinalizedAt
+		}
+		return record.CompletedAt
+	}
+	completed := make([]int, 0, len(catalog.Records))
+	for i, record := range catalog.Records {
+		if record.TombstonedAt != nil || record.Open || terminalTime(record).IsZero() {
+			continue
+		}
+		// A finalized record whose job completion has not arrived yet is still
+		// the durable job mapping ActiveJob and worker enrichment rely on;
+		// evicting it would unmark a busy worker until the event lands.
+		if record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero() {
+			continue
+		}
+		completed = append(completed, i)
+	}
+	if len(completed) == 0 {
+		return 0
+	}
+	sort.Slice(completed, func(a, b int) bool {
+		left, right := catalog.Records[completed[a]], catalog.Records[completed[b]]
+		leftTime, rightTime := terminalTime(left), terminalTime(right)
+		if !leftTime.Equal(rightTime) {
+			return leftTime.Before(rightTime)
+		}
+		if left.PoolID != right.PoolID {
+			return left.PoolID < right.PoolID
+		}
+		return left.RunnerName < right.RunnerName
+	})
+	averageRecordBytes := encodedBytes / len(catalog.Records)
+	if averageRecordBytes < 1 {
+		averageRecordBytes = 1
+	}
+	dropCount := overshootBytes/averageRecordBytes + 1
+	if dropCount > len(completed) {
+		dropCount = len(completed)
+	}
+	drop := make(map[int]struct{}, dropCount)
+	for _, index := range completed[:dropCount] {
 		drop[index] = struct{}{}
 	}
 	kept := catalog.Records[:0]
