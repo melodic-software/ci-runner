@@ -149,6 +149,7 @@ Repo: ci-runner (memory tier only — no committed changes). Surface: main sessi
    `.work/runner-performance/baselines/` as raw JSON + distilled stats.
 
 **Sanity Check:**
+
 - `.work/runner-performance/verification/clamp-correlation.md` exists with a table of ≥10 samples
   (timestamp, availableBytes, computed affordable slots, advertised MaxCapacity per pool) and a
   stated verdict: during the clamp window, the memory term is the binding ceiling (computed
@@ -169,7 +170,7 @@ hardware, unit confusion); lap-001 = 64 GB. WSL2 VM unmanaged (no `.wslconfig`),
 MemTotal 31.0 GiB < 32 GiB worst-case 3-pool reservation sum (8×2 + 2×4 + 2×4 GiB under
 host cap 12). Per-busy-worker vmmem growth ≈ 1.6–3 GB (page cache; exceeds 2GiB container
 limit at VM level). Evidence: `.work/runner-performance/verification/clamp-correlation.md`
-+ `baselines/` (memory tier). Phase 2 gate: PROCEED.
+plus `baselines/` (memory tier). Phase 2 gate: PROCEED.
 
 ### Phase 2: ci-runner gate re-base + clamp observability [DONE]
 
@@ -189,6 +190,7 @@ Review: code-design, concurrency.
 TDD: Red-Green-Refactor; new plan_test cases written first against the budget basis.
 
 **Sanity Check:**
+
 - `go build ./...` and `go test ./...` exit 0.
 - `grep -c "workerMemoryBudget" internal/config/config.go` ≥ 2 (field + validation).
 - New gauge names present in both `internal/telemetry/telemetry.go` and `docs/observability.md`
