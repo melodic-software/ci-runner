@@ -220,7 +220,7 @@ reproduced identically at baseline 324386c. Phase 3 flag: deployed
 decide a lower value (e.g. 5) in the Phase 3 config change. Handoff:
 `.work/handoffs/2026-07-18-runner-performance-phase-2.md` (memory tier).
 
-### Phase 3: provisioning — WSL2 sizing, budget wiring, drift fix [TODO]
+### Phase 3: provisioning — WSL2 sizing, budget wiring, drift fix [DONE]
 
 Repo: provisioning (+ operator apply on host). Surface: main session (destructive host steps are
 operator-gated). Depends on Phase 2 release (config field must exist before deploy references it).
@@ -246,6 +246,29 @@ operator-gated). Depends on Phase 2 release (config field must exist before depl
 - Busy-window re-sample (same Phase 1 script): advertised stays at pool max under full worker
   load — proves the redesigned backstop does not re-clamp (stress-test C1 regression probe).
 - Repo YAML == deployed config modulo documented render sentinels.
+
+**Results (2026-07-18):** shipped as provisioning PRs #163 (wslconfig template +
+`Set-WslConfigFile` helper + budget/floor config + lock v0.1.18 + runbook) and #164 (parked
+the paid hosted Pester lane behind opt-in `CI_PESTER_ENABLED`, mirroring medley#1570's
+budget posture, which had been hard-failing the required aggregate). Host apply executed in
+the approved window: drain (12-job backlog served, nothing killed) → Docker Desktop quit →
+`wsl --shutdown` → restart → measured in-VM MemTotal 41,070,232 kB ≈ 39.17 GiB under the
+40GB cap (WSL parses GB as GiB; swap exactly 10.0G) → budget 35GiB confirmed (≥32GiB worst
+case +3GiB margin, under the engine probe) → v0.1.18 installed transactionally from merged
+main (gh 2.95.0 verified the public OCI attestation anonymously — the runbook's mandatory
+GHCR login is stale for current gh; follow-up filed) → enable, doctor clean (one expected
+reboot-pending WARN). Sanity: rendered config carries `workerMemoryBudget: 35GiB` + 3 pools
++ floor 5; repo YAML == deployed modulo the five render sentinels; `.wslconfig` live.
+Advertised-capacity acceptance, exact form: live pool maxes (12/2/2) sum 16 > the 12-worker
+host limit, so per-pool==max simultaneously is impossible by host-count design — the
+memory-unbinding proof is advertised SUM == hostLimit 12 (demand-distributed 10/0/2, review
+pool nonzero for the first time), vs the legacy basis summing ≤9 under less load; the
+per-pool==max form is proven by Phase 2's heterogeneous-pool test where pool sum == host
+cap. Busy-window no-re-clamp probe (48 samples, 12 min): workers 1→11 busy, advertised
+constant 10/0/2 every sample, host available ≥20.7GB against the 3.4GB floor — C1 regression
+disproven under real load (evidence: `.work/runner-performance/verification/`
+`phase3-vm-apply.md` + `samples-phase3-busy.jsonl`). melo-lap-001 defers per the plan's own
+sequencing until the desk change soaks (its own template + measured budget then).
 
 ### Phase 4: medley checkout — diagnose, then per-lane rollout [DONE]
 
@@ -414,11 +437,16 @@ terminal-evidence capture failures ×225) and
 [#87](https://github.com/melodic-software/ci-runner/issues/87) (OTel telemetry live-only, no
 historical queryability).
 
-### Phase 7: re-measure + acceptance [TODO]
+### Phase 7: re-measure + acceptance [TODO — window open]
 
 After Phases 3-5 deployed. 2-week window including busy periods; same jobs-API sweep method as
 baseline; store under `.work/runner-performance/baselines/post-fix/`; record distilled comparison
 here (contract carries numbers, not raw output).
+
+**Window opened 2026-07-18** (v0.1.18 + budget config live on melo-desk-001; medley #1577 +
+#1579 deployed): sweep on or after 2026-08-01. Immediate post-deploy signal, supporting only:
+first production ci-status run on the new shapes had detect-changes checkout at 2s (was ~150s)
+and the busy-window probe held advertised at the host limit through an 11-busy-worker peak.
 
 Attribution notes (stress-test H2): queue p90 is load-confounded across windows — the
 deterministic clamp proof is Phase 3's idle + busy advertised==max checks; Phase 7 shows the
