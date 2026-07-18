@@ -206,3 +206,19 @@ Carried forward honestly rather than laundered into findings:
 - **Known not-covered remainders:** the exhaustive communication-domains table and IP-range endpoint (no egress allowlist is operated; trigger: adopting one); enterprise-level runner surfaces (Team org; trigger: GHEC move); which callers draw on the runner-registration rate bucket (informational); two secondary doc pages (workflow job-targeting syntax, runner removal) covered only indirectly.
 - **melo-lap-001 live verification deferred** per the Brief; trigger: drift suspected from repo or API evidence.
 - **Non-runner-surface hygiene items surfaced in passing:** the stale "inert until" comment (D2 residual) and the over-broad Dependabot ignore patterns in four consumers (D5 note) belong to their owning repos at triage time.
+
+## Walkthrough dispositions (2026-07-18)
+
+One-by-one walkthrough completed over the triage index; verdicts above remain authoritative — this section records only the dispositions (fix now vs file issue vs accept) and owning repos.
+
+| Finding | Disposition | Route |
+|---|---|---|
+| D11 | **Adopt, docs + runbook only.** The daily drift check already alerts within 24 h, hard-fails at ≥14 days from the first unadopted runner release, and hard-fails immediately on a critical/CVE-marked release — satisfying both the 30-day rule and the no-grace clause with margin. Record that reconciliation explicitly; add a critical-security expedited-rebuild fast-path to the rolling-upgrade runbook. No new automation. | ci-runner docs (this PR); provisioning runbook PR |
+| D12 | **Adopt external dead-man's-switch heartbeat.** Monitor pings an off-GitHub check on each successful run; alert fires on absence. Covers the 60-day public-repo auto-disable, schedule drops, and the both-dead gap in one control. | Issue in the monitor's owning repo |
+| D4 | **Widen the grace window; keep the hard fault.** Recalibrate the derived window so observed benign busy-fleet lag (~1.6× current grace) sits inside it; sustained beyond-grace lag stays a non-advisory defect signal. | ci-runner issue |
+| D5 | **Accept manual propagation lag** (additive allowlist makes it safe). File a deferred repin-mechanism issue with triggers: allowlist pruning, consumer growth, or a first staleness-caused failure. The four-consumer Dependabot ignore-pattern narrowing proceeds regardless. | standards issue; four consumer PRs |
+| D6 | **Both, staged.** Pin now via the surgical `ActionsOrganizationWorkflowPermissions` resource (SSOT + change-control); separately file one scheduled live governance-verify job covering this value, the fork settings, and the other verified org values (drift assurance). | github-iac PR + github-iac issue |
+| D10 | **Adopt the threat-model naming item.** "CI engine shared with non-CI host workloads" recorded as an explicit accepted residual with both revisit triggers, alongside the deferred inter-worker bridge-reachability observation. | ci-runner docs (this PR) |
+| Runner-group IaC (unused features) | **Adopt via issue.** Bring group create/visibility/selected-repos under github-iac; scope the issue to also register group values in the D6 governance-verify job. | github-iac issue |
+| D2, D3, D7, D8, D9 | **Confirmed as recorded** — no action beyond the already-queued D2 residual comment fix. | github-iac PR (D2 residual only) |
+| Unused-features table | **Confirmed as recorded** — DEFER/SKIP entries stand with their triggers; scale-set client bump adopts on the next tagged release. | — |
