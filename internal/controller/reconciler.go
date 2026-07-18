@@ -256,7 +256,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		// desired file, but it must never overwrite one after installation.
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now}
 		if err := r.deps.State.SaveDesired(ctx, desired); err != nil {
-			return ReconcileResult{}, fmt.Errorf("initialize desired state: %w", err)
+			// Nothing was reconciled and no capacity was drained: a persistent
+			// state-directory failure here is globally blocking, so the exit
+			// escalation must see it as such.
+			return ReconcileResult{NewWorkBlocked: true}, fmt.Errorf("initialize desired state: %w", err)
 		}
 	} else if err != nil {
 		// A desired-state read failure must fail capacity closed. Preserve the
@@ -283,10 +286,10 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if err != nil && !errors.Is(err, statepkg.ErrNotFound) {
 		quarantiner, ok := r.deps.State.(interface{ QuarantineObserved(context.Context) error })
 		if !ok {
-			return ReconcileResult{}, errors.Join(ErrUnsafeObservedState, err)
+			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err)
 		}
 		if quarantineErr := quarantiner.QuarantineObserved(ctx); quarantineErr != nil {
-			return ReconcileResult{}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
+			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
 		}
 		// Preserve the corrupt source until SaveObserved atomically replaces it,
 		// then reconstruct the exact configured scale set solely to advertise
