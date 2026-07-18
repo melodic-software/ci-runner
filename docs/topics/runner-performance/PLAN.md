@@ -443,8 +443,8 @@ After Phases 3-5 deployed. 2-week window including busy periods; same jobs-API s
 baseline; store under `.work/runner-performance/baselines/post-fix/`; record distilled comparison
 here (contract carries numbers, not raw output).
 
-**Window opened 2026-07-18** (v0.1.18 + budget config live on melo-desk-001; medley #1577 +
-#1579 deployed): sweep on or after 2026-08-01. Immediate post-deploy signal, supporting only:
+**Window opened 2026-07-18** (v0.1.18 + budget config live on melo-desk-001; medley
+consolidation PRs #1577 and #1579 deployed): sweep on or after 2026-08-01. Immediate post-deploy signal, supporting only:
 first production ci-status run on the new shapes had detect-changes checkout at 2s (was ~150s)
 and the busy-window probe held advertised at the host limit through an 11-busy-worker peak.
 
