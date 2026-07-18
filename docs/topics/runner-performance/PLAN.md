@@ -445,9 +445,15 @@ baseline; store under `.work/runner-performance/baselines/post-fix/`; record dis
 here (contract carries numbers, not raw output).
 
 **Window opened 2026-07-18** (v0.1.18 + budget config live on melo-desk-001; medley
-consolidation PRs #1577 and #1579 deployed): sweep on or after 2026-08-01. Immediate post-deploy signal, supporting only:
-first production ci-status run on the new shapes had detect-changes checkout at 2s (was ~150s)
-and the busy-window probe held advertised at the host limit through an 11-busy-worker peak.
+consolidation PRs #1577 and #1579 deployed). Two-host caveat: melo-lap-001 deploys after the
+desk soak (rolling-upgrade guideline ~one business day of real traffic), so the earliest
+days measure a mixed fleet by the runbook's own one-host-at-a-time design — the sweep runs
+on or after **2026-08-01 provided the lap deployed by ~2026-07-21**; a later lap deploy
+slides the window end so the lap covers the majority of it, and the sweep attributes
+per-host regardless (the lap is parked/offline most days, so desk-only data dominates
+either way). Immediate post-deploy signal, supporting only: first production ci-status run
+on the new shapes had detect-changes checkout at 2s (was ~150s) and the busy-window probe
+held advertised at the host limit through an 11-busy-worker peak.
 
 Attribution notes (stress-test H2): queue p90 is load-confounded across windows — the
 deterministic clamp proof is Phase 3's idle + busy advertised==max checks; Phase 7 shows the
