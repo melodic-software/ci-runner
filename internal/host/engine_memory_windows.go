@@ -31,7 +31,7 @@ func (d DockerCLIInspector) EngineMemoryTotal(ctx context.Context) (uint64, erro
 		return 0, fmt.Errorf("parse engine MemTotal %q: %w", value, err)
 	}
 	if total == 0 {
-		return 0, errors.New("Docker engine reported zero MemTotal")
+		return 0, errors.New("docker engine reported zero MemTotal")
 	}
 	return total, nil
 }
