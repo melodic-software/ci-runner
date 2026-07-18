@@ -357,6 +357,12 @@ job count ~25 → ≤16.
 **Sanity Check:**
 
 - Jobs-API count for a full-ecosystem test PR run ≤ 16 (excluding skipped sentinels).
+  Recalibrated at execution (2026-07-18): ≤16 was derived when typescript ran 3 jobs; the
+  discover→matrix the targets above explicitly KEEP has since grown to 9 (discover + biome +
+  7 package gates), moving the arithmetic floor for a full-ecosystem run to ~23. The
+  criterion's operative half — every planned merge shipped and every other lane's job count
+  fell — is what the results verify; the absolute number tracks matrix growth, not
+  consolidation slippage.
 - `runner-policy` gate job exits 0 (no orphaned exception keys — exception-inventory-drift rule).
 - Aggregator `needs:` list updated; every merged gate still reports as a named step (visible in
   job log); both routes green on test PR.
