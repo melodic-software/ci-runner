@@ -257,8 +257,9 @@ the approved window: drain (12-job backlog served, nothing killed) → Docker De
 case +3GiB margin, under the engine probe) → v0.1.18 installed transactionally from merged
 main (gh 2.95.0 verified the public OCI attestation anonymously — the runbook's mandatory
 GHCR login is stale for current gh; follow-up filed) → enable, doctor clean (one expected
-reboot-pending WARN). Sanity: rendered config carries `workerMemoryBudget: 35GiB` + 3 pools
-+ floor 5; repo YAML == deployed modulo the five render sentinels; `.wslconfig` live.
+reboot-pending WARN). Sanity: rendered config carries `workerMemoryBudget: 35GiB`, the
+three pools, and floor 5; repo YAML == deployed modulo the five render sentinels;
+`.wslconfig` live.
 Advertised-capacity acceptance, exact form: live pool maxes (12/2/2) sum 16 > the 12-worker
 host limit, so per-pool==max simultaneously is impossible by host-count design — the
 memory-unbinding proof is advertised SUM == hostLimit 12 (demand-distributed 10/0/2, review
