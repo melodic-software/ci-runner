@@ -378,8 +378,12 @@ caller-level and needed no change. runner-policy gate passed on the PR (no orpha
 Job-count sanity: the PR's own multi-ecosystem run executed 11 non-skipped jobs (was 19 for
 the same trigger set) — ≤16 holds for typical runs; a full-ecosystem run lands ~23 because
 the KEPT typescript discover→matrix (9 jobs) dominates, which is the deliberate
-real-parallelism trade recorded in the targets above. Route caveat shared with Phase 4:
-hosted-fallback run tracked in medley#1580 (billing outage). Re-spike (stress-test M1): the
+real-parallelism trade recorded in the targets above. Route sanity deviation, deferred with
+trigger (same pattern as Phase 4's): the forced hosted-fallback run could not execute — org
+hosted runners were billing-blocked all day — so it is tracked as medley#1580 (scope widened
+to the consolidated shapes), trigger = hosted runners accepting jobs again; the merged jobs
+keep the identical `inputs.runner` routing and inputs on both routes, so the phase closes on
+that evidence with the fallback run as named residue rather than silently waived. Re-spike (stress-test M1): the
 merged jobs' union cones were measured on the consolidation PR's own run (29637754156) —
 shell 179s and markdown 142s checkouts, both inside the measured band of the
 full-materialization member each union already contained (bash-tests 143-186s /
