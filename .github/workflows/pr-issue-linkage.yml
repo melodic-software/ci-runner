@@ -8,6 +8,7 @@ name: pr-issue-linkage
 # runs); `edited` re-validates on a body edit. Public repo: runs on the
 # reusable's hosted default runner.
 on:
+  # zizmor: ignore[dangerous-triggers] metadata-only gate; rationale in the header comment
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
   merge_group:

@@ -17,6 +17,9 @@ or a `skip-checks: true` trailer. Verify the exact target commit message before
 creating its tag. If a protected tag is accidentally suppressed, the tag stays
 reserved and immutable; publish the next patch version from a fresh reviewed
 commit instead of moving or deleting the tag. `v0.1.6` is reserved by this rule
+and has no release assets. The same one-way rule applies when the release
+workflow itself fails on a tag: `v0.1.17` is reserved by a failed release
+verification (workflow-audit findings on gate workflows added after `v0.1.16`)
 and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
