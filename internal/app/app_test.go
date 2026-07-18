@@ -630,6 +630,22 @@ func TestControllerRestartRejectsWrongExitCodeWithoutReceipt(t *testing.T) {
 	}
 }
 
+func TestControllerRestartSurfacesReceiptReadFailureUnderWrongExitCode(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version}}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{exitCode: 1}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.RestartReceipts = &fakeRestartReceiptReader{err: errors.New("state store I/O failure")}
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitRuntime {
+		t.Fatalf("exit code %d, want runtime", code)
+	}
+	if len(tasks.names) != 0 || !strings.Contains(errOut.String(), "completion receipt could not be read: state store I/O failure") {
+		t.Fatalf("receipt read failure was suppressed: tasks=%#v error=%s", tasks.names, errOut.String())
+	}
+}
+
 func TestControllerRestartRejectsWrongExitCodeWithMismatchedReceipt(t *testing.T) {
 	store := state.NewMemoryStore()
 	application, _, errOut := newTestApplication(t, "", store, nil)

@@ -134,6 +134,10 @@ func (a *Application) stopController(ctx context.Context, restart bool) int {
 			writef(a.out, "Controller exited with code %d instead of dedicated restart code %d, but the exact durable completion receipt is verified; starting the scheduled task.\n", exitCode, ControllerRestartExitCode)
 			return a.startControllerTaskAndWait(ctx, buildinfo.Version, status.ProcessID)
 		}
+		if receiptErr != nil && !errors.Is(receiptErr, state.ErrNotFound) {
+			writef(a.errOut, "controller exited with code %d instead of dedicated restart code %d and the completion receipt could not be read: %v; scheduled task was not started\n", exitCode, ControllerRestartExitCode, receiptErr)
+			return ExitRuntime
+		}
 		writef(a.errOut, "controller exited with code %d instead of dedicated restart code %d and no matching completion receipt exists; scheduled task was not started\n", exitCode, ControllerRestartExitCode)
 		writef(a.errOut, "the old process (pid %d) has exited; after confirming the drain outcome, recover with: Start-ScheduledTask %s\n", status.ProcessID, controllerTaskName)
 		return ExitStateChanged
