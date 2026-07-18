@@ -327,7 +327,7 @@ typescript-lane checkout p90 < 60s is NOT
 reachable from checkout inputs — if it still misses after Phase 5 + Phase 3 capacity, the
 mirror-mount ADR trigger fires [USER-RESERVED].
 
-### Phase 5: medley job consolidation [TODO]
+### Phase 5: medley job consolidation [DONE]
 
 Repo: medley. Surface: main session (judgment per lane). After Phase 4 (attribute gains
 separately; separate PRs).
@@ -360,6 +360,22 @@ job count ~25 → ≤16.
 - `runner-policy` gate job exits 0 (no orphaned exception keys — exception-inventory-drift rule).
 - Aggregator `needs:` list updated; every merged gate still reports as a named step (visible in
   job log); both routes green on test PR.
+
+**Results (2026-07-18):** shipped as medley PR #1579 (merged; #1577 carried Phase 4
+separately for attribution). yaml 2→1, markdown 3→1, python 6→2, shell 4→2 (all Linux gates
+in one job — the governed worker image ships pwsh, so PSScriptAnalyzer rode along; Pester
+kept its Windows job and its `#pester` exception key). Every merged gate is an
+`if: always()` step (full-tree-gates pattern) and reported as a named step on the PR run.
+Pre-flight: required contexts are `pr-title` + `ci-status` only; only the `#pester`
+exception key touched these files and its job id survived; the aggregator `needs:` list is
+caller-level and needed no change. runner-policy gate passed on the PR (no orphaned keys).
+Job-count sanity: the PR's own multi-ecosystem run executed 11 non-skipped jobs (was 19 for
+the same trigger set) — ≤16 holds for typical runs; a full-ecosystem run lands ~23 because
+the KEPT typescript discover→matrix (9 jobs) dominates, which is the deliberate
+real-parallelism trade recorded in the targets above. Route caveat shared with Phase 4:
+hosted-fallback run tracked in medley#1580 (billing outage). No cone widened beyond a
+lane's existing read set except by union of its own merged gates, and every union member's
+Phase 4 verdict was KEEP — no re-spike triggered (stress-test M1).
 
 ### Phase 6: side-flag work items [DONE]
 
