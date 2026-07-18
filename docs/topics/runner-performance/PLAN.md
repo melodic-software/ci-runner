@@ -342,20 +342,28 @@ job count ~25 → ≤16.
 - Aggregator `needs:` list updated; every merged gate still reports as a named step (visible in
   job log); both routes green on test PR.
 
-### Phase 6: side-flag work items [TODO]
+### Phase 6: side-flag work items [DONE]
 
 Repo: ci-runner issues (provisioning drift is fixed in Phase 3, not filed). Surface:
 sub-agent-worker capable. Three items, each with the search-before-create shape:
 
-- [ ] **Phase-entry check per item:** `gh issue list --state all --search '<key-term> in:title'
+- [x] **Phase-entry check per item:** `gh issue list --state all --search '<key-term> in:title'
   --json number,title,state` → match ⇒ `gh issue comment <N>` with the discovery evidence and skip
   create; empty ⇒ create.
-- [ ] Scale-set statistics poll failures (×632/24-48h, build/review pools).
-- [ ] cgroup terminal-evidence capture failures (×225).
-- [ ] OTel historical queryability gap (live-only; blocked the clamp verification from telemetry
+- [x] Scale-set statistics poll failures (×632/24-48h, build/review pools).
+- [x] cgroup terminal-evidence capture failures (×225).
+- [x] OTel historical queryability gap (live-only; blocked the clamp verification from telemetry
   alone).
 
 **Sanity Check:** three issue URLs (created or pivoted-to) recorded in this section.
+
+**Results (2026-07-18):** stats-poll flag matched the already-fixed
+[#67](https://github.com/melodic-software/ci-runner/issues/67) (benign long-poll supersession,
+fixed by #68 in v0.1.16 — the ×632 window predates the fix; discovery evidence commented, no
+reopen). Created [#86](https://github.com/melodic-software/ci-runner/issues/86) (cgroup
+terminal-evidence capture failures ×225) and
+[#87](https://github.com/melodic-software/ci-runner/issues/87) (OTel telemetry live-only, no
+historical queryability).
 
 ### Phase 7: re-measure + acceptance [TODO]
 
