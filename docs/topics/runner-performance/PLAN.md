@@ -247,7 +247,7 @@ operator-gated). Depends on Phase 2 release (config field must exist before depl
   load — proves the redesigned backstop does not re-clamp (stress-test C1 regression probe).
 - Repo YAML == deployed config modulo documented render sentinels.
 
-### Phase 4: medley checkout — diagnose, then per-lane rollout [TODO]
+### Phase 4: medley checkout — diagnose, then per-lane rollout [DONE]
 
 Repo: medley (locally-owned workflow files only). Surface: main session throughout — the
 diagnosis needs live PR babysitting and the rollout is per-lane judgment, NOT mechanical (an
@@ -283,17 +283,17 @@ File inventory (tick as processed; ACTION decided by spike, not pre-written):
 
 | File | Action | Rationale |
 |------|--------|-----------|
-| [ ] `.github/workflows/ci-status.yml` full-tree-gates :283 | SPIKE-DECIDED | full-materialization, prime lazy-fetch suspect |
-| [ ] `.github/workflows/dotnet-ci.yml` :59-67, :256, :308 | SPIKE-DECIDED | wide sparse cone |
-| [ ] `.github/workflows/shell-lint.yml` :42-53, :82-94, :200-211, :241-253 | SPIKE-DECIDED | mixed sparse + full (bash-tests full) |
-| [ ] `.github/workflows/markdown-ci.yml` :30-35, :53-59, :71-77 | SPIKE-DECIDED | mixed; :71-77 full |
-| [ ] `.github/workflows/python-ci.yml` 6 checkouts | SPIKE-DECIDED | narrow cones — expect KEEP |
-| [ ] `.github/workflows/typescript-ci.yml` :39, :72, :124-138 | SPIKE-DECIDED | narrow cones |
-| [ ] `.github/workflows/yaml-ci.yml` :43-45, :68-72 | SPIKE-DECIDED | narrow cones — expect KEEP |
-| [ ] `.github/workflows/ci-status.yml` aggregator :492-494 | KEEP | single-file sparse; dropping blob:none would fetch every HEAD blob to check out one script |
-| [ ] ci-status `detect-changes` :99-102 | KEEP | merge-base + no-renames contract (ci-status.yml:130-137) |
-| [ ] `.github/workflows/secret-scan.yml` :34-37 | KEEP | gitleaks: full history + blobs |
-| [ ] Hosted-only control-plane workflows (docs-link-check, label-drift-check, onboard-drift, recurring-issues, tool-version-drift-check, claude-assistant, regen-lockfiles, dotnet-e2e-ci, playwright-visual-ci) | KEEP | off the self-hosted queue and ci-status critical path — out of Goal 2 scope; sparse+blob:none regression risk if blanket-edited |
+| [x] `.github/workflows/ci-status.yml` full-tree-gates :283 | KEEP | lazy 98s vs eager 181s same-load twin = wash; bytes dominate |
+| [x] `.github/workflows/dotnet-ci.yml` :59-67, :256, :308 | KEEP | measured minimal (0.7-0.8s lazy — cone excludes blob-heavy trees) |
+| [x] `.github/workflows/shell-lint.yml` :42-53, :82-94, :200-211, :241-253 | KEEP | lint cones minimal (≤1.2s); bash-tests full lazy 143-186s = wash vs eager |
+| [x] `.github/workflows/markdown-ci.yml` :30-35, :53-59, :71-77 | KEEP | lint cone minimal; skill-governance/reference-integrity lazy = wash vs eager |
+| [x] `.github/workflows/python-ci.yml` 6 checkouts | KEEP | measured minimal (0.4-1.2s) as expected |
+| [x] `.github/workflows/typescript-ci.yml` :39, :72, :124-138 | KEEP | cones are blob-heavy (150-542s, load-dependent) but shape-insensitive — sparse mode always fetches blob:none; the lever is Phase 5 fan-out reduction |
+| [x] `.github/workflows/yaml-ci.yml` :43-45, :68-72 | KEEP | measured minimal (0.6s) as expected |
+| [x] `.github/workflows/ci-status.yml` aggregator :492-494 | KEEP | measured 0.6s single blob |
+| [x] ci-status `detect-changes` :99-102 | MODIFIED | + `sparse-checkout: .github` — contract intact (history via depth 0; `diff --no-renames` reads trees, not blobs); 150.8s → 1.4-2s, reproduced 3× + live post-merge |
+| [x] `.github/workflows/secret-scan.yml` :34-37 | KEEP | gitleaks: full history + blobs |
+| [x] Hosted-only control-plane workflows (docs-link-check, label-drift-check, onboard-drift, recurring-issues, tool-version-drift-check, claude-assistant, regen-lockfiles, dotnet-e2e-ci, playwright-visual-ci) | KEEP | off the self-hosted queue and ci-status critical path — out of Goal 2 scope; sparse+blob:none regression risk if blanket-edited |
 
 Deferred (upstream, SHA-pinned contract): `ci-workflows/claude-review.yml:196,237` checkouts —
 separate follow-up work item; allowlist lockstep cost ≫ gain.
@@ -307,6 +307,25 @@ separate follow-up work item; allowlist lockstep cost ≫ gain.
   KEEP+unchanged set recorded in the spike report.
 - Test-branch full ci-status run green on both routes (self-hosted + forced hosted fallback);
   checkout step p90 across modified lanes < 60s on the test PR.
+
+**Results (2026-07-18):** four instrumented spike runs on medley PR #1575 (trace2 per
+checkout; matrix in `.work/runner-performance/verification/checkout-matrix.md`). Mechanism
+confirmed: every slow lane = sub-second shallow fetch + ONE lazy promisor blob fetch at
+materialization (98-542s, fan-out amplified); history is never the cost. Two empirical
+mechanism corrections: checkout v7's sparse mode ALWAYS fetches blob:none (a `filter` input is
+redundant and does NOT disable the cone, contra action.yml wording), and lazy-vs-eager full
+materialization is a same-load wash — so per-lane shape changes cannot move the heavy lanes,
+only cone narrowing (or Phase 5 fan-out reduction) can. Rollout = medley PR #1577 (merged):
+detect-changes gains a `.github` cone, 150.8s → 2s live on the critical path; everything else
+KEEP as ticked above. runner-policy cone candidates failed twice (its policy gates read the
+whole repo by design) — KEEP full checkout. Sanity deviation, deferred with trigger: the
+forced-hosted-fallback route run could not execute (org hosted runners billing-blocked all
+day) — tracked as medley#1580, to run when hosted runners accept jobs again; the shipped
+change is input-identical across routes, so the phase closes on that evidence with the
+fallback run as tracked residue rather than silently waived. Goal-2 note:
+typescript-lane checkout p90 < 60s is NOT
+reachable from checkout inputs — if it still misses after Phase 5 + Phase 3 capacity, the
+mirror-mount ADR trigger fires [USER-RESERVED].
 
 ### Phase 5: medley job consolidation [TODO]
 
