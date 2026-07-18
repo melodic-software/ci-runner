@@ -89,6 +89,14 @@ type ReconcileResult struct {
 	Plan               Plan
 	CheckpointAge      time.Duration
 	CheckpointAgeValid bool
+	// NewWorkBlocked reports that this step's observation failed in a way
+	// that blocks all new work (failed resource, worker-inventory, desktop,
+	// power, desired-state, or job-index observation), as opposed to a
+	// per-target error that leaves the remaining pools reconciling. The
+	// persistent-failure escalation in the controller loop keys off this so
+	// a single misconfigured target can never consume the scheduled task's
+	// bounded restart budget.
+	NewWorkBlocked bool
 }
 
 func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Reconciler, error) {
@@ -961,6 +969,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	return ReconcileResult{
 		Observed: observed, Plan: postPlan,
 		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
+		NewWorkBlocked: observationFailed,
 	}, errors.Join(operationErrors...)
 }
 

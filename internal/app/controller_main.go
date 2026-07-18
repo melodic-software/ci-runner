@@ -633,13 +633,26 @@ const maxConsecutiveReconcileStepErrors = 20
 // hang or fail the same way.
 var errReconcilePersistentlyFailing = errors.New("every recent reconcile step completed with an error; exiting so the scheduled task restarts the controller")
 
-// reconcileFailureStreak counts consecutive completed-with-error Steps; any
-// clean Step resets it. observe reports whether the streak has reached the
-// escalation threshold.
+// stepOutcome carries a completed Step's error together with whether its
+// observation failure blocks all new work, so the loop can distinguish a
+// globally wedged controller from a per-target error that leaves the
+// remaining pools reconciling.
+type stepOutcome struct {
+	err            error
+	newWorkBlocked bool
+}
+
+// reconcileFailureStreak counts consecutive Steps that completed with an
+// error while all new work was blocked; any other outcome — a clean Step or
+// a partial per-target failure — resets it. Keying on the blocked flag keeps
+// one persistently misconfigured target (which the live controller retries
+// harmlessly forever) from consuming the scheduled task's bounded restart
+// budget. observe reports whether the streak has reached the escalation
+// threshold.
 type reconcileFailureStreak struct{ count int }
 
-func (s *reconcileFailureStreak) observe(stepErr error) bool {
-	if stepErr == nil {
+func (s *reconcileFailureStreak) observe(outcome stepOutcome) bool {
+	if outcome.err == nil || !outcome.newWorkBlocked {
 		s.count = 0
 		return false
 	}
@@ -685,11 +698,11 @@ func runControllerLoop(
 
 	stepDrainGrace := reconcileStepDrainGrace(cfg)
 	var failureStreak reconcileFailureStreak
-	noteStepOutcome := func(stepErr error) error {
-		if !failureStreak.observe(stepErr) {
+	noteStepOutcome := func(outcome stepOutcome) error {
+		if !failureStreak.observe(outcome) {
 			return nil
 		}
-		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-persistent-failure", Message: fmt.Sprintf("%d consecutive reconcile steps completed with an error; exiting so the scheduled task restarts the controller", failureStreak.count)})
+		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-persistent-failure", Message: fmt.Sprintf("%d consecutive reconcile steps completed with an error while all new work was blocked; exiting so the scheduled task restarts the controller", failureStreak.count)})
 		return errReconcilePersistentlyFailing
 	}
 	for {
@@ -701,10 +714,10 @@ func runControllerLoop(
 		// Step actually gets. See reconcileStepTimeout's doc comment.
 		stepTimeout := reconcileStepTimeout(cfg, reconciler.EffectiveMaximumConcurrentWorkers(ctx))
 		stepContext, cancelStep := context.WithTimeout(context.Background(), stepTimeout)
-		stepDone := make(chan error, 1)
+		stepDone := make(chan stepOutcome, 1)
 		go func() {
-			_, stepErr := reconciler.Step(stepContext)
-			stepDone <- stepErr
+			result, stepErr := reconciler.Step(stepContext)
+			stepDone <- stepOutcome{err: stepErr, newWorkBlocked: result.NewWorkBlocked}
 		}()
 		select {
 		case signal := <-handler.ShutdownRequests():
@@ -764,11 +777,11 @@ func runControllerLoop(
 				pendingAwaitServer = false
 				pendingJoinErr = serveErr
 				haveSignal = true
-			case stepErr := <-stepDone:
-				if stepErr != nil {
-					_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
+			case outcome := <-stepDone:
+				if outcome.err != nil {
+					_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: outcome.err.Error()})
 				}
-				if escalate := noteStepOutcome(stepErr); escalate != nil {
+				if escalate := noteStepOutcome(outcome); escalate != nil {
 					return escalate
 				}
 			case <-time.After(stepDrainGrace):
@@ -791,9 +804,9 @@ func runControllerLoop(
 				// invoking reconciler.Shutdown and hanging behind the wedged Step)
 				// if it does not.
 				select {
-				case stepErr := <-stepDone:
-					if stepErr != nil {
-						_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
+				case outcome := <-stepDone:
+					if outcome.err != nil {
+						_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: outcome.err.Error()})
 					}
 					if pendingJoinErr != nil {
 						return errors.Join(pendingJoinErr, shutdown(pendingSignal, pendingAwaitServer))
@@ -804,12 +817,12 @@ func runControllerLoop(
 					return errReconcileStepAbandoned
 				}
 			}
-		case stepErr := <-stepDone:
+		case outcome := <-stepDone:
 			cancelStep()
-			if stepErr != nil {
-				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: stepErr.Error()})
+			if outcome.err != nil {
+				_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "reconcile-error", Message: outcome.err.Error()})
 			}
-			if escalate := noteStepOutcome(stepErr); escalate != nil {
+			if escalate := noteStepOutcome(outcome); escalate != nil {
 				return escalate
 			}
 		}

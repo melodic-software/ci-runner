@@ -672,35 +672,63 @@ func TestErrReconcileStepAbandonedIsDistinctSentinel(t *testing.T) {
 	}
 }
 
-func TestReconcileFailureStreakEscalatesOnlyOnUnbrokenErrorRun(t *testing.T) {
+func TestReconcileFailureStreakEscalatesOnlyOnUnbrokenBlockedErrorRun(t *testing.T) {
 	t.Parallel()
 	var streak reconcileFailureStreak
-	stepErr := errors.New("adopt workers before artifact cleanup: lock jobs index: context canceled")
+	blocked := stepOutcome{err: errors.New("adopt workers before artifact cleanup: lock jobs index: context canceled"), newWorkBlocked: true}
 	for i := 1; i < maxConsecutiveReconcileStepErrors; i++ {
-		if streak.observe(stepErr) {
+		if streak.observe(blocked) {
 			t.Fatalf("streak escalated at %d errors, before the %d threshold", i, maxConsecutiveReconcileStepErrors)
 		}
 	}
-	if !streak.observe(stepErr) {
-		t.Fatalf("streak did not escalate at %d consecutive errors", maxConsecutiveReconcileStepErrors)
+	if !streak.observe(blocked) {
+		t.Fatalf("streak did not escalate at %d consecutive blocked errors", maxConsecutiveReconcileStepErrors)
 	}
 }
 
 func TestReconcileFailureStreakResetsOnAnyCleanStep(t *testing.T) {
 	t.Parallel()
 	var streak reconcileFailureStreak
-	stepErr := errors.New("worker inventory failed")
+	blocked := stepOutcome{err: errors.New("worker inventory failed"), newWorkBlocked: true}
 	for i := 0; i < maxConsecutiveReconcileStepErrors-1; i++ {
-		streak.observe(stepErr)
+		streak.observe(blocked)
 	}
-	if streak.observe(nil) {
+	if streak.observe(stepOutcome{}) {
 		t.Fatal("clean step escalated")
 	}
 	if streak.count != 0 {
 		t.Fatalf("clean step left streak count %d, want 0", streak.count)
 	}
-	if streak.observe(stepErr) {
+	if streak.observe(blocked) {
 		t.Fatal("first error after a clean step escalated")
+	}
+}
+
+// A per-target failure (scale-set ensure error for one pool) returns a Step
+// error while the remaining pools keep reconciling; it must never feed the
+// escalation streak, or a single misconfigured target would consume the
+// scheduled task's bounded restart budget.
+func TestReconcileFailureStreakIgnoresPartialPerTargetFailures(t *testing.T) {
+	t.Parallel()
+	var streak reconcileFailureStreak
+	partial := stepOutcome{err: errors.New("ensure scale set: credentials rejected")}
+	for i := 0; i < maxConsecutiveReconcileStepErrors*2; i++ {
+		if streak.observe(partial) {
+			t.Fatal("partial per-target failure escalated")
+		}
+	}
+	if streak.count != 0 {
+		t.Fatalf("partial failures accumulated streak count %d, want 0", streak.count)
+	}
+	blocked := stepOutcome{err: errors.New("worker inventory failed"), newWorkBlocked: true}
+	for i := 0; i < maxConsecutiveReconcileStepErrors-1; i++ {
+		streak.observe(blocked)
+	}
+	if streak.observe(partial) {
+		t.Fatal("partial failure escalated an existing blocked streak")
+	}
+	if streak.count != 0 {
+		t.Fatalf("partial failure did not reset the blocked streak: count %d", streak.count)
 	}
 }
 
