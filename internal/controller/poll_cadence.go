@@ -18,6 +18,9 @@ type pollCadenceState struct {
 	operationProblems []model.Problem
 	forcedZero        bool
 	checkpointErr     error
+	// engineMemoryTotal is a by-value snapshot of the reconciler's cached
+	// probe; the cadence goroutine must not read the mutable field.
+	engineMemoryTotal uint64
 }
 
 type pollCadenceResult struct {
@@ -179,7 +182,8 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				}
 				plan := BuildPlan(PlanInput{
 					Config: r.config, Desired: state.desired, Previous: checkpoint, CapacityHysteresis: state.advertised, Pools: state.pools,
-					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop, Now: now,
+					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop,
+					EngineMemoryTotalBytes: state.engineMemoryTotal, Now: now,
 				})
 				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
 				checkpoint = r.pollCheckpoint(checkpoint, state.pools, state.workers, resources, power, state.desktop, plan, now, state.operationProblems)

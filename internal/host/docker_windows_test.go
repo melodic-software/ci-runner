@@ -135,3 +135,35 @@ func TestDockerInspectorPinsLocalEngineHost(t *testing.T) {
 		})
 	}
 }
+
+func TestEngineMemoryTotalQueriesPinnedEngineAndParsesBytes(t *testing.T) {
+	t.Parallel()
+	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`
+	runner := &recordingCommandRunner{out: []byte("33328562176\n")}
+	total, err := DockerCLIInspector{Runner: runner, executablePath: executable}.EngineMemoryTotal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 33328562176 {
+		t.Fatalf("total = %d, want 33328562176", total)
+	}
+	want := []string{"--host", localDockerEngineHost, "info", "--format", "{{json .MemTotal}}"}
+	if runner.name != executable || !reflect.DeepEqual(runner.args, want) {
+		t.Fatalf("command = %q %#v, want %q %#v", runner.name, runner.args, executable, want)
+	}
+}
+
+func TestEngineMemoryTotalRejectsInvalidOutput(t *testing.T) {
+	t.Parallel()
+	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`
+	for name, out := range map[string]string{"empty": "", "zero": "0", "non-numeric": "unknown"} {
+		out := out
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runner := &recordingCommandRunner{out: []byte(out)}
+			if _, err := (DockerCLIInspector{Runner: runner, executablePath: executable}).EngineMemoryTotal(context.Background()); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}

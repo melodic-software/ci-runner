@@ -147,14 +147,15 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 	reconciler, err := controller.NewReconciler(cfg, buildinfo.Version, controller.Dependencies{
 		ScaleSets: scaleSets,
 		Workers:   workers,
-		Desktop:   host.NewControllerDesktopAdapter(),
-		Power:     host.WindowsPowerMonitor{},
-		Resources: &host.WindowsResourceMonitor{},
-		State:     store,
-		Jobs:      jobs,
-		Clock:     clock.Real{},
-		Logs:      logs,
-		Telemetry: telemetryProvider,
+		Desktop:      host.NewControllerDesktopAdapter(),
+		Power:        host.WindowsPowerMonitor{},
+		Resources:    &host.WindowsResourceMonitor{},
+		State:        store,
+		Jobs:         jobs,
+		Clock:        clock.Real{},
+		Logs:         logs,
+		Telemetry:    telemetryProvider,
+		EngineMemory: host.NewEngineMemoryProbe(),
 	})
 	if err != nil {
 		_ = workers.Close()

@@ -35,6 +35,10 @@ type Dependencies struct {
 	Clock     Clock
 	Logs      LogSink
 	Telemetry telemetry.Recorder
+	// EngineMemory cross-checks a configured worker memory budget against the
+	// engine VM's real total memory. Optional: absent, the budget is trusted
+	// as configured.
+	EngineMemory EngineMemoryProbe
 }
 
 type Reconciler struct {
@@ -57,6 +61,12 @@ type Reconciler struct {
 	sequence          uint64
 	shuttingDown      bool
 	pendingCapacity   map[string]int
+
+	// engineMemoryTotal caches the probed engine VM MemTotal for the current
+	// VM lifecycle. Only step() and its same-goroutine callees touch it while
+	// stepMu is held; the poll-cadence goroutine receives the value by copy in
+	// pollCadenceState.
+	engineMemoryTotal uint64
 
 	// registrationCheckCursor rotates which idle workers' GitHub registration
 	// gets verified when there are more eligible candidates than one Step's
@@ -93,6 +103,9 @@ func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Recon
 	}
 	if deps.Telemetry == nil {
 		deps.Telemetry = telemetry.Noop()
+	}
+	if deps.EngineMemory == nil {
+		deps.EngineMemory = unknownEngineMemory{}
 	}
 	if version == "" {
 		version = buildinfo.Version
@@ -349,6 +362,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
+	r.probeEngineMemory(ctx, desktopStatusKnown, desktop, note)
+
 	resources, resourceErr := r.deps.Resources.Snapshot(ctx)
 	if resourceErr != nil {
 		observationFailed = true
@@ -429,7 +444,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	// as fresh growth.
 	provisional := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: r.pendingCapacitySnapshot(), Pools: pools,
-		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
+		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
 	pollPlan := provisional
 	pollPlan.AdvertisedCapacity = sequenceCapacityTransfer(previous, provisional.AdvertisedCapacity)
@@ -449,6 +465,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		cadenceState := pollCadenceState{
 			desired: desired, observed: checkpoint, pools: pools, workers: workers, desktop: desktop,
 			advertised: pollPlan.AdvertisedCapacity, operationProblems: operationProblems,
+			engineMemoryTotal: r.engineMemoryTotal,
 			forcedZero:    recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
 			checkpointErr: checkpointErr,
 		}
@@ -617,7 +634,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 
 	plan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
-		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
+		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
 	if recoveryOnly {
 		plan.Start = nil
@@ -880,7 +898,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 
 	postPlan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
-		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
+		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
@@ -932,6 +951,32 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Observed: observed, Plan: postPlan,
 		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
 	}, errors.Join(operationErrors...)
+}
+
+// probeEngineMemory maintains the cached engine VM MemTotal that cross-checks
+// a configured worker memory budget. It probes at most once per VM lifecycle:
+// only after Docker Desktop and its engine are confirmed up (the VM may not
+// exist at process start), and again after any down observation, because
+// desktop teardown (gaming mode) recycles the WSL2 VM and a stale probe must
+// not vouch for the next VM's size. A probe failure is a warning, not a gate:
+// the configured budget is used unverified.
+func (r *Reconciler) probeEngineMemory(ctx context.Context, desktopStatusKnown bool, desktop model.DesktopStatus, note func(code, message, poolID string)) {
+	if r.config.Resources.WorkerMemoryBudget == 0 {
+		return
+	}
+	if !desktopStatusKnown || !desktop.DesktopRunning || !desktop.EngineReachable {
+		r.engineMemoryTotal = 0
+		return
+	}
+	if r.engineMemoryTotal != 0 {
+		return
+	}
+	total, err := r.deps.EngineMemory.EngineMemoryTotal(ctx)
+	if err != nil || total == 0 {
+		note("engine-memory-probe-error", "engine VM memory could not be probed; the configured workerMemoryBudget is used unverified", "")
+		return
+	}
+	r.engineMemoryTotal = total
 }
 
 func (r *Reconciler) resourceTier(poolID string) string {
@@ -1139,7 +1184,8 @@ func (r *Reconciler) freshStartAllowed(
 	now := r.deps.Clock.Now().UTC()
 	plan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
-		Workers: workers, Resources: resources, Power: power, Desktop: desktop, Now: now,
+		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
 	for _, decision := range plan.Start {
 		if decision.PoolID == poolID && decision.Count > 0 {

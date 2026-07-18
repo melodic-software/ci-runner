@@ -1547,6 +1547,116 @@ func TestPreStartFailureDeregistersJITButAmbiguousStartDoesNot(t *testing.T) {
 	}
 }
 
+type testEngineMemory struct {
+	mu    sync.Mutex
+	total uint64
+	err   error
+	calls int
+}
+
+func (p *testEngineMemory) EngineMemoryTotal(context.Context) (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if p.err != nil {
+		return 0, p.err
+	}
+	return p.total, nil
+}
+
+func (p *testEngineMemory) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func newProbeReconciler(t *testing.T, cfg config.Config, desktop *testDesktop, probe *testEngineMemory) *Reconciler {
+	t.Helper()
+	store := statepkg.NewMemoryStore()
+	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	if err := store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewReconciler(cfg, "test-version", Dependencies{
+		ScaleSets:    scaleset.NewFake(),
+		Workers:      &testRuntime{},
+		Desktop:      desktop,
+		Power:        staticPower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: now}},
+		Resources:    staticResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 64 << 30, CPUUtilizationPercent: 10}},
+		State:        store,
+		Jobs:         &testJobLookup{active: map[string]string{}},
+		Clock:        clockpkg.NewFake(now),
+		EngineMemory: probe,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return controller
+}
+
+func TestStepProbesEngineMemoryOncePerVMLifecycle(t *testing.T) {
+	t.Parallel()
+	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
+	probe := &testEngineMemory{total: 8 << 30}
+	cfg := validControllerConfig()
+	cfg.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+	controller := newProbeReconciler(t, cfg, desktop, probe)
+
+	result, err := controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 1 {
+		t.Fatalf("probe calls after first step = %d, want 1", probe.callCount())
+	}
+	if !hasProblem(result.Observed.Problems, "worker-memory-budget-exceeds-engine-memory", "") {
+		t.Fatalf("problems = %#v, want budget cross-check clamp against the 8GiB probe", result.Observed.Problems)
+	}
+
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 1 {
+		t.Fatalf("probe calls after second step = %d, want cached 1", probe.callCount())
+	}
+
+	// A desktop teardown recycles the VM: the cached probe must not validate
+	// the next VM, so a down step resets it and the next up step re-probes.
+	desktop.mu.Lock()
+	desktop.status = model.DesktopStatus{}
+	desktop.startErr = errors.New("start blocked for the test")
+	desktop.mu.Unlock()
+	// The blocked desktop start surfaces as a step error by design; only the
+	// probe accounting matters here.
+	_, _ = controller.Step(context.Background())
+	if probe.callCount() != 1 {
+		t.Fatalf("probe calls while engine down = %d, want no probe", probe.callCount())
+	}
+	desktop.mu.Lock()
+	desktop.startErr = nil
+	desktop.mu.Unlock()
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 2 {
+		t.Fatalf("probe calls after engine recovery = %d, want re-probe 2", probe.callCount())
+	}
+}
+
+func TestStepSkipsEngineMemoryProbeWithoutBudget(t *testing.T) {
+	t.Parallel()
+	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
+	probe := &testEngineMemory{total: 8 << 30}
+	controller := newProbeReconciler(t, validControllerConfig(), desktop, probe)
+
+	if _, err := controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if probe.callCount() != 0 {
+		t.Fatalf("probe calls without a configured budget = %d, want 0", probe.callCount())
+	}
+}
+
 type harness struct {
 	controller *Reconciler
 	store      *statepkg.MemoryStore
