@@ -7,12 +7,13 @@ name: do-not-merge
 # labeled/unlabeled re-evaluate the gate when the label changes. Public repo:
 # runs on the reusable's hosted default runner.
 on:
+  # zizmor: ignore[dangerous-triggers] metadata-only gate; rationale in the header comment
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, unlabeled]
   merge_group:
 
 permissions:
-  pull-requests: read
+  pull-requests: read # the gate only reads the PR's labels to decide pass/fail
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,5 +22,5 @@ concurrency:
 jobs:
   do-not-merge:
     permissions:
-      pull-requests: read
+      pull-requests: read # the reusable gate reads the PR's labels only
     uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@c36e8810832f27a2715af9422af6e191b0c5df66 # v0.5.0
