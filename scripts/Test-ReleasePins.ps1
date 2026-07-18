@@ -83,7 +83,9 @@ if (-not $dockerfile.Contains($expectedFrom)) {
 
 $expectedPowerShellVersion = "ARG POWERSHELL_VERSION=$($dependencies.powerShell.version)"
 $expectedPowerShellDigest = "ARG POWERSHELL_SHA256=$($dependencies.powerShell.linuxX64ArchiveSha256)"
-foreach ($expected in @($expectedPowerShellVersion, $expectedPowerShellDigest)) {
+$expectedGhVersion = "ARG GH_VERSION=$($dependencies.gh.version)"
+$expectedGhDigest = "ARG GH_SHA256=$($dependencies.gh.linuxAmd64ArchiveSha256)"
+foreach ($expected in @($expectedPowerShellVersion, $expectedPowerShellDigest, $expectedGhVersion, $expectedGhDigest)) {
     if (-not $dockerfile.Contains($expected)) {
         throw "Dockerfile dependency pin disagrees with release/dependencies.json: $expected"
     }

@@ -320,6 +320,29 @@ if (-not $powerShellAsset -or $powerShellAsset.digest -notmatch '^sha256:[0-9a-f
 Add-IntegrityDrift 'powershell-archive-digest' "sha256:$($dependencies.powerShell.linuxX64ArchiveSha256)" `
     $powerShellAsset.digest ([DateTimeOffset]$pinnedPowerShellRelease.published_at) $powerShellAsset.browser_download_url
 
+$hostedGhMatch = [regex]::Match($hostedManifest, '(?m)^- GitHub CLI ([0-9]+\.[0-9]+\.[0-9]+)\s*$')
+if (-not $hostedGhMatch.Success) {
+    throw "Official Ubuntu 24.04 hosted-image manifest does not contain a parseable GitHub CLI version: $hostedManifestSha"
+}
+$hostedGhVersion = $hostedGhMatch.Groups[1].Value
+$gh = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/cli/cli/releases/tags/v$hostedGhVersion"
+$ghReleases = Get-GitHubReleases 'cli/cli'
+$eligibleGhReleases = @($ghReleases | Where-Object {
+    $_.tag_name -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and
+    [version]$_.tag_name.TrimStart('v') -le [version]$hostedGhVersion
+})
+$ghPendingDate = Get-FirstUnadoptedReleaseDate $eligibleGhReleases $dependencies.gh.version
+$ghDriftDate = if ($ghPendingDate) { $ghPendingDate } else { [DateTimeOffset]$gh.published_at }
+Add-Drift 'github-hosted-gh' $dependencies.gh.version $hostedGhVersion $ghDriftDate "https://github.com/actions/runner-images/blob/$hostedManifestSha/images/ubuntu/Ubuntu2404-Readme.md"
+$pinnedGhRelease = Get-ReleaseForVersion $ghReleases $dependencies.gh.version 'cli/cli'
+$ghAssetName = "gh_$($dependencies.gh.version)_linux_amd64.tar.gz"
+$ghAsset = $pinnedGhRelease.assets | Where-Object { $_.name -eq $ghAssetName }
+if (-not $ghAsset -or $ghAsset.digest -notmatch '^sha256:[0-9a-f]{64}$') {
+    throw "Official GitHub CLI release is missing a checksummed $ghAssetName asset"
+}
+Add-IntegrityDrift 'gh-archive-digest' "sha256:$($dependencies.gh.linuxAmd64ArchiveSha256)" `
+    $ghAsset.digest ([DateTimeOffset]$pinnedGhRelease.published_at) $ghAsset.browser_download_url
+
 $nodeReleases = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json'
 $nodeLtsReleases = @($nodeReleases | Where-Object { $_.lts -and $_.lts -ne $false })
 $node = $nodeLtsReleases |

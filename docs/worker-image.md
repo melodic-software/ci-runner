@@ -50,6 +50,8 @@ The derived layer contains only:
 - sudo, retaining the upstream passwordless-sudo behavior used by Actions
   runner containers;
 - PowerShell;
+- the GitHub CLI, pinned to the hosted-manifest version from its checksummed
+  official release asset (Ubuntu's archive carries a years-stale `gh`);
 - clang and zlib headers for native compilation;
 - zstd, so `actions/cache` selects the same compression method as
   GitHub-hosted runners and cross-environment cache entries can match.
@@ -63,7 +65,10 @@ Parity with the hosted Ubuntu 24.04 manifest is case-by-case, never wholesale:
 a hosted-default tool joins this layer only when a governed lane empirically
 needs it. zstd earned its place when the retired canary process's
 hosted-to-self cache proof could not match versions against a gzip-only image; a medley lane's `pipx`
-dependency was instead removed by invoking pip directly. Before migrating a
+dependency was instead removed by invoking pip directly. The GitHub CLI earned
+its place when the do-not-merge-gate exit-127 outage showed multiple governed
+lanes (claude-review, link-check, queue-monitor-liveness, tool-version-drift,
+medley's comment gates) shell out to `gh` on the fleet. Before migrating a
 hosted lane to the fleet, verify the lane's tool dependencies against this
 image; a real gap is a reviewed Dockerfile addition and release, never an
 in-lane workaround.

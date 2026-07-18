@@ -52,7 +52,7 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   [[ "$(id -u)" == "1001" ]]
   [[ "$(id -g)" == "1001" ]]
   [[ "$(. /etc/os-release && printf "%s" "$VERSION_ID")" == "24.04" ]]
-  for command in sudo pwsh git git-lfs curl jq zip unzip ssh clang; do
+  for command in sudo pwsh gh git git-lfs curl jq zip unzip ssh clang; do
     command -v "$command" >/dev/null
   done
   sudo -n true

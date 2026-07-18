@@ -47,6 +47,13 @@
     "hostedImageManifestCommit": "f45762e93bedc498afdc31c756e725cc04ee4dee",
     "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/f45762e93bedc498afdc31c756e725cc04ee4dee/images/ubuntu/Ubuntu2404-Readme.md"
   },
+  "gh": {
+    "version": "2.95.0",
+    "linuxAmd64ArchiveSha256": "25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c",
+    "source": "https://github.com/cli/cli/releases/tag/v2.95.0",
+    "hostedImageManifestCommit": "f45762e93bedc498afdc31c756e725cc04ee4dee",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/f45762e93bedc498afdc31c756e725cc04ee4dee/images/ubuntu/Ubuntu2404-Readme.md"
+  },
   "govulncheck": {
     "version": "1.6.0",
     "source": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.6.0.info"
