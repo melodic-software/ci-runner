@@ -62,6 +62,8 @@ type CompatibilityDependencies struct {
 	ScaleSetClientCommit          string `json:"scaleSetClientCommit"`
 	GoToolchain                   string `json:"goToolchain"`
 	PowerShellVersion             string `json:"powerShellVersion"`
+	GHVersion                     string `json:"ghVersion"`
+	GHLinuxAMD64ArchiveSHA256     string `json:"ghLinuxAmd64ArchiveSha256"`
 	BuildxVersion                 string `json:"buildxVersion"`
 	BuildxLinuxAMD64SHA256        string `json:"buildxLinuxAmd64Sha256"`
 	BuildKitVersion               string `json:"buildKitVersion"`
@@ -138,6 +140,8 @@ func (m CompatibilityManifest) Validate(expectedControllerVersion string) error 
 	add(m.Dependencies.ScaleSetClientCommit == scaleset.OfficialClientCommit, "compatibility Scale Set Client commit does not match the compiled client")
 	add(m.Dependencies.GoToolchain == runtime.Version(), "compatibility Go toolchain does not match this executable")
 	add(semanticVersionPattern.MatchString(m.Dependencies.PowerShellVersion), "compatibility PowerShell version is invalid")
+	add(semanticVersionPattern.MatchString(m.Dependencies.GHVersion), "compatibility GitHub CLI version is invalid")
+	add(checksumPattern.MatchString(m.Dependencies.GHLinuxAMD64ArchiveSHA256), "compatibility GitHub CLI linux/amd64 archive checksum is invalid")
 	add(semanticVersionPattern.MatchString(m.Dependencies.BuildxVersion), "compatibility Buildx version is invalid")
 	add(checksumPattern.MatchString(m.Dependencies.BuildxLinuxAMD64SHA256), "compatibility Buildx linux/amd64 checksum is invalid")
 	add(semanticVersionPattern.MatchString(m.Dependencies.BuildKitVersion), "compatibility BuildKit version is invalid")

@@ -74,6 +74,8 @@ jq --exit-status \
       scaleSetClientCommit: $pins[0].scaleSetClient.commit,
       goToolchain: ("go" + $pins[0].go.version),
       powerShellVersion: $pins[0].powerShell.version,
+      ghVersion: $pins[0].gh.version,
+      ghLinuxAmd64ArchiveSha256: $pins[0].gh.linuxAmd64ArchiveSha256,
       buildxVersion: $pins[0].buildx.version,
       buildxLinuxAmd64Sha256: $pins[0].buildx.linuxAmd64Sha256,
       buildKitVersion: $pins[0].buildKit.version,
