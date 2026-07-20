@@ -4,9 +4,9 @@ import (
 	"context"
 	"os"
 	"os/signal"
-)
 
-import "github.com/melodic-software/ci-runner/internal/app"
+	"github.com/melodic-software/ci-runner/internal/app"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

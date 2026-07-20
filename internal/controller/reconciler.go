@@ -560,7 +560,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			zeroConfirmations[pool.TargetID] = 1
 			prior := previousPools[pool.TargetID]
 			if prior.CapacityAcknowledged && prior.MaxCapacity == 0 && prior.TotalAssignedJobs == 0 && prior.ZeroCapacityConfirmations > 0 {
-				zeroConfirmations[pool.TargetID] = minInt(2, prior.ZeroCapacityConfirmations+1)
+				zeroConfirmations[pool.TargetID] = min(2, prior.ZeroCapacityConfirmations+1)
 			}
 		}
 	}

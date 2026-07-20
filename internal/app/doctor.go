@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -150,13 +149,10 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	}
 
 	if *jsonOutput {
-		encoder := json.NewEncoder(a.out)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(struct {
+		if code := a.writeIndentedJSON(struct {
 			Checks []DoctorCheck `json:"checks"`
-		}{Checks: checks}); err != nil {
-			writef(a.errOut, "write doctor output: %v\n", err)
-			return ExitRuntime
+		}{Checks: checks}, "doctor output"); code != ExitOK {
+			return code
 		}
 	} else {
 		for _, check := range checks {
@@ -215,12 +211,8 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 
 func saturatingFreshnessDuration(request, retryMaximum, reconcile time.Duration, attempts, targets int) time.Duration {
 	const maximum = time.Duration(1<<63 - 1)
-	if attempts < 1 {
-		attempts = 1
-	}
-	if targets < 1 {
-		targets = 1
-	}
+	attempts = max(attempts, 1)
+	targets = max(targets, 1)
 	perAttempt := request
 	if retryMaximum > maximum-perAttempt {
 		return maximum

@@ -347,27 +347,7 @@ func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int)
 		}
 		return left.RunnerName < right.RunnerName
 	})
-	averageRecordBytes := encodedBytes / len(catalog.Records)
-	if averageRecordBytes < 1 {
-		averageRecordBytes = 1
-	}
-	dropCount := overshootBytes/averageRecordBytes + 1
-	if dropCount > len(tombstoned) {
-		dropCount = len(tombstoned)
-	}
-	drop := make(map[int]struct{}, dropCount)
-	for _, index := range tombstoned[:dropCount] {
-		drop[index] = struct{}{}
-	}
-	kept := catalog.Records[:0]
-	for i, record := range catalog.Records {
-		if _, dropped := drop[i]; dropped {
-			continue
-		}
-		kept = append(kept, record)
-	}
-	catalog.Records = kept
-	return dropCount
+	return compactOldestFirst(catalog, tombstoned, overshootBytes, encodedBytes)
 }
 
 // compactOldestCompleted removes the oldest terminal (closed and completed or
@@ -413,16 +393,17 @@ func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) 
 		}
 		return left.RunnerName < right.RunnerName
 	})
-	averageRecordBytes := encodedBytes / len(catalog.Records)
-	if averageRecordBytes < 1 {
-		averageRecordBytes = 1
-	}
-	dropCount := overshootBytes/averageRecordBytes + 1
-	if dropCount > len(completed) {
-		dropCount = len(completed)
-	}
+	return compactOldestFirst(catalog, completed, overshootBytes, encodedBytes)
+}
+
+// compactOldestFirst drops the oldest-first candidate record indices from
+// catalog.Records, capped at a count sized from the average encoded record so
+// the caller's re-encode loop usually converges in one compaction pass.
+func compactOldestFirst(catalog *Catalog, oldestFirst []int, overshootBytes, encodedBytes int) (removed int) {
+	averageRecordBytes := max(encodedBytes/len(catalog.Records), 1)
+	dropCount := min(overshootBytes/averageRecordBytes+1, len(oldestFirst))
 	drop := make(map[int]struct{}, dropCount)
-	for _, index := range completed[:dropCount] {
+	for _, index := range oldestFirst[:dropCount] {
 		drop[index] = struct{}{}
 	}
 	kept := catalog.Records[:0]

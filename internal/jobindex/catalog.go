@@ -206,20 +206,19 @@ type EventSink struct {
 }
 
 func (s EventSink) JobStarted(ctx context.Context, poolID, runnerName, jobID string) error {
-	_, err := s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, JobStartedAt: s.now()})
-	return err
+	return s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, JobStartedAt: s.now()})
 }
 
 func (s EventSink) JobCompleted(ctx context.Context, poolID, runnerName, jobID, result string) error {
-	_, err := s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, Result: result, CompletedAt: s.now()})
-	return err
+	return s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, Result: result, CompletedAt: s.now()})
 }
 
-func (s EventSink) upsert(ctx context.Context, patch Patch) (Record, error) {
+func (s EventSink) upsert(ctx context.Context, patch Patch) error {
 	if s.Store == nil {
-		return Record{}, errors.New("job event store is required")
+		return errors.New("job event store is required")
 	}
-	return s.Store.Upsert(ctx, patch)
+	_, err := s.Store.Upsert(ctx, patch)
+	return err
 }
 
 func (s EventSink) now() time.Time {

@@ -45,15 +45,8 @@ func (a ControllerDesktopAdapter) Start(ctx context.Context, timeout time.Durati
 		return fmt.Errorf("start Docker Desktop: %w", err)
 	}
 	return poll(operation, a.interval(), func(ctx context.Context) (bool, error) {
-		status, err := a.Desktop.Status(ctx)
-		if err != nil {
-			return false, nil
-		}
-		reachable, err := a.Docker.EngineReachable(ctx)
-		if err != nil {
-			return false, nil
-		}
-		return status == DesktopStatusRunning && reachable, nil
+		status, reachable, ok := a.probe(ctx)
+		return ok && status == DesktopStatusRunning && reachable, nil
 	}, "Docker Desktop did not become ready")
 }
 
@@ -67,15 +60,8 @@ func (a ControllerDesktopAdapter) Stop(ctx context.Context, timeout time.Duratio
 		return fmt.Errorf("stop Docker Desktop: %w", err)
 	}
 	return poll(operation, a.interval(), func(ctx context.Context) (bool, error) {
-		status, err := a.Desktop.Status(ctx)
-		if err != nil {
-			return false, nil
-		}
-		reachable, err := a.Docker.EngineReachable(ctx)
-		if err != nil {
-			return false, nil
-		}
-		return status == DesktopStatusStopped && !reachable, nil
+		status, reachable, ok := a.probe(ctx)
+		return ok && status == DesktopStatusStopped && !reachable, nil
 	}, "Docker Desktop did not stop cleanly")
 }
 
@@ -84,6 +70,21 @@ func (a ControllerDesktopAdapter) ShutdownAllWSL(ctx context.Context) error {
 		return errors.New("WSL adapter is unavailable")
 	}
 	return a.WSL.Shutdown(ctx)
+}
+
+// probe reports Docker Desktop's current status and engine reachability. ok
+// is false when either query failed, so Start/Stop's poll predicates keep
+// polling on a transient query error rather than treating it as ready.
+func (a ControllerDesktopAdapter) probe(ctx context.Context) (status DesktopStatus, reachable bool, ok bool) {
+	status, err := a.Desktop.Status(ctx)
+	if err != nil {
+		return DesktopStatusUnknown, false, false
+	}
+	reachable, err = a.Docker.EngineReachable(ctx)
+	if err != nil {
+		return DesktopStatusUnknown, false, false
+	}
+	return status, reachable, true
 }
 
 func (a ControllerDesktopAdapter) interval() time.Duration {

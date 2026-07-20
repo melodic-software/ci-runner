@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -424,11 +424,11 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			candidates = append(candidates, candidate{record: record, resourcePath: resourcePath, size: size})
 		}
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].record.FinalizedAt.Equal(candidates[j].record.FinalizedAt) {
-			return candidates[i].record.UpdatedAt.Before(candidates[j].record.UpdatedAt)
+	slices.SortFunc(candidates, func(a, b candidate) int {
+		if !a.record.FinalizedAt.Equal(b.record.FinalizedAt) {
+			return a.record.FinalizedAt.Compare(b.record.FinalizedAt)
 		}
-		return candidates[i].record.FinalizedAt.Before(candidates[j].record.FinalizedAt)
+		return a.record.UpdatedAt.Compare(b.record.UpdatedAt)
 	})
 	for _, candidate := range candidates {
 		expired := now.Sub(candidate.record.FinalizedAt) >= s.policy.Retention
@@ -507,7 +507,7 @@ func (w *truncatingWriteCloser) Write(value []byte) (int, error) {
 		}
 	}
 	if writeCount < len(value) {
-		marker = marker[:minInt(len(marker), int(w.limit-w.written))]
+		marker = marker[:min(len(marker), int(w.limit-w.written))]
 		if len(marker) > 0 {
 			n, err := w.destination.Write(marker)
 			w.written += uint64(n)
@@ -748,13 +748,6 @@ func artifactBaseName(metadata ArtifactMetadata) string {
 		id = id[:12]
 	}
 	return timestamp.Format("20060102T150405.000000000Z") + "_" + name + "_" + id
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func hardenAndVerify(acl jobindex.AccessController, path string) error {

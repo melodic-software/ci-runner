@@ -486,10 +486,7 @@ const reconcileStepJITBudgetFloorWorkers = 64
 // every input legal while guaranteeing the result is always large and
 // positive, consistent with "a larger backstop has no downside" above.
 func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) time.Duration {
-	attempts := cfg.GitHub.Retry.MaxAttempts
-	if attempts < reconcileStepMinRetryAttempts {
-		attempts = reconcileStepMinRetryAttempts
-	}
+	attempts := max(cfg.GitHub.Retry.MaxAttempts, reconcileStepMinRetryAttempts)
 	staticWorkerCap := max(cfg.Resources.MaximumConcurrentWorkers, 1)
 	stepOps := reconcileStepOpsPerTarget * max(len(cfg.GitHub.Targets), 1)
 	jitOps := saturatingMulInt(reconcileStepJITOpsPerWorker, max(effectiveMaxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers))

@@ -1508,4 +1508,3 @@ func assertCallBefore(t *testing.T, calls []string, first, second string) {
 
 var _ Engine = (*fakeEngine)(nil)
 var _ client.ImagePullResponse = (*fakePull)(nil)
-var _ = errors.Is
