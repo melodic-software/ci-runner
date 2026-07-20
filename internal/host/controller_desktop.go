@@ -12,7 +12,7 @@ import (
 // ControllerDesktopAdapter presents Docker Desktop and WSL through the narrow
 // factual interface consumed by the platform-neutral controller.
 type ControllerDesktopAdapter struct {
-	Desktop      DesktopManager
+	Desktop      DesktopProcess
 	Docker       DockerInspector
 	WSL          WSLManager
 	PollInterval time.Duration

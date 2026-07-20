@@ -12,7 +12,7 @@ const managedContainerLabel = "com.melodic-software.ci-runner.managed"
 // contract. The controller decides when to invoke it; this type owns only the
 // concrete Docker Desktop and WSL effects and their postcondition checks.
 type GamingManager struct {
-	Desktop DesktopManager
+	Desktop DesktopProcess
 	Docker  DockerInspector
 	WSL     WSLManager
 }

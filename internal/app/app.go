@@ -45,10 +45,6 @@ type ForceStopper interface {
 	Execute(context.Context, []controller.ForceStopTarget) ([]controller.ForceStopTarget, error)
 }
 
-type LogReader interface {
-	Write(context.Context, io.Writer, bool, string) error
-}
-
 type ControllerControl interface {
 	Status(context.Context) (control.Status, error)
 	Shutdown(context.Context, string, control.Status, bool) (control.Status, error)
@@ -74,7 +70,7 @@ type Dependencies struct {
 	Gaming          host.GamingHost
 	Secrets         SecretImporter
 	ForceStop       ForceStopper
-	Logs            LogReader
+	Logs            *FileLogs
 	Control         ControllerControl
 	Doctor          DoctorInspector
 	Processes       host.ProcessObserver

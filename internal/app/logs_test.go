@@ -66,7 +66,7 @@ func TestLogsCleanupIsExplicitAndMutuallyExclusive(t *testing.T) {
 	t.Parallel()
 	application, output, _ := newTestApplication(t, "", state.NewMemoryStore(), nil)
 	cleaned := false
-	application.dependencies.Logs = FileLogs{Cleaner: LogCleanupFunc(func(context.Context) error {
+	application.dependencies.Logs = &FileLogs{Cleaner: LogCleanupFunc(func(context.Context) error {
 		cleaned = true
 		return nil
 	})}

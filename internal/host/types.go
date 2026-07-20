@@ -41,7 +41,7 @@ func (v GamingVerification) Healthy() bool {
 	return v.DesktopStopped && v.DockerUnreachable && v.NoRunningWSL
 }
 
-type DesktopManager interface {
+type DesktopProcess interface {
 	Status(context.Context) (DesktopStatus, error)
 	Start(context.Context) error
 	Stop(context.Context) error
