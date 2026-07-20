@@ -22,12 +22,13 @@ const (
 )
 
 var (
-	hostIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	sizePattern   = regexp.MustCompile(`^([1-9][0-9]*)(B|KiB|MiB|GiB)$`)
-	windowsAbs    = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
-	windowsDevice = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$`)
-	githubSegment = regexp.MustCompile(`^[a-z0-9_.-]+$`)
+	hostIDPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	prefixPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	sizePattern     = regexp.MustCompile(`^([1-9][0-9]*)(B|KiB|MiB|GiB)$`)
+	windowsAbs      = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+	windowsDevice   = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$`)
+	githubSegment   = regexp.MustCompile(`^[a-z0-9_.-]+$`)
+	clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`)
 )
 
 type Duration struct{ time.Duration }
@@ -557,7 +558,7 @@ func (c Config) Validate() error {
 		}
 		seenIDs[target.ID] = struct{}{}
 		add(validateTargetURL(path+".url", target.URL, target.Scope))
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{6,128}$`).MatchString(target.ClientID) {
+		if !clientIDPattern.MatchString(target.ClientID) {
 			add(fmt.Errorf("%s.clientId: must be a GitHub App client ID", path))
 		}
 		if target.InstallationID <= 0 {

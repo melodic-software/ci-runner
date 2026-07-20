@@ -29,6 +29,10 @@ function Get-GitHubReleases([string] $Repository) {
     }
 }
 
+function Get-LatestRelease([object[]] $Releases) {
+    $Releases | Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending | Select-Object -First 1
+}
+
 function Get-FirstUnadoptedReleaseDate([object[]] $Releases, [string] $PinnedVersion) {
     $pinned = [version]$PinnedVersion
     $pending = @($Releases | Where-Object { [version]$_.tag_name.TrimStart('v') -gt $pinned })
@@ -137,7 +141,7 @@ function Add-IntegrityDrift(
 }
 
 $runnerReleases = Get-GitHubReleases 'actions/runner'
-$runner = $runnerReleases | Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending | Select-Object -First 1
+$runner = Get-LatestRelease $runnerReleases
 $runnerPendingDate = Get-FirstUnadoptedReleaseDate $runnerReleases $dependencies.runner.version
 $runnerCritical = @($runnerReleases | Where-Object {
     [version]$_.tag_name.TrimStart('v') -gt [version]$dependencies.runner.version -and
@@ -156,7 +160,7 @@ Add-IntegrityDrift 'actions-runner-archive-digest' "sha256:$($dependencies.runne
     $runnerAsset.digest ([DateTimeOffset]$pinnedRunnerRelease.published_at) $runnerAsset.browser_download_url
 
 $scaleSetReleases = Get-GitHubReleases 'actions/scaleset'
-$scaleSet = $scaleSetReleases | Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending | Select-Object -First 1
+$scaleSet = Get-LatestRelease $scaleSetReleases
 $scaleSetPendingDate = Get-FirstUnadoptedReleaseDate $scaleSetReleases $dependencies.scaleSetClient.version
 $scaleSetDriftDate = if ($scaleSetPendingDate) { $scaleSetPendingDate } else { [DateTimeOffset]$scaleSet.published_at }
 Add-Drift 'actions-scaleset' $dependencies.scaleSetClient.version $scaleSet.tag_name.TrimStart('v') $scaleSetDriftDate $scaleSet.html_url
@@ -173,9 +177,7 @@ foreach ($builder in @(
     $releases = Get-GitHubReleases $builder.Repository
     $semanticReleases = @($releases |
         Where-Object { $_.tag_name -match '^v?[0-9]+\.[0-9]+\.[0-9]+$' })
-    $latest = $semanticReleases |
-        Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending |
-        Select-Object -First 1
+    $latest = Get-LatestRelease $semanticReleases
     if (-not $latest) {
         throw "Official builder repository has no stable semantic release: $($builder.Repository)"
     }
@@ -227,9 +229,7 @@ foreach ($action in $dependencies.githubActions) {
     $actionReleases = Get-GitHubReleases $action.repository
     $semanticActionReleases = @($actionReleases |
         Where-Object { $_.tag_name -match '^v?[0-9]+\.[0-9]+\.[0-9]+$' })
-    $latestAction = $semanticActionReleases |
-        Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending |
-        Select-Object -First 1
+    $latestAction = Get-LatestRelease $semanticActionReleases
     if (-not $latestAction) {
         throw "Official GitHub Action repository has no stable semantic release: $($action.repository)"
     }
@@ -248,14 +248,14 @@ foreach ($tool in @(
     @{ Name = 'zizmor'; Repository = 'zizmorcore/zizmor'; Pinned = $dependencies.zizmor.version }
 )) {
     $releases = Get-GitHubReleases $tool.Repository
-    $latest = $releases | Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending | Select-Object -First 1
+    $latest = Get-LatestRelease $releases
     $pendingDate = Get-FirstUnadoptedReleaseDate $releases $tool.Pinned
     $driftDate = if ($pendingDate) { $pendingDate } else { [DateTimeOffset]$latest.published_at }
     Add-Drift $tool.Name $tool.Pinned $latest.tag_name.TrimStart('v') $driftDate $latest.html_url
 }
 
 $syftReleases = Get-GitHubReleases 'anchore/syft'
-$syft = $syftReleases | Sort-Object { [version]$_.tag_name.TrimStart('v') } -Descending | Select-Object -First 1
+$syft = Get-LatestRelease $syftReleases
 $syftPendingDate = Get-FirstUnadoptedReleaseDate $syftReleases $dependencies.syft.version
 $syftDriftDate = if ($syftPendingDate) { $syftPendingDate } else { [DateTimeOffset]$syft.published_at }
 Add-Drift 'syft' $dependencies.syft.version $syft.tag_name.TrimStart('v') $syftDriftDate $syft.html_url

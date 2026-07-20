@@ -218,13 +218,7 @@ func BuildPlan(input PlanInput) Plan {
 	for poolID, capacity := range input.CapacityHysteresis {
 		previousCapacityByPool[poolID] = capacity
 	}
-	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
-	sort.SliceStable(targets, func(i, j int) bool {
-		if targets[i].Priority == targets[j].Priority {
-			return targets[i].ID < targets[j].ID
-		}
-		return targets[i].Priority < targets[j].Priority
-	})
+	targets := sortedTargetsByPriority(input.Config.GitHub.Targets)
 
 	hostLimit := EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)
 	if hostLimit < 0 {
@@ -276,7 +270,7 @@ func BuildPlan(input PlanInput) Plan {
 			plan.Problems = append(plan.Problems, problem(input.Now, "invalid-assigned-job-count", "GitHub reported a negative TotalAssignedJobs value", target.ID, true))
 		}
 		ready[target.ID] = true
-		assignmentReservations[target.ID] = minInt(assigned, target.MaxCapacity)
+		assignmentReservations[target.ID] = min(assigned, target.MaxCapacity)
 		if assigned > target.MaxCapacity {
 			assignmentOverCap[target.ID] = true
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-count-exceeds-pool-cap", "GitHub reported more assigned jobs than the configured pool maximum; excess assignments are not reserved and listener capacity is held at zero", target.ID, true))
@@ -290,18 +284,18 @@ func BuildPlan(input PlanInput) Plan {
 		}
 		need := requested - current
 		availableExisting := nonbusyByPool[target.ID] - countedNonbusy[target.ID]
-		existing := minInt(need, minInt(availableExisting, remaining))
+		existing := min(need, min(availableExisting, remaining))
 		plan.DesiredWorkers[target.ID] += existing
 		countedNonbusy[target.ID] += existing
 		remaining -= existing
 
-		prospective := minInt(need-existing, remaining)
+		prospective := min(need-existing, remaining)
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		affordable := affordableWorkerCount(memoryRemaining, workerMemory)
 		if gate.floorBlocked {
 			affordable = 0
 		}
-		starts := minInt(prospective, affordable)
+		starts := min(prospective, affordable)
 		if starts < prospective {
 			plan.MemoryClamped[target.ID] = true
 		}
@@ -318,7 +312,7 @@ func BuildPlan(input PlanInput) Plan {
 		if !ready[target.ID] {
 			continue
 		}
-		assigned := maxInt(assignmentReservations[target.ID], busyByPool[target.ID])
+		assigned := max(assignmentReservations[target.ID], busyByPool[target.ID])
 		allocate(target, assigned)
 		if plan.DesiredWorkers[target.ID] < assigned {
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds currently serviceable host capacity", target.ID, true))
@@ -332,8 +326,8 @@ func BuildPlan(input PlanInput) Plan {
 			continue
 		}
 		assigned := assignmentReservations[target.ID]
-		requested := minInt(target.MaxCapacity, assigned+target.WarmIdle)
-		requested = maxInt(requested, maxInt(assigned, busyByPool[target.ID]))
+		requested := min(target.MaxCapacity, assigned+target.WarmIdle)
+		requested = max(requested, max(assigned, busyByPool[target.ID]))
 		allocate(target, requested)
 	}
 
@@ -455,17 +449,17 @@ func BuildPlan(input PlanInput) Plan {
 				continue
 			}
 			currentCapacity := plan.AdvertisedCapacity[target.ID]
-			additionalLimit := minInt(target.MaxCapacity-currentCapacity, serviceSlots)
-			additionalLimit = minInt(additionalLimit, advertisedBudget)
+			additionalLimit := min(target.MaxCapacity-currentCapacity, serviceSlots)
+			additionalLimit = min(additionalLimit, advertisedBudget)
 			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 			rawAffordable := affordableWorkerCount(memoryRemaining, workerMemory)
 			// Memory-backed capacity decreases immediately at the raw slot
 			// boundary. Growth requires extra headroom, while an already
 			// advertised slot remains stable inside that Schmitt-trigger band.
-			held := minInt(additionalLimit, maxInt(previousCapacityByPool[target.ID]-currentCapacity, 0))
-			held = minInt(held, rawAffordable)
+			held := min(additionalLimit, max(previousCapacityByPool[target.ID]-currentCapacity, 0))
+			held = min(held, rawAffordable)
 			memoryAfterHeld := memoryRemaining - uint64(held)*uint64(workerMemory)
-			growth := minInt(
+			growth := min(
 				additionalLimit-held,
 				affordableWorkerCountWithMargin(
 					memoryAfterHeld,
@@ -546,13 +540,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	memoryObservationValid := gate.budgetActive ||
 		(input.Resources.TotalMemoryBytes > 0 &&
 			input.Resources.AvailableMemoryBytes <= input.Resources.TotalMemoryBytes)
-	targets := append([]config.Target(nil), input.Config.GitHub.Targets...)
-	sort.SliceStable(targets, func(i, j int) bool {
-		if targets[i].Priority == targets[j].Priority {
-			return targets[i].ID < targets[j].ID
-		}
-		return targets[i].Priority < targets[j].Priority
-	})
+	targets := sortedTargetsByPriority(input.Config.GitHub.Targets)
 	for _, target := range targets {
 		pool := poolByID[target.ID]
 		uncovered := reservations[target.ID]
@@ -565,16 +553,16 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 				nonbusy++
 			}
 		}
-		serviceable := minInt(uncovered, minInt(pool.DrainServiceCapacity, target.MaxCapacity))
+		serviceable := min(uncovered, min(pool.DrainServiceCapacity, target.MaxCapacity))
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
-		start := minInt(maxInt(0, serviceable-nonbusy), remaining)
+		start := min(max(0, serviceable-nonbusy), remaining)
 		// An assignment can win the race with a fail-closed poll cancellation.
 		// When physical-memory telemetry is valid, keep using the exact target
 		// profile to rank what can start now. When it is invalid, do not treat
 		// the synthetic zero headroom as authoritative for work GitHub already
 		// assigned under the last acknowledged, memory-bounded capacity.
 		if memoryObservationValid {
-			start = minInt(start, affordableWorkerCount(memoryRemaining, workerMemory))
+			start = min(start, affordableWorkerCount(memoryRemaining, workerMemory))
 		}
 		if gate.floorBlocked {
 			start = 0
@@ -589,7 +577,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 				plan.StartDesktop = true
 			}
 		}
-		plan.DesiredWorkers[target.ID] = busy + minInt(uncovered, nonbusy+start)
+		plan.DesiredWorkers[target.ID] = busy + min(uncovered, nonbusy+start)
 		if uncovered > nonbusy+start {
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds the last acknowledged service capacity; capacity remains zero and existing workers are preserved", target.ID, true))
 		}
@@ -624,6 +612,20 @@ func appendSafeRemovals(plan *Plan, workersByPool map[string][]model.Worker, kno
 			}
 		}
 	}
+}
+
+// sortedTargetsByPriority returns a copy of targets ordered by ascending
+// priority, breaking ties by ID for deterministic allocation order. Lower
+// priority values are allocated first.
+func sortedTargetsByPriority(targets []config.Target) []config.Target {
+	sorted := append([]config.Target(nil), targets...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Priority == sorted[j].Priority {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].Priority < sorted[j].Priority
+	})
+	return sorted
 }
 
 func hasActiveWorkers(workers []model.Worker) bool {
@@ -774,9 +776,8 @@ func affordableWorkerCount(memoryAvailable uint64, workerMemory config.ByteSize)
 		return 0
 	}
 	slots := memoryAvailable / memoryBytes
-	maxInt := uint64(^uint(0) >> 1)
-	if slots > maxInt {
-		return int(maxInt)
+	if slots > uint64(math.MaxInt) {
+		return math.MaxInt
 	}
 	return int(slots)
 }
@@ -812,18 +813,4 @@ func evaluatePowerGate(previous model.PowerGateState, snapshot model.PowerSnapsh
 
 func problem(now time.Time, code, message, poolID string, retryable bool) model.Problem {
 	return model.Problem{Code: code, Message: message, PoolID: poolID, Retryable: retryable, At: now}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -10,17 +10,11 @@ type WSLCLI struct {
 }
 
 func (w WSLCLI) executable() (string, error) {
-	if w.executablePath != "" {
-		return w.executablePath, nil
-	}
-	return trustedSystemExecutable("wsl.exe")
+	return resolveExecutable(w.executablePath, func() (string, error) { return trustedSystemExecutable("wsl.exe") })
 }
 
 func (w WSLCLI) runner() CommandRunner {
-	if w.Runner == nil {
-		return ExecCommandRunner{}
-	}
-	return w.Runner
+	return resolvedCommandRunner(w.Runner)
 }
 
 func (w WSLCLI) Running(ctx context.Context) ([]string, error) {

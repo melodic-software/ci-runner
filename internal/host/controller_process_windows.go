@@ -35,19 +35,11 @@ func (s ScheduledTaskCLI) Start(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("scheduled task name is required")
 	}
-	runner := s.Runner
-	if runner == nil {
-		runner = ExecCommandRunner{}
+	executable, err := resolveExecutable(s.executablePath, func() (string, error) { return trustedSystemExecutable("schtasks.exe") })
+	if err != nil {
+		return err
 	}
-	executable := s.executablePath
-	if executable == "" {
-		var err error
-		executable, err = trustedSystemExecutable("schtasks.exe")
-		if err != nil {
-			return err
-		}
-	}
-	if _, err := runner.Run(ctx, executable, "/Run", "/TN", name); err != nil {
+	if _, err := resolvedCommandRunner(s.Runner).Run(ctx, executable, "/Run", "/TN", name); err != nil {
 		return fmt.Errorf("start scheduled task %q: %w", name, err)
 	}
 	return nil

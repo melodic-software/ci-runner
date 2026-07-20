@@ -34,30 +34,12 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	}
 	file, err := os.Open(configPath)
 	if err != nil {
-		if requestsJSONConfigValidation(commandArgs) {
-			_ = json.NewEncoder(out).Encode(struct {
-				SchemaVersion int    `json:"schemaVersion"`
-				Valid         bool   `json:"valid"`
-				Error         string `json:"error"`
-			}{SchemaVersion: 1, Valid: false, Error: err.Error()})
-		} else {
-			writef(errOut, "open configuration %q: %v\n", configPath, err)
-		}
-		return ExitInvalidConfig
+		return reportConfigLoadFailure(out, errOut, requestsJSONConfigValidation(commandArgs), "open", configPath, err)
 	}
 	cfg, loadErr := config.Load(file)
 	closeErr := file.Close()
 	if err := errors.Join(loadErr, closeErr); err != nil {
-		if requestsJSONConfigValidation(commandArgs) {
-			_ = json.NewEncoder(out).Encode(struct {
-				SchemaVersion int    `json:"schemaVersion"`
-				Valid         bool   `json:"valid"`
-				Error         string `json:"error"`
-			}{SchemaVersion: 1, Valid: false, Error: err.Error()})
-		} else {
-			writef(errOut, "load configuration %q: %v\n", configPath, err)
-		}
-		return ExitInvalidConfig
+		return reportConfigLoadFailure(out, errOut, requestsJSONConfigValidation(commandArgs), "load", configPath, err)
 	}
 	if len(commandArgs) > 0 && commandArgs[0] == "config" {
 		return runConfigCommand(cfg, commandArgs[1:], out, errOut)
@@ -219,6 +201,23 @@ func newConfigValidationResult(cfg config.Config) (configValidationResult, error
 			Secrets: secrets, State: statePath, Logs: logs, Diagnostics: diagnostics,
 		},
 	}, nil
+}
+
+// reportConfigLoadFailure reports a configuration open/load failure in
+// whichever form the caller requested: the same minimal JSON validation
+// envelope used by both failure points when JSON was requested, or a plain
+// "<action> configuration %q: %v" line on stderr otherwise.
+func reportConfigLoadFailure(out, errOut io.Writer, jsonRequested bool, action, configPath string, err error) int {
+	if jsonRequested {
+		_ = json.NewEncoder(out).Encode(struct {
+			SchemaVersion int    `json:"schemaVersion"`
+			Valid         bool   `json:"valid"`
+			Error         string `json:"error"`
+		}{SchemaVersion: 1, Valid: false, Error: err.Error()})
+	} else {
+		writef(errOut, "%s configuration %q: %v\n", action, configPath, err)
+	}
+	return ExitInvalidConfig
 }
 
 func requestsJSONConfigValidation(args []string) bool {

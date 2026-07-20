@@ -159,6 +159,19 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 	}
 }
 
+// writeIndentedJSON encodes value as pretty-printed JSON to a.out. On
+// encoder failure it reports the error on a.errOut, naming the failed
+// operation, and returns ExitRuntime; on success it returns ExitOK.
+func (a *Application) writeIndentedJSON(value any, operation string) int {
+	encoder := json.NewEncoder(a.out)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		writef(a.errOut, "write %s: %v\n", operation, err)
+		return ExitRuntime
+	}
+	return ExitOK
+}
+
 func (a *Application) status(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("host status", flag.ContinueOnError)
 	flags.SetOutput(a.errOut)
@@ -212,11 +225,8 @@ func (a *Application) status(ctx context.Context, args []string) int {
 				controlHealthy = false
 			}
 		}
-		encoder := json.NewEncoder(a.out)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(value); err != nil {
-			writef(a.errOut, "write status: %v\n", err)
-			return ExitRuntime
+		if code := a.writeIndentedJSON(value, "status"); code != ExitOK {
+			return code
 		}
 	} else {
 		a.writeHumanStatus(desired, desiredErr, observed, observedErr)

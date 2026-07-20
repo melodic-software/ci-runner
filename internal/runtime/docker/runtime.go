@@ -4,6 +4,7 @@ package docker
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -297,7 +298,7 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	if runnerID <= 0 {
 		return model.Worker{}, safeWorkerStartError(errors.New("JIT configuration is missing its positive GitHub runner ID"))
 	}
-	if len(jit) == 0 || bytesContainAny(jit, 0, '\r', '\n') {
+	if len(jit) == 0 || bytes.ContainsAny(jit, "\x00\r\n") {
 		return model.Worker{}, safeWorkerStartError(errors.New("JIT configuration must be a nonempty single line with no NUL byte"))
 	}
 	startedAt := time.Now().UTC()
@@ -413,17 +414,6 @@ func writeJITConfiguration(destination io.Writer, jit []byte) error {
 
 func safeWorkerStartError(err error) error {
 	return &controller.WorkerStartError{Err: err, RunnerMayBeActive: false}
-}
-
-func bytesContainAny(value []byte, forbidden ...byte) bool {
-	for _, current := range value {
-		for _, candidate := range forbidden {
-			if current == candidate {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (r *Runtime) RemoveIfIdle(ctx context.Context, id string) (bool, error) {

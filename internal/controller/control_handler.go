@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/melodic-software/ci-runner/internal/control"
@@ -202,9 +203,8 @@ func (h *ControlHandler) status(ctx context.Context) (control.Status, error) {
 	assignedJobs := 0
 	activeJobs := 0
 	activeWorkers := 0
-	maximumInt := int(^uint(0) >> 1)
 	for _, pool := range observed.Pools {
-		if pool.TotalAssignedJobs < 0 || assignedJobs > maximumInt-pool.TotalAssignedJobs {
+		if pool.TotalAssignedJobs < 0 || assignedJobs > math.MaxInt-pool.TotalAssignedJobs {
 			return control.Status{}, errors.New("observed assigned-job count is invalid")
 		}
 		assignedJobs += pool.TotalAssignedJobs

@@ -17,17 +17,11 @@ type DockerDesktopCLI struct {
 }
 
 func (d DockerDesktopCLI) executable() (string, error) {
-	if d.executablePath != "" {
-		return d.executablePath, nil
-	}
-	return trustedDockerDesktopExecutable()
+	return resolveExecutable(d.executablePath, trustedDockerDesktopExecutable)
 }
 
 func (d DockerDesktopCLI) runner() CommandRunner {
-	if d.Runner == nil {
-		return ExecCommandRunner{}
-	}
-	return d.Runner
+	return resolvedCommandRunner(d.Runner)
 }
 
 func (d DockerDesktopCLI) Status(ctx context.Context) (DesktopStatus, error) {
@@ -84,17 +78,11 @@ type DockerCLIInspector struct {
 }
 
 func (d DockerCLIInspector) executable() (string, error) {
-	if d.executablePath != "" {
-		return d.executablePath, nil
-	}
-	return trustedDockerDesktopExecutable()
+	return resolveExecutable(d.executablePath, trustedDockerDesktopExecutable)
 }
 
 func (d DockerCLIInspector) runner() CommandRunner {
-	if d.Runner == nil {
-		return ExecCommandRunner{}
-	}
-	return d.Runner
+	return resolvedCommandRunner(d.Runner)
 }
 
 func (d DockerCLIInspector) EngineReachable(ctx context.Context) (bool, error) {
