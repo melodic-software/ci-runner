@@ -149,7 +149,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 		case <-ticker.C:
 		}
 
-		now := r.deps.Clock.Now().UTC()
+		now := time.Now().UTC()
 		checkpoint := state.observed
 		var observationErr error
 		observationSources := make([]string, 0, 3)

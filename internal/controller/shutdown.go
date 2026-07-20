@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/melodic-software/ci-runner/internal/clock"
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
 )
@@ -76,7 +77,7 @@ func (r *Reconciler) Shutdown(ctx context.Context) error {
 				break
 			}
 		}
-		if err := r.deps.Clock.Sleep(ctx, r.config.Controller.ShutdownPollInterval.Duration); err != nil {
+		if err := clock.Sleep(ctx, r.config.Controller.ShutdownPollInterval.Duration); err != nil {
 			return err
 		}
 	}

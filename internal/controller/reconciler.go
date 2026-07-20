@@ -32,7 +32,6 @@ type Dependencies struct {
 	Resources ResourceMonitor
 	State     StateStore
 	Jobs      ActiveJobLookup
-	Clock     Clock
 	Logs      LogSink
 	Telemetry telemetry.Recorder
 	// EngineMemory cross-checks a configured worker memory budget against the
@@ -103,7 +102,7 @@ func NewReconciler(cfg config.Config, version string, deps Dependencies) (*Recon
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if deps.ScaleSets == nil || deps.Workers == nil || deps.Desktop == nil || deps.Power == nil || deps.Resources == nil || deps.State == nil || deps.Jobs == nil || deps.Clock == nil {
+	if deps.ScaleSets == nil || deps.Workers == nil || deps.Desktop == nil || deps.Power == nil || deps.Resources == nil || deps.State == nil || deps.Jobs == nil {
 		return nil, errors.New("controller dependencies must not be nil")
 	}
 	if deps.Logs == nil {
@@ -248,7 +247,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		return ReconcileResult{}, err
 	}
 
-	now := r.deps.Clock.Now().UTC()
+	now := time.Now().UTC()
 	desired, err := r.deps.State.LoadDesired(ctx)
 	var desiredLoadErr error
 	if errors.Is(err, statepkg.ErrNotFound) {
@@ -462,7 +461,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	})
 	pollPlan := provisional
 	pollPlan.AdvertisedCapacity = sequenceCapacityTransfer(previous, provisional.AdvertisedCapacity)
-	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, r.deps.Clock.Now().UTC(), operationProblems)
+	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)
 	var (
 		stopPollWatch context.CancelFunc
 		pollWatchDone chan pollCadenceResult
@@ -526,7 +525,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	for _, pool := range cadenceResult.observed.Pools {
 		cadencePools[pool.ID] = pool
 	}
-	now = r.deps.Clock.Now().UTC()
+	now = time.Now().UTC()
 	close(pollResults)
 	for result := range pollResults {
 		pool := &pools[result.index]
@@ -805,7 +804,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			name := r.nextRunnerName(decision.PoolID, now)
 			resourceTier := r.resourceTier(decision.PoolID)
 			registrationStartedAt := time.Now()
-			jit, jitErr := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
+			jit, jitErr := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
 				return r.deps.ScaleSets.CreateJITConfig(callCtx, identity, name)
 			})
 			r.deps.Telemetry.WorkerRegistered(ctx, decision.PoolID, resourceTier, time.Since(registrationStartedAt), telemetry.ClassifyWorkerStart(jitErr, false))
@@ -822,7 +821,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
 				cleanupCancel()
 				if cleanupErr != nil {
-					r.writeLog(ctx, LogEvent{At: r.deps.Clock.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
+					r.writeLog(ctx, LogEvent{At: time.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
 				}
 				cancel(errReconcileInputsChanged)
 				return ReconcileResult{}, errReconcileInputsChanged
@@ -963,7 +962,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		phase = model.PhaseDegraded
 	}
 	observed := model.ObservedState{
-		SchemaVersion: 1, Phase: phase, HeartbeatAt: r.deps.Clock.Now().UTC(), DrainStartedAt: drainStartedAt, Version: r.version,
+		SchemaVersion: 1, Phase: phase, HeartbeatAt: time.Now().UTC(), DrainStartedAt: drainStartedAt, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
 		Problems: problems,
@@ -1027,13 +1026,13 @@ func (r *Reconciler) ensure(ctx context.Context, target config.Target, previous 
 		TargetID: target.ID, URL: target.URL, Scope: string(target.Scope), ClientID: target.ClientID, InstallationID: target.InstallationID, SecretID: target.SecretID,
 		RunnerGroup: target.RunnerGroup, ScaleSetName: target.ScaleSetName, Labels: append([]string(nil), target.Labels...),
 	}
-	return RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Identity, error) {
+	return RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Identity, error) {
 		return r.deps.ScaleSets.Ensure(callCtx, definition, previous)
 	})
 }
 
 func (r *Reconciler) statistics(ctx context.Context, target config.Target, identity scaleset.Identity, maxCapacity int) (scaleset.Statistics, scaleset.Identity, error) {
-	stats, err := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Statistics, error) {
+	stats, err := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Statistics, error) {
 		return r.deps.ScaleSets.Statistics(callCtx, identity, maxCapacity)
 	})
 	if err == nil {
@@ -1048,7 +1047,7 @@ func (r *Reconciler) statistics(ctx context.Context, target config.Target, ident
 	if ensureErr != nil {
 		return scaleset.Statistics{}, identity, errors.Join(err, ensureErr)
 	}
-	stats, statsErr := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Statistics, error) {
+	stats, statsErr := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.Statistics, error) {
 		return r.deps.ScaleSets.Statistics(callCtx, recreated, maxCapacity)
 	})
 	return stats, recreated, statsErr
@@ -1058,7 +1057,7 @@ func (r *Reconciler) deregisterRunner(ctx context.Context, poolID string, runner
 	if poolID == "" || runnerID <= 0 {
 		return errors.New("positive GitHub runner ID and pool ID are required for deregistration")
 	}
-	_, err := RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callContext context.Context) (struct{}, error) {
+	_, err := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callContext context.Context) (struct{}, error) {
 		err := r.deps.ScaleSets.RemoveRunner(callContext, poolID, runnerID)
 		if scaleset.IsKind(err, scaleset.ErrorNotFound) {
 			err = nil
@@ -1069,7 +1068,7 @@ func (r *Reconciler) deregisterRunner(ctx context.Context, poolID string, runner
 }
 
 func (r *Reconciler) runnerRegistered(ctx context.Context, poolID string, runnerID int64, runnerName string) (bool, error) {
-	return RetryValue(ctx, r.deps.Clock, r.backoffPolicy(), scaleset.Retryable, func(callContext context.Context) (bool, error) {
+	return RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callContext context.Context) (bool, error) {
 		return r.deps.ScaleSets.RunnerRegistered(callContext, poolID, runnerID, runnerName)
 	})
 }
@@ -1219,7 +1218,7 @@ func (r *Reconciler) freshStartAllowed(
 		resources.AvailableMemoryBytes = availableAfterMemoryReservation(resources.AvailableMemoryBytes, reservedMemory)
 	}
 
-	now := r.deps.Clock.Now().UTC()
+	now := time.Now().UTC()
 	plan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,

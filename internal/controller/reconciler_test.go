@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	clockpkg "github.com/melodic-software/ci-runner/internal/clock"
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -45,21 +45,26 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 
 func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	if _, err := harness.controller.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	harness.clock.Advance(11 * time.Second)
-	result, err := harness.controller.Step(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.CheckpointAge != 11*time.Second || !result.CheckpointAgeValid {
-		t.Fatalf("checkpoint age = %s, want 11s", result.CheckpointAge)
-	}
-	if snapshot := telemetrySnapshot(result); snapshot.CheckpointAge != 11*time.Second || !snapshot.CheckpointAgeValid || !snapshot.Valid {
-		t.Fatalf("telemetry snapshot = %#v", snapshot)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		// The bubble clock advances only while every goroutine is durably
+		// blocked, so this sleep deterministically ages the prior checkpoint by
+		// exactly 11s between the two synchronous Steps.
+		time.Sleep(11 * time.Second)
+		result, err := harness.controller.Step(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.CheckpointAge != 11*time.Second || !result.CheckpointAgeValid {
+			t.Fatalf("checkpoint age = %s, want 11s", result.CheckpointAge)
+		}
+		if snapshot := telemetrySnapshot(result); snapshot.CheckpointAge != 11*time.Second || !snapshot.CheckpointAgeValid || !snapshot.Valid {
+			t.Fatalf("telemetry snapshot = %#v", snapshot)
+		}
+	})
 }
 
 func TestTelemetrySnapshotPreservesPowerGateWhenOperationFailureDegradesObservedPhase(t *testing.T) {
@@ -82,7 +87,7 @@ func TestReconcilerOmitsCheckpointAgeWithoutValidPriorCheckpoint(t *testing.T) {
 	}{
 		{name: "missing"},
 		{name: "future", configure: func(t *testing.T, h *harness) {
-			future := h.clock.Now().Add(time.Minute)
+			future := h.now.Add(time.Minute)
 			if err := h.store.SaveObserved(context.Background(), model.ObservedState{SchemaVersion: 1, HeartbeatAt: future}); err != nil {
 				t.Fatal(err)
 			}
@@ -616,7 +621,7 @@ func TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride(t *t
 	}
 
 	override := 10
-	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, TemporaryCapacityOverride: &override, UpdatedAt: harness.clock.Now()}); err != nil {
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, TemporaryCapacityOverride: &override, UpdatedAt: harness.now}); err != nil {
 		t.Fatal(err)
 	}
 	if got := harness.controller.EffectiveMaximumConcurrentWorkers(context.Background()); got != 10 {
@@ -954,7 +959,7 @@ func TestDrainWarningNeverTerminatesBusyWork(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeDisabled)
 	harness.runtime.workers = []model.Worker{{ID: "busy", PoolID: "org", State: model.WorkerBusy, JobID: "job-1"}}
-	started := harness.clock.Now().Add(-21 * time.Minute)
+	started := harness.now.Add(-21 * time.Minute)
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseDraining, DrainStartedAt: &started,
 		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org"}},
@@ -1115,7 +1120,7 @@ func TestDesiredChangeCancelsLongPollAndImmediatelyAdvertisesZero(t *testing.T) 
 		done <- result
 	}()
 	waitForSignal(t, blocking.entered, "listener poll did not begin")
-	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.clock.Now()}); err != nil {
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1145,7 +1150,7 @@ func TestDesiredChangeCancelsEnsureRetryBeforeAnyCapacityPoll(t *testing.T) {
 		done <- result
 	}()
 	waitForSignal(t, blocking.entered, "scale-set ensure did not begin")
-	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.clock.Now()}); err != nil {
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1172,7 +1177,7 @@ func TestDesiredChangeCancelsDockerDesktopStart(t *testing.T) {
 		done <- result
 	}()
 	waitForSignal(t, desktop.entered, "Docker Desktop start did not begin")
-	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.clock.Now()}); err != nil {
+	if err := harness.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: harness.now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1189,11 +1194,11 @@ func TestPowerChangeCancelsLongPollAndImmediatelyAdvertisesZero(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Power.Policy = config.PowerACOnly
-	acSince := harness.clock.Now().Add(-time.Minute)
+	acSince := harness.now.Add(-time.Minute)
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{SchemaVersion: 1, PowerGate: model.PowerGateState{ACSince: &acSince}}); err != nil {
 		t.Fatal(err)
 	}
-	power := &mutablePower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: harness.clock.Now()}}
+	power := &mutablePower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: harness.now}}
 	harness.controller.deps.Power = power
 	blocking := newFirstBlockingScaleSet(harness.scaleSets)
 	harness.controller.deps.ScaleSets = blocking
@@ -1223,7 +1228,7 @@ func TestPowerChangeCancelsLongPollAndImmediatelyAdvertisesZero(t *testing.T) {
 func TestFreshAdmissionAfterJITPreventsStartAfterDesiredChange(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
-	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.clock.Now()}
+	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.now}
 	harness.controller.deps.ScaleSets = flipping
 	result, err := harness.controller.Step(context.Background())
 	if err != nil {
@@ -1241,7 +1246,7 @@ func TestDesiredFlipAfterAcquireServicesAssignedJobWhileCapacityStaysZero(t *tes
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 1}
-	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.clock.Now()}
+	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.now}
 	harness.controller.deps.ScaleSets = flipping
 
 	result, err := harness.controller.Step(context.Background())
@@ -1439,25 +1444,31 @@ func TestDeletedScaleSetIdentityIsRecreated(t *testing.T) {
 
 func TestTransientScaleSetErrorUsesRetryPolicy(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	flaky := &flakyEnsure{Client: harness.scaleSets, remaining: 1}
-	harness.controller.deps.ScaleSets = flaky
-	policy := BackoffPolicy{
-		Initial: time.Second, Maximum: 4 * time.Second, Multiplier: 2, MaxAttempts: 3,
-		Jitter: func(base time.Duration, _ float64) time.Duration { return base },
-	}
-	if err := harness.controller.SetBackoffForTest(policy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := harness.controller.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if flaky.attemptCount() != 2 {
-		t.Fatalf("ensure attempts = %d", flaky.attemptCount())
-	}
-	if sleeps := harness.clock.Sleeps(); len(sleeps) != 1 || sleeps[0] != time.Second {
-		t.Fatalf("sleeps = %v", sleeps)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		flaky := &flakyEnsure{Client: harness.scaleSets, remaining: 1}
+		harness.controller.deps.ScaleSets = flaky
+		policy := BackoffPolicy{
+			Initial: time.Second, Maximum: 4 * time.Second, Multiplier: 2, MaxAttempts: 3,
+			Jitter: func(base time.Duration, _ float64) time.Duration { return base },
+		}
+		if err := harness.controller.SetBackoffForTest(policy); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if flaky.attemptCount() != 2 {
+			t.Fatalf("ensure attempts = %d", flaky.attemptCount())
+		}
+		// One transient failure means exactly one policy backoff wait; at the
+		// Initial=1s base with Multiplier=2 the first retry waits 1s, and inside
+		// the bubble that wait is the whole elapsed time of the Step.
+		if elapsed := time.Since(start); elapsed != time.Second {
+			t.Fatalf("retry backoff elapsed = %s, want one 1s policy wait", elapsed)
+		}
+	})
 }
 
 func TestCorruptObservedStateQuarantinesAndAdvertisesZeroWithoutLifecycleMutation(t *testing.T) {
@@ -1585,7 +1596,6 @@ func newProbeReconciler(t *testing.T, cfg config.Config, desktop *testDesktop, p
 		Resources:    staticResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 64 << 30, CPUUtilizationPercent: 10}},
 		State:        store,
 		Jobs:         &testJobLookup{active: map[string]string{}},
-		Clock:        clockpkg.NewFake(now),
 		EngineMemory: probe,
 	})
 	if err != nil {
@@ -1716,7 +1726,6 @@ func TestBudgetBasisStartBurstDoesNotDeflateFloorInput(t *testing.T) {
 		Resources:    staticResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 20 << 30, CPUUtilizationPercent: 10}},
 		State:        store,
 		Jobs:         &testJobLookup{active: map[string]string{}},
-		Clock:        clockpkg.NewFake(now),
 		EngineMemory: &testEngineMemory{total: 40 << 30},
 	})
 	if err != nil {
@@ -1751,13 +1760,16 @@ type harness struct {
 	desktop    *testDesktop
 	scaleSets  *scaleset.Fake
 	jobs       *testJobLookup
-	clock      *clockpkg.Fake
+	// now is the fixture time captured at construction. Outside a synctest
+	// bubble it is real wall time; inside one it is the bubble clock (midnight
+	// UTC 2000-01-01), matching what production reads via time.Now.
+	now time.Time
 }
 
 func newHarness(t *testing.T, mode model.Mode) *harness {
 	t.Helper()
 	store := statepkg.NewMemoryStore()
-	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	if err := store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: mode, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -1765,7 +1777,6 @@ func newHarness(t *testing.T, mode model.Mode) *harness {
 	desktop := &testDesktop{status: model.DesktopStatus{DesktopRunning: true, EngineReachable: true}}
 	scaleSets := scaleset.NewFake()
 	jobs := &testJobLookup{active: map[string]string{}}
-	clock := clockpkg.NewFake(now)
 	controller, err := NewReconciler(validControllerConfig(), "test-version", Dependencies{
 		ScaleSets: scaleSets,
 		Workers:   runtime,
@@ -1774,12 +1785,11 @@ func newHarness(t *testing.T, mode model.Mode) *harness {
 		Resources: staticResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 64 << 30, CPUUtilizationPercent: 10}},
 		State:     store,
 		Jobs:      jobs,
-		Clock:     clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{controller: controller, store: store, runtime: runtime, desktop: desktop, scaleSets: scaleSets, jobs: jobs, clock: clock}
+	return &harness{controller: controller, store: store, runtime: runtime, desktop: desktop, scaleSets: scaleSets, jobs: jobs, now: now}
 }
 
 type testJobLookup struct {

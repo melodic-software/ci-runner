@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"time"
 
-	clockpkg "github.com/melodic-software/ci-runner/internal/clock"
+	"github.com/melodic-software/ci-runner/internal/clock"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 )
 
@@ -87,7 +87,7 @@ func cryptoJitter(base time.Duration, ratio float64) time.Duration {
 
 // RetryValue executes operation once plus bounded retry attempts. It only
 // retries errors selected by retryable and every wait is context-cancellable.
-func RetryValue[T any](ctx context.Context, clock clockpkg.Clock, policy BackoffPolicy, retryable func(error) bool, operation func(context.Context) (T, error)) (T, error) {
+func RetryValue[T any](ctx context.Context, policy BackoffPolicy, retryable func(error) bool, operation func(context.Context) (T, error)) (T, error) {
 	var zero T
 	if err := policy.validate(); err != nil {
 		return zero, err
