@@ -129,8 +129,9 @@ The controller must create every worker with all of these properties:
 - no encoded JIT configuration in Docker config, inspection output, process
   arguments, controller state, or controller logs;
 - CPU, memory, memory-plus-swap, and PID limits from validated host config;
-- Docker `local` logging with the configured `logs.docker.maxSize` /
-  `logs.docker.maxFiles` (checked-in default 10MiB / 3);
+- Docker `local` logging with the required, operator-configured
+  `logs.docker.maxSize` / `logs.docker.maxFiles` (validation rejects a missing
+  or non-positive value);
 - runner stdout/stderr captured by the controller and `_diag` copied out before
   deletion through Docker's archive API, never through a host mount.
 
