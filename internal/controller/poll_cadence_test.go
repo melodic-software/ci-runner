@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
@@ -15,90 +16,95 @@ import (
 
 func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
-	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
-		SchemaVersion: 1, Phase: model.PhaseResourceConstrained, HeartbeatAt: now.Add(-time.Minute),
-		Pools:        []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 0, CapacityAcknowledged: true}},
-		ResourceGate: model.ResourceGateState{Blocked: true, Reason: model.ResourceGateReasonCPU},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	blocking := newFirstBlockingScaleSet(harness.scaleSets)
-	harness.controller.deps.ScaleSets = blocking
-	done := make(chan ReconcileResult, 1)
-	go func() {
-		result, _ := harness.controller.Step(context.Background())
-		done <- result
-	}()
-	waitForSignal(t, blocking.entered, "zero-capacity listener poll did not begin")
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		// Inside the bubble the cadence ticker advances logical time, so the
+		// window is sized to a handful of ticks rather than the production
+		// minute; only their ratio matters to what is exercised.
+		harness.controller.config.Controller.ReconcileInterval.Duration = 100 * time.Millisecond
+		harness.controller.config.Resources.CPUHysteresisWindow.Duration = 300 * time.Millisecond
+		now := harness.now
+		if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+			SchemaVersion: 1, Phase: model.PhaseResourceConstrained, HeartbeatAt: now.Add(-time.Minute),
+			Pools:        []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 0, CapacityAcknowledged: true}},
+			ResourceGate: model.ResourceGateState{Blocked: true, Reason: model.ResourceGateReasonCPU},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		blocking := newFirstBlockingScaleSet(harness.scaleSets)
+		harness.controller.deps.ScaleSets = blocking
+		done := make(chan ReconcileResult, 1)
+		go func() {
+			result, _ := harness.controller.Step(context.Background())
+			done <- result
+		}()
+		// Wait for the zero-capacity listener poll to durably block; by then the
+		// recovery-start checkpoint has been written.
+		synctest.Wait()
 
-	checkpoint, err := harness.store.LoadObserved(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if checkpoint.ResourceGate.HealthySince == nil || !checkpoint.ResourceGate.HealthySince.Equal(now) {
-		t.Fatalf("healthy recovery start was not checkpointed before the long poll: %#v", checkpoint.ResourceGate)
-	}
-	harness.clock.Advance(harness.controller.config.Resources.CPUHysteresisWindow.Duration)
-
-	select {
-	case result := <-done:
+		checkpoint, err := harness.store.LoadObserved(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if checkpoint.ResourceGate.HealthySince == nil || !checkpoint.ResourceGate.HealthySince.Equal(now) {
+			t.Fatalf("healthy recovery start was not checkpointed before the long poll: %#v", checkpoint.ResourceGate)
+		}
+		// Blocking on done lets the bubble auto-advance the cadence ticker past
+		// the hysteresis window, firing recovery without a manual clock advance.
+		result := <-done
 		if result.Observed.Phase != model.PhaseReady || result.Observed.ResourceGate.Blocked {
 			t.Fatalf("resource gate did not recover: %#v", result.Observed)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("resource recovery remained trapped behind the listener long poll")
-	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
-		t.Fatalf("advertised capacities = %v, want [0 3]", got)
-	}
+		if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
+			t.Fatalf("advertised capacities = %v, want [0 3]", got)
+		}
+	})
 }
 
 func TestPowerRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	harness.controller.config.Power.Policy = config.PowerACOnly
-	now := harness.clock.Now()
-	acSince := now
-	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
-		SchemaVersion: 1, Phase: model.PhasePowerSuspended, HeartbeatAt: now.Add(-time.Minute),
-		Pools:     []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 0, CapacityAcknowledged: true}},
-		PowerGate: model.PowerGateState{ACSince: &acSince},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	harness.controller.deps.Power = &mutablePower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: now}}
-	blocking := newFirstBlockingScaleSet(harness.scaleSets)
-	harness.controller.deps.ScaleSets = blocking
-	done := make(chan ReconcileResult, 1)
-	go func() {
-		result, _ := harness.controller.Step(context.Background())
-		done <- result
-	}()
-	waitForSignal(t, blocking.entered, "power-suspended listener poll did not begin")
-	harness.clock.Advance(harness.controller.config.Power.StableACWindow.Duration)
-
-	select {
-	case result := <-done:
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		// Window sized to a few cadence ticks of bubble time (see the resource
+		// recovery test); only the window/interval ratio is under test here.
+		harness.controller.config.Controller.ReconcileInterval.Duration = 100 * time.Millisecond
+		harness.controller.config.Power.StableACWindow.Duration = 300 * time.Millisecond
+		harness.controller.config.Power.Policy = config.PowerACOnly
+		now := harness.now
+		acSince := now
+		if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+			SchemaVersion: 1, Phase: model.PhasePowerSuspended, HeartbeatAt: now.Add(-time.Minute),
+			Pools:     []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 0, CapacityAcknowledged: true}},
+			PowerGate: model.PowerGateState{ACSince: &acSince},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		harness.controller.deps.Power = &mutablePower{snapshot: model.PowerSnapshot{ACConnected: true, ObservedAt: now}}
+		blocking := newFirstBlockingScaleSet(harness.scaleSets)
+		harness.controller.deps.ScaleSets = blocking
+		done := make(chan ReconcileResult, 1)
+		go func() {
+			result, _ := harness.controller.Step(context.Background())
+			done <- result
+		}()
+		synctest.Wait()
+		// Blocking on done lets the cadence ticker advance the bubble clock past
+		// the stable-AC window, firing recovery without a manual clock advance.
+		result := <-done
 		if result.Observed.Phase != model.PhaseReady {
 			t.Fatalf("power gate did not recover: %#v", result.Observed)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("stable-AC recovery remained trapped behind the listener long poll")
-	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
-		t.Fatalf("advertised capacities = %v, want [0 3]", got)
-	}
+		if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0 3]" {
+			t.Fatalf("advertised capacities = %v, want [0 3]", got)
+		}
+	})
 }
 
 func TestInvalidResourceObservationCancelsNonzeroPollAndPreservesRacingAssignment(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
@@ -137,7 +143,7 @@ func TestPollCadenceObservationFailureIsDurablyLogged(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
@@ -179,47 +185,48 @@ func TestPollCadenceObservationFailureIsDurablyLogged(t *testing.T) {
 
 func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
-	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
-		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now.Add(-time.Minute),
-		Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	harness.runtime.workers = []model.Worker{{ID: "idle", Name: "idle", PoolID: "org", RunnerID: 1000, State: model.WorkerIdle}}
-	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
-	harness.controller.deps.State = notifying
-	blocking := newFirstBlockingScaleSet(harness.scaleSets)
-	harness.controller.deps.ScaleSets = blocking
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := harness.controller.Step(ctx)
-		done <- err
-	}()
-	waitForSignal(t, blocking.entered, "stable listener poll did not begin")
-	for len(notifying.saved) > 0 {
-		<-notifying.saved
-	}
-	harness.clock.Advance(harness.controller.config.Controller.ReconcileInterval.Duration)
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		harness.controller.config.Controller.ReconcileInterval.Duration = 100 * time.Millisecond
+		now := harness.now
+		if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+			SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now.Add(-time.Minute),
+			Pools: []model.PoolObservation{{ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		harness.runtime.workers = []model.Worker{{ID: "idle", Name: "idle", PoolID: "org", RunnerID: 1000, State: model.WorkerIdle}}
+		notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+		harness.controller.deps.State = notifying
+		blocking := newFirstBlockingScaleSet(harness.scaleSets)
+		harness.controller.deps.ScaleSets = blocking
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := harness.controller.Step(ctx)
+			done <- err
+		}()
+		// Wait for the stable listener poll to durably block, then discard the
+		// initial reconcile checkpoint so only cadence-driven saves remain.
+		synctest.Wait()
+		for len(notifying.saved) > 0 {
+			<-notifying.saved
+		}
 
-	checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
-		return observed.HeartbeatAt.Equal(harness.clock.Now())
-	}, "heartbeat was not checkpointed on the reconcile cadence")
-	if len(checkpoint.Pools) != 1 || !checkpoint.Pools[0].CapacityAcknowledged || checkpoint.Pools[0].MaxCapacity != 3 {
-		t.Fatalf("stable acknowledged capacity was corrupted by heartbeat checkpoint: %#v", checkpoint.Pools)
-	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3]" {
-		t.Fatalf("stable long poll was restarted: capacities=%v", got)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("canceled stable listener poll did not stop")
-	}
+		// Blocking here lets the cadence ticker fire; a heartbeat past the
+		// initial checkpoint proves the loop ran without a manual clock advance.
+		checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+			return observed.HeartbeatAt.After(now)
+		}, "heartbeat was not checkpointed on the reconcile cadence")
+		if len(checkpoint.Pools) != 1 || !checkpoint.Pools[0].CapacityAcknowledged || checkpoint.Pools[0].MaxCapacity != 3 {
+			t.Fatalf("stable acknowledged capacity was corrupted by heartbeat checkpoint: %#v", checkpoint.Pools)
+		}
+		if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3]" {
+			t.Fatalf("stable long poll was restarted: capacities=%v", got)
+		}
+		cancel()
+		<-done
+	})
 }
 
 func TestWorkerExitInterruptsLongPollAndStartsAssignedReplacements(t *testing.T) {
@@ -263,7 +270,7 @@ func TestMemorySlotFlapDoesNotRestartNonzeroLongPoll(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseDegraded, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{
@@ -312,7 +319,7 @@ func TestPendingZeroToOneCapacityHoldsInsideMemoryBandBeforeAcknowledgement(t *t
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
 	harness.controller.config.GitHub.Targets[0].WarmIdle = 0
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{
@@ -370,7 +377,7 @@ func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{
@@ -419,7 +426,7 @@ func TestSupersededListenerPollIsNotRecordedAsStatisticsError(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{
@@ -477,7 +484,7 @@ func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
 	harness.controller.config.GitHub.Targets[0].WarmIdle = 0
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{{
@@ -589,52 +596,55 @@ func TestPoolAcknowledgementTransitionTimestampDoesNotResetWhilePending(t *testi
 
 func TestFailedLongPollPreservesCadenceAcknowledgementTransitionAge(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
-	started := harness.clock.Now()
-	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
-		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: started,
-		Pools: []model.PoolObservation{{
-			ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 8,
-			CapacityAcknowledged: true, UpdatedAt: started.Add(-time.Minute),
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
-	harness.controller.deps.State = notifying
-	blocking := newBlockingPollFailure(harness.scaleSets)
-	harness.controller.deps.ScaleSets = blocking
-	type outcome struct {
-		result ReconcileResult
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		result, err := harness.controller.Step(context.Background())
-		done <- outcome{result: result, err: err}
-	}()
-	waitForSignal(t, blocking.entered, "listener poll did not begin")
-	checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
-		return len(observed.Pools) == 1 && !observed.Pools[0].CapacityAcknowledged
-	}, "pending acknowledgement transition was not checkpointed")
-	transitionAt := checkpoint.Pools[0].UpdatedAt
-	if !transitionAt.Equal(started) {
-		t.Fatalf("transition started at %s, want %s", transitionAt, started)
-	}
-	harness.clock.Advance(30 * time.Second)
-	close(blocking.release)
-	select {
-	case got := <-done:
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		// A few cadence ticks fire over the age advance below, each re-checkpointing
+		// the still-pending pool; the transition timestamp must survive both the
+		// intervening cadence saves and the eventual poll failure.
+		harness.controller.config.Controller.ReconcileInterval.Duration = 10 * time.Second
+		started := harness.now
+		if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+			SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: started,
+			Pools: []model.PoolObservation{{
+				ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 8,
+				CapacityAcknowledged: true, UpdatedAt: started.Add(-time.Minute),
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+		harness.controller.deps.State = notifying
+		blocking := newBlockingPollFailure(harness.scaleSets)
+		harness.controller.deps.ScaleSets = blocking
+		type outcome struct {
+			result ReconcileResult
+			err    error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			result, err := harness.controller.Step(context.Background())
+			done <- outcome{result: result, err: err}
+		}()
+		synctest.Wait()
+		checkpoint := waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+			return len(observed.Pools) == 1 && !observed.Pools[0].CapacityAcknowledged
+		}, "pending acknowledgement transition was not checkpointed")
+		transitionAt := checkpoint.Pools[0].UpdatedAt
+		if !transitionAt.Equal(started) {
+			t.Fatalf("transition started at %s, want %s", transitionAt, started)
+		}
+		// Age the clock past the transition so a bug that resets UpdatedAt to
+		// now would diverge from started, then fail the poll.
+		time.Sleep(30 * time.Second)
+		close(blocking.release)
+		got := <-done
 		if got.err == nil {
 			t.Fatal("failed listener poll returned no error")
 		}
 		if len(got.result.Observed.Pools) != 1 || !got.result.Observed.Pools[0].UpdatedAt.Equal(transitionAt) {
 			t.Fatalf("failed poll reset transition age: %#v", got.result.Observed.Pools)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("failed listener poll did not finish")
-	}
+	})
 }
 
 type mutableResources struct {

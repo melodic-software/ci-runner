@@ -1,23 +1,19 @@
-// Package clock isolates time observation and cancellable waits so controller
-// policy and retry behavior are deterministic in tests.
+// Package clock provides a context-cancellable sleep. Time observation and
+// deterministic retry/backoff timing in tests are now handled by the stdlib
+// testing/synctest bubble clock, so production reads time.Now directly and no
+// longer threads a Clock interface through its dependency graph.
 package clock
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
-type Clock interface {
-	Now() time.Time
-	Sleep(context.Context, time.Duration) error
-}
-
-type Real struct{}
-
-func (Real) Now() time.Time { return time.Now() }
-
-func (Real) Sleep(ctx context.Context, duration time.Duration) error {
+// Sleep waits for duration to elapse or ctx to be done, whichever comes first.
+// The stdlib has no context.Sleep, so this remains the idiomatic context-aware
+// wait rather than a reinvented wheel. A non-positive duration returns ctx.Err
+// without waiting.
+func Sleep(ctx context.Context, duration time.Duration) error {
 	if duration <= 0 {
 		return ctx.Err()
 	}
@@ -29,48 +25,4 @@ func (Real) Sleep(ctx context.Context, duration time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// Fake advances immediately on Sleep. It is safe for concurrent tests.
-type Fake struct {
-	mu     sync.Mutex
-	now    time.Time
-	sleeps []time.Duration
-}
-
-func NewFake(now time.Time) *Fake { return &Fake{now: now} }
-
-func (f *Fake) Now() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.now
-}
-
-func (f *Fake) Sleep(ctx context.Context, duration time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.sleeps = append(f.sleeps, duration)
-	f.now = f.now.Add(duration)
-	return nil
-}
-
-func (f *Fake) Advance(duration time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.now = f.now.Add(duration)
-}
-
-func (f *Fake) Set(now time.Time) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.now = now
-}
-
-func (f *Fake) Sleeps() []time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]time.Duration(nil), f.sleeps...)
 }

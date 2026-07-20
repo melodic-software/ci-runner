@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/buildinfo"
-	"github.com/melodic-software/ci-runner/internal/clock"
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/controller"
@@ -152,7 +151,6 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		Resources:    &host.WindowsResourceMonitor{},
 		State:        store,
 		Jobs:         jobs,
-		Clock:        clock.Real{},
 		Logs:         logs,
 		Telemetry:    telemetryProvider,
 		EngineMemory: host.NewEngineMemoryProbe(),

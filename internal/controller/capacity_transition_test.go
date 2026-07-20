@@ -19,7 +19,7 @@ func TestReconcilerAcknowledgesDecreaseBeforeCrossPoolIncrease(t *testing.T) {
 		ScaleSetName: "melodic-build-ubuntu-24.04-x64", Labels: []string{"melodic-build-ubuntu-24.04-x64"},
 		WarmIdle: 0, MaxCapacity: 1, Priority: 0,
 	})
-	now := harness.clock.Now()
+	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
 		Pools: []model.PoolObservation{
