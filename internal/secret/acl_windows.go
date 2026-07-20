@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -32,9 +34,6 @@ var (
 	procGetFileSecurity                     = advapi32.NewProc("GetFileSecurityW")
 	procGetSecurityDescriptorControl        = advapi32.NewProc("GetSecurityDescriptorControl")
 	procGetSecurityDescriptorDACL           = advapi32.NewProc("GetSecurityDescriptorDacl")
-	procGetACE                              = advapi32.NewProc("GetAce")
-	procConvertStringSIDToSID               = advapi32.NewProc("ConvertStringSidToSidW")
-	procEqualSID                            = advapi32.NewProc("EqualSid")
 )
 
 type WindowsAccessController struct{}
@@ -109,26 +108,6 @@ func setFileDACL(path, sddl string) (resultErr error) {
 	return nil
 }
 
-type windowsACL struct {
-	Revision byte
-	Padding  byte
-	Size     uint16
-	ACECount uint16
-	Padding2 uint16
-}
-
-type windowsACEHeader struct {
-	Type  byte
-	Flags byte
-	Size  uint16
-}
-
-type windowsAccessAllowedACE struct {
-	Header   windowsACEHeader
-	Mask     uint32
-	SIDStart uint32
-}
-
 func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 	descriptor, err := readFileSecurityDescriptor(path)
 	if err != nil {
@@ -162,23 +141,23 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 	if present == 0 || aclPointer == nil {
 		return fmt.Errorf("protected ACL has no DACL")
 	}
-	acl := (*windowsACL)(aclPointer)
-	if acl.ACECount != 2 {
-		return fmt.Errorf("ACL has %d entries; expected exactly current user and SYSTEM", acl.ACECount)
+	acl := (*windows.ACL)(aclPointer)
+	if acl.AceCount != 2 {
+		return fmt.Errorf("ACL has %d entries; expected exactly current user and SYSTEM", acl.AceCount)
 	}
 	currentPointer, err := sidFromString(currentSID)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(currentPointer)))
+		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(unsafe.Pointer(currentPointer))))
 	}()
 	systemPointer, err := sidFromString("S-1-5-18")
 	if err != nil {
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(systemPointer)))
+		resultErr = errors.Join(resultErr, freeLocalMemory(uintptr(unsafe.Pointer(systemPointer))))
 	}()
 
 	expectedFlags := byte(0)
@@ -186,17 +165,15 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 		expectedFlags = objectInheritACE | containerInheritACE
 	}
 	currentCount, systemCount := 0, 0
-	for index := uint16(0); index < acl.ACECount; index++ {
-		var acePointer unsafe.Pointer
-		result, _, callErr = procGetACE.Call(uintptr(aclPointer), uintptr(index), uintptr(unsafe.Pointer(&acePointer)))
-		if result == 0 {
-			return fmt.Errorf("read ACL entry %d: %w", index, callError(callErr))
+	for index := uint16(0); index < acl.AceCount; index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, uint32(index), &ace); err != nil {
+			return fmt.Errorf("read ACL entry %d: %w", index, err)
 		}
-		ace := (*windowsAccessAllowedACE)(acePointer)
-		if ace.Header.Type != accessAllowedACEType || ace.Header.Flags != expectedFlags || ace.Mask != fileAllAccess {
+		if ace.Header.AceType != accessAllowedACEType || ace.Header.AceFlags != expectedFlags || ace.Mask != fileAllAccess {
 			return fmt.Errorf("ACL entry %d is not the expected inheritable full-control allow entry", index)
 		}
-		sidPointer := unsafe.Add(acePointer, unsafe.Offsetof(windowsAccessAllowedACE{}.SIDStart))
+		sidPointer := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 		switch {
 		case equalSID(sidPointer, currentPointer):
 			currentCount++
@@ -243,23 +220,18 @@ func readFileSecurityDescriptor(path string) ([]byte, error) {
 	return descriptor, nil
 }
 
-func sidFromString(value string) (unsafe.Pointer, error) {
+func sidFromString(value string) (*windows.SID, error) {
 	pointer, err := syscall.UTF16PtrFromString(value)
 	if err != nil {
 		return nil, err
 	}
-	var sid unsafe.Pointer
-	result, _, callErr := procConvertStringSIDToSID.Call(
-		uintptr(unsafe.Pointer(pointer)),
-		uintptr(unsafe.Pointer(&sid)),
-	)
-	if result == 0 {
-		return nil, fmt.Errorf("convert SID %q: %w", value, callError(callErr))
+	var sid *windows.SID
+	if err := windows.ConvertStringSidToSid(pointer, &sid); err != nil {
+		return nil, fmt.Errorf("convert SID %q: %w", value, err)
 	}
 	return sid, nil
 }
 
-func equalSID(left, right unsafe.Pointer) bool {
-	result, _, _ := procEqualSID.Call(uintptr(left), uintptr(right))
-	return result != 0
+func equalSID(left, right *windows.SID) bool {
+	return windows.EqualSid(left, right)
 }

@@ -6,13 +6,15 @@ import (
 	"bytes"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestCopyAndFreeReleasesZeroLengthAllocation(t *testing.T) {
 	allocation := byte(0)
 	pointer := uintptr(unsafe.Pointer(&allocation))
 	freed := uintptr(0)
-	result, err := copyAndFreeWith(dataBlob{Data: &allocation}, true, func(value uintptr) error {
+	result, err := copyAndFreeWith(windows.DataBlob{Data: &allocation}, true, func(value uintptr) error {
 		freed = value
 		return nil
 	})

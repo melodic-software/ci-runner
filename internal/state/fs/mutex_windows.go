@@ -10,8 +10,9 @@ import (
 	"os/user"
 	"runtime"
 	"sync"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -20,23 +21,6 @@ const (
 	waitTimeout   = 0x00000102
 	mutexPollMS   = 200
 )
-
-var (
-	mutexKernel32           = syscall.NewLazyDLL("kernel32.dll")
-	procCreateMutex         = mutexKernel32.NewProc("CreateMutexW")
-	procWaitForSingleObject = mutexKernel32.NewProc("WaitForSingleObject")
-	procReleaseMutex        = mutexKernel32.NewProc("ReleaseMutex")
-	procCloseHandle         = mutexKernel32.NewProc("CloseHandle")
-	procMutexLocalFree      = mutexKernel32.NewProc("LocalFree")
-	mutexAdvapi32           = syscall.NewLazyDLL("advapi32.dll")
-	procStringSDToSD        = mutexAdvapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
-)
-
-type securityAttributes struct {
-	Length             uint32
-	SecurityDescriptor uintptr
-	InheritHandle      int32
-}
 
 type WindowsMutex struct {
 	name  string
@@ -129,31 +113,22 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 		result <- windowsMutexAcquisition{err: err}
 		return
 	}
-	attributes := securityAttributes{
-		Length:             uint32(unsafe.Sizeof(securityAttributes{})),
+	attributes := windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
 		SecurityDescriptor: descriptor,
 	}
-	name, err := syscall.UTF16PtrFromString(m.name)
+	name, err := windows.UTF16PtrFromString(m.name)
 	if err != nil {
 		result <- windowsMutexAcquisition{err: err}
 		return
 	}
-	handle, _, callErr := procCreateMutex.Call(
-		uintptr(unsafe.Pointer(&attributes)),
-		0,
-		uintptr(unsafe.Pointer(name)),
-	)
-	freeErr := freeMutexSecurityDescriptor(descriptor)
-	if handle == 0 {
-		result <- windowsMutexAcquisition{err: errors.Join(fmt.Errorf("CreateMutexW: %w", windowsCallError(callErr)), freeErr)}
-		return
-	}
-	if freeErr != nil {
-		result <- windowsMutexAcquisition{err: errors.Join(freeErr, closeWindowsHandle(handle))}
+	handle, err := windows.CreateMutex(&attributes, false, name)
+	if err != nil {
+		result <- windowsMutexAcquisition{err: fmt.Errorf("CreateMutexW: %w", err)}
 		return
 	}
 	for {
-		waitResult, _, waitErr := procWaitForSingleObject.Call(handle, mutexPollMS)
+		waitResult, waitErr := windows.WaitForSingleObject(handle, mutexPollMS)
 		switch waitResult {
 		case waitObject0, waitAbandoned:
 			release := make(chan struct{})
@@ -162,9 +137,8 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 			result <- acquired
 			<-release
 			var releaseFailure error
-			released, _, releaseErr := procReleaseMutex.Call(handle)
-			if released == 0 {
-				releaseFailure = fmt.Errorf("ReleaseMutex: %w", windowsCallError(releaseErr))
+			if err := windows.ReleaseMutex(handle); err != nil {
+				releaseFailure = fmt.Errorf("ReleaseMutex: %w", err)
 				// Exiting while still locked to this OS thread forces the runtime
 				// to terminate it, so Windows abandons rather than leaks the mutex.
 				terminateOwnedThread = true
@@ -178,51 +152,24 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 				return
 			}
 		default:
-			waitFailure := fmt.Errorf("WaitForSingleObject returned %#x: %w", waitResult, windowsCallError(waitErr))
+			waitFailure := fmt.Errorf("WaitForSingleObject returned %#x: %w", waitResult, waitErr)
 			result <- windowsMutexAcquisition{err: errors.Join(waitFailure, closeWindowsHandle(handle))}
 			return
 		}
 	}
 }
 
-func closeWindowsHandle(handle uintptr) error {
-	closed, _, closeErr := procCloseHandle.Call(handle)
-	if closed == 0 {
-		return fmt.Errorf("CloseHandle: %w", windowsCallError(closeErr))
+func closeWindowsHandle(handle windows.Handle) error {
+	if err := windows.CloseHandle(handle); err != nil {
+		return fmt.Errorf("CloseHandle: %w", err)
 	}
 	return nil
 }
 
-func mutexSecurityDescriptor(sid string) (uintptr, error) {
-	sddl := fmt.Sprintf("D:P(A;;GA;;;SY)(A;;GA;;;%s)", sid)
-	pointer, err := syscall.UTF16PtrFromString(sddl)
+func mutexSecurityDescriptor(sid string) (*windows.SECURITY_DESCRIPTOR, error) {
+	descriptor, err := windows.SecurityDescriptorFromString(fmt.Sprintf("D:P(A;;GA;;;SY)(A;;GA;;;%s)", sid))
 	if err != nil {
-		return 0, err
-	}
-	var descriptor uintptr
-	result, _, callErr := procStringSDToSD.Call(
-		uintptr(unsafe.Pointer(pointer)),
-		1,
-		uintptr(unsafe.Pointer(&descriptor)),
-		0,
-	)
-	if result == 0 {
-		return 0, fmt.Errorf("convert mutex security descriptor: %w", windowsCallError(callErr))
+		return nil, fmt.Errorf("convert mutex security descriptor: %w", err)
 	}
 	return descriptor, nil
-}
-
-func freeMutexSecurityDescriptor(descriptor uintptr) error {
-	result, _, _ := procMutexLocalFree.Call(descriptor)
-	if result != 0 {
-		return errors.New("free mutex security descriptor: LocalFree returned a non-NULL handle")
-	}
-	return nil
-}
-
-func windowsCallError(err error) error {
-	if err == nil || errors.Is(err, syscall.Errno(0)) {
-		return errors.New("call Windows API")
-	}
-	return err
 }

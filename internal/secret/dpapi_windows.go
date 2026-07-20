@@ -7,22 +7,9 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
-
-const cryptProtectUIForbidden = 0x1
-
-var (
-	crypt32                = syscall.NewLazyDLL("crypt32.dll")
-	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
-	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
-	kernel32               = syscall.NewLazyDLL("kernel32.dll")
-	procLocalFree          = kernel32.NewProc("LocalFree")
-)
-
-type dataBlob struct {
-	Size uint32
-	Data *byte
-}
 
 type DPAPIProtector struct {
 	entropy []byte
@@ -38,22 +25,13 @@ func (p DPAPIProtector) Protect(plaintext []byte, description string) ([]byte, e
 	}
 	input := blob(plaintext)
 	entropy := blob(p.entropy)
-	descriptionPointer, err := syscall.UTF16PtrFromString(description)
+	descriptionPointer, err := windows.UTF16PtrFromString(description)
 	if err != nil {
 		return nil, fmt.Errorf("encode DPAPI description: %w", err)
 	}
-	var output dataBlob
-	result, _, callErr := procCryptProtectData.Call(
-		uintptr(unsafe.Pointer(&input)),
-		uintptr(unsafe.Pointer(descriptionPointer)),
-		uintptr(unsafe.Pointer(&entropy)),
-		0,
-		0,
-		cryptProtectUIForbidden,
-		uintptr(unsafe.Pointer(&output)),
-	)
-	if result == 0 {
-		return nil, fmt.Errorf("CryptProtectData: %w", callError(callErr))
+	var output windows.DataBlob
+	if err := windows.CryptProtectData(&input, descriptionPointer, &entropy, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &output); err != nil {
+		return nil, fmt.Errorf("CryptProtectData: %w", err)
 	}
 	return copyAndFree(output, false)
 }
@@ -64,34 +42,25 @@ func (p DPAPIProtector) Unprotect(ciphertext []byte) ([]byte, error) {
 	}
 	input := blob(ciphertext)
 	entropy := blob(p.entropy)
-	var output dataBlob
-	result, _, callErr := procCryptUnprotectData.Call(
-		uintptr(unsafe.Pointer(&input)),
-		0,
-		uintptr(unsafe.Pointer(&entropy)),
-		0,
-		0,
-		cryptProtectUIForbidden,
-		uintptr(unsafe.Pointer(&output)),
-	)
-	if result == 0 {
-		return nil, fmt.Errorf("CryptUnprotectData: %w", callError(callErr))
+	var output windows.DataBlob
+	if err := windows.CryptUnprotectData(&input, nil, &entropy, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &output); err != nil {
+		return nil, fmt.Errorf("CryptUnprotectData: %w", err)
 	}
 	return copyAndFree(output, true)
 }
 
-func blob(value []byte) dataBlob {
+func blob(value []byte) windows.DataBlob {
 	if len(value) == 0 {
-		return dataBlob{}
+		return windows.DataBlob{}
 	}
-	return dataBlob{Size: uint32(len(value)), Data: &value[0]}
+	return windows.DataBlob{Size: uint32(len(value)), Data: &value[0]}
 }
 
-func copyAndFree(value dataBlob, clearBeforeFree bool) ([]byte, error) {
+func copyAndFree(value windows.DataBlob, clearBeforeFree bool) ([]byte, error) {
 	return copyAndFreeWith(value, clearBeforeFree, freeLocalMemory)
 }
 
-func copyAndFreeWith(value dataBlob, clearBeforeFree bool, free func(uintptr) error) ([]byte, error) {
+func copyAndFreeWith(value windows.DataBlob, clearBeforeFree bool, free func(uintptr) error) ([]byte, error) {
 	if value.Data == nil {
 		return nil, nil
 	}
@@ -116,9 +85,8 @@ func copyAndFreeWith(value dataBlob, clearBeforeFree bool, free func(uintptr) er
 }
 
 func freeLocalMemory(pointer uintptr) error {
-	result, _, _ := procLocalFree.Call(pointer)
-	if result != 0 {
-		return errors.New("free Windows local memory: LocalFree returned a non-NULL handle")
+	if _, err := windows.LocalFree(windows.Handle(pointer)); err != nil {
+		return fmt.Errorf("free Windows local memory: %w", err)
 	}
 	return nil
 }
