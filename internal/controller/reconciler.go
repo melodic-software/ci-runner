@@ -31,7 +31,7 @@ type Dependencies struct {
 	Power     PowerMonitor
 	Resources ResourceMonitor
 	State     StateStore
-	Jobs      JobLookup
+	Jobs      ActiveJobLookup
 	Clock     Clock
 	Logs      LogSink
 	Telemetry telemetry.Recorder

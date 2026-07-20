@@ -84,7 +84,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		Gaming:    host.NewPlatformGamingHost(),
 		Secrets:   secretImporter,
 		ForceStop: ControlForceStopper{Client: controlClient},
-		Logs: FileLogs{
+		Logs: &FileLogs{
 			ControllerDirectory: filepath.Join(cfg.Paths.Logs, "controller"),
 			WorkerLogDirectory:  filepath.Join(cfg.Paths.Logs, "workers"),
 			DiagnosticDirectory: cfg.Paths.Diagnostics,

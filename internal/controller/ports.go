@@ -16,7 +16,7 @@ type ScaleSetClient interface{ scaleset.Client }
 type StateStore interface{ statepkg.Store }
 type Clock interface{ clockpkg.Clock }
 
-type JobLookup interface {
+type ActiveJobLookup interface {
 	ActiveJob(context.Context, string, string) (string, bool, error)
 }
 

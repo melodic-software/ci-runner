@@ -35,12 +35,7 @@ func (a *Application) logs(ctx context.Context, args []string) int {
 		return ExitInvalidConfig
 	}
 	if *cleanup {
-		cleaner, ok := a.dependencies.Logs.(interface{ Cleanup(context.Context) error })
-		if !ok {
-			writeln(a.errOut, "artifact cleanup is unavailable")
-			return ExitInvalidConfig
-		}
-		if err := cleaner.Cleanup(ctx); err != nil {
+		if err := a.dependencies.Logs.Cleanup(ctx); err != nil {
 			writef(a.errOut, "clean up worker artifacts: %v\n", err)
 			return ExitRuntime
 		}
