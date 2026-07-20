@@ -41,6 +41,13 @@ Authoritative references:
 - [PowerShell releases](https://github.com/PowerShell/PowerShell/releases)
 - [Docker image pinning guidance](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
 
+## Image pull timeout
+
+`workerImage.pullTimeout` bounds how long the controller waits for a worker
+image pull — a first-run or updated-digest fetch of the multi-gigabyte runner
+image — before failing the attempt. It is the operator knob for slow or metered
+links; omit it to accept the checked-in default of 20 minutes.
+
 ## Installed compatibility surface
 
 The derived layer contains only:
@@ -122,7 +129,9 @@ The controller must create every worker with all of these properties:
 - no encoded JIT configuration in Docker config, inspection output, process
   arguments, controller state, or controller logs;
 - CPU, memory, memory-plus-swap, and PID limits from validated host config;
-- Docker `local` logging with `max-size=10m` and `max-file=3`;
+- Docker `local` logging with the required, operator-configured
+  `logs.docker.maxSize` / `logs.docker.maxFiles` (validation rejects a missing
+  or non-positive value);
 - runner stdout/stderr captured by the controller and `_diag` copied out before
   deletion through Docker's archive API, never through a host mount.
 
