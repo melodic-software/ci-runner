@@ -29,6 +29,7 @@ const (
 
 var (
 	windowsDrive           = regexp.MustCompile(`^[A-Za-z]:$`)
+	kernel32               = syscall.NewLazyDLL("kernel32.dll")
 	procGetSystemDirectory = kernel32.NewProc("GetSystemDirectoryW")
 )
 
