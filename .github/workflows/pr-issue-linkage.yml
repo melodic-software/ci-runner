@@ -22,4 +22,4 @@ concurrency:
 jobs:
   pr-issue-linkage:
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@90f1c54935203fa31b5b3d1f41531228be2c2b7f # v0.6.1
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@87fb95c3b05fa318b9dd8c2c164cc550071a1ccb # v0.7.0
