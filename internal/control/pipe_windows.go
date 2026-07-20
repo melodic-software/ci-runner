@@ -29,6 +29,10 @@ func NewCurrentUserServer(handler Handler) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newServerAt(path, sddl, handler)
+}
+
+func newServerAt(path, sddl string, handler Handler) (*Server, error) {
 	listener, err := winio.ListenPipe(path, &winio.PipeConfig{
 		SecurityDescriptor: sddl,
 		MessageMode:        false,
@@ -46,6 +50,10 @@ func NewCurrentUserClient() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newClientAt(path)
+}
+
+func newClientAt(path string) (*Client, error) {
 	return NewClient(func(ctx context.Context) (net.Conn, error) {
 		return winio.DialPipeContext(ctx, path)
 	})
