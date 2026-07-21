@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -361,9 +362,153 @@ func TestResourceEvidenceCopyFailurePersistsFallbackWithoutBlockingDiagnostics(t
 			t.Fatalf("artifact event %q missing from %v", event, gotEvents)
 		}
 	}
+	if resourceIndex, diagnosticIndex := slices.Index(gotEvents, "resources"), slices.Index(gotEvents, "diagnostics"); resourceIndex < 0 || diagnosticIndex < 0 || resourceIndex > diagnosticIndex {
+		t.Fatalf("resource evidence was not attempted before diagnostics: %v", gotEvents)
+	}
 	_, finalizations := recorder.snapshot()
 	if len(finalizations) != 1 || finalizations[0].value.ResourceTier != "target_override" || finalizations[0].value.ResourceEvidence == nil || finalizations[0].value.ResourceEvidence.Status != "unavailable" {
 		t.Fatalf("fallback telemetry = %#v", finalizations)
+	}
+}
+
+func TestValidLogMarkerAvoidsPostExitArchiveFailure(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	payload := compactResourceEvidence(t, completeResourceEvidence)
+	engine.setLogFrames(
+		fakeLogFrame{stream: 2, payload: "2026-07-20T23:59:58Z ordinary stderr\n"},
+		fakeLogFrame{stream: 1, payload: "2026-07-20T23:59:59.123456789Z " + resourceEvidenceLogMarker + payload + "\n"},
+	)
+	engine.resourceCopyErr = errors.New("RWLayer of container is unexpectedly nil")
+	sink := &memoryArtifacts{}
+	recorder := &recordingTelemetry{}
+	options := testOptions(sink)
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", ResourceTier: "default",
+		JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits:    config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest(worker.ID)
+	engine.signalExit(worker.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	if engine.resourceCopyCount() != 0 {
+		t.Fatal("valid log marker still used the post-exit archive endpoint")
+	}
+	if engine.hasContainer(worker.ID) {
+		t.Fatal("successfully finalized marker-bearing worker was retained")
+	}
+	sink.mu.Lock()
+	if len(sink.resources) != 1 || sink.resources[0].Source != resourceEvidenceSourceCgroup || sink.resources[0].Memory.PeakBytes != 1986422374 {
+		t.Fatalf("marker evidence = %#v", sink.resources)
+	}
+	if len(sink.logs) != 1 {
+		t.Fatalf("forwarded log count = %d", len(sink.logs))
+	}
+	if got, want := sink.logs[0].String(), "2026-07-20T23:59:58Z ordinary stderr\n2026-07-20T23:59:59.123456789Z "+resourceEvidenceLogMarker+payload+"\n"; got != want {
+		t.Fatalf("forwarded logs = %q, want %q", got, want)
+	}
+	gotEvents := append([]string(nil), sink.events...)
+	sink.mu.Unlock()
+	if resourceIndex, diagnosticIndex := slices.Index(gotEvents, "resources"), slices.Index(gotEvents, "diagnostics"); resourceIndex < 0 || diagnosticIndex < 0 || resourceIndex > diagnosticIndex {
+		t.Fatalf("artifact ordering = %v", gotEvents)
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 1 || telemetry.ClassifyWorkerFinalization(finalizations[0].value) != telemetry.WorkerFinalizationCompleted || !finalizations[0].value.RecordResourceEvidence {
+		t.Fatalf("marker finalization = %#v", finalizations)
+	}
+}
+
+func TestMissingLogMarkerUsesArchiveCompatibilityFallback(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	sink := &memoryArtifacts{}
+	runtime := newTestRuntime(t, engine, sink)
+	defer closeRuntime(t, runtime)
+	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest(worker.ID)
+	engine.signalExit(worker.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatal(err)
+	}
+	if engine.resourceCopyCount() != 1 {
+		t.Fatalf("resource archive copies = %d, want 1", engine.resourceCopyCount())
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.resources) != 1 || sink.resources[0].Source != resourceEvidenceSourceCgroup {
+		t.Fatalf("archive evidence = %#v", sink.resources)
+	}
+}
+
+func TestResourceEvidenceAndDiagnosticsPersistenceAreIndependent(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		resourceErr   error
+		diagnosticErr error
+		wantError     string
+	}{
+		{name: "resource persistence fails", resourceErr: errors.New("resource store unavailable"), wantError: "resource store unavailable"},
+		{name: "diagnostic persistence fails", diagnosticErr: errors.New("diagnostic store unavailable"), wantError: "diagnostic store unavailable"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			engine := newFakeEngine()
+			engine.setLogFrames(fakeLogFrame{stream: 1, payload: resourceEvidenceLogMarker + compactResourceEvidence(t, completeResourceEvidence) + "\n"})
+			sink := &memoryArtifacts{resourceErr: test.resourceErr, diagnosticErr: test.diagnosticErr}
+			runtime := newTestRuntime(t, engine, sink)
+			defer closeRuntime(t, runtime)
+			worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+				PoolID: "org", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+				Limits: config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			watch := runtime.watchForTest(worker.ID)
+			engine.signalExit(worker.ID)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := waitForWatch(ctx, watch); err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("finalization error = %v", err)
+			}
+			if !engine.hasContainer(worker.ID) {
+				t.Fatal("artifact persistence failure removed retry source")
+			}
+			sink.mu.Lock()
+			events := append([]string(nil), sink.events...)
+			resourceAttempts := len(sink.resources)
+			diagnosticAttempts := len(sink.diagnostics)
+			sink.mu.Unlock()
+			if resourceAttempts != 1 || diagnosticAttempts != 1 {
+				t.Fatalf("resource attempts=%d diagnostic attempts=%d events=%v", resourceAttempts, diagnosticAttempts, events)
+			}
+			if resourceIndex, diagnosticIndex := slices.Index(events, "resources"), slices.Index(events, "diagnostics"); resourceIndex < 0 || diagnosticIndex < 0 || resourceIndex > diagnosticIndex {
+				t.Fatalf("artifact ordering = %v", events)
+			}
+		})
 	}
 }
 
@@ -538,6 +683,8 @@ func TestListAdoptsAllContainersBeforeStartingFinalizers(t *testing.T) {
 func TestArtifactPersistenceFailureRetainsExitedContainerAndListRetries(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
+	engine.setLogFrames(fakeLogFrame{stream: 1, payload: resourceEvidenceLogMarker + compactResourceEvidence(t, completeResourceEvidence) + "\n"})
+	engine.resourceCopyErr = errors.New("RWLayer of container is unexpectedly nil")
 	engine.addContainer("retry-worker", "completed", "exited")
 	sink := &memoryArtifacts{finalizeErr: errors.New("durable index unavailable")}
 	recorder := &recordingTelemetry{}
@@ -576,9 +723,70 @@ func TestArtifactPersistenceFailureRetainsExitedContainerAndListRetries(t *testi
 	if engine.hasContainer("retry-worker") {
 		t.Fatal("successfully persisted exited container was not removed")
 	}
+	if engine.resourceCopyCount() != 0 {
+		t.Fatalf("marker replay made %d resource archive copies", engine.resourceCopyCount())
+	}
 	_, finalizations := recorder.snapshot()
 	if len(finalizations) != 2 || !finalizations[0].value.RecordResourceEvidence || finalizations[1].value.RecordResourceEvidence {
 		t.Fatalf("retry resource recording flags = %#v", finalizations)
+	}
+}
+
+func TestResourceEvidencePersistenceFailureRetriesMarkerWithoutDuplicateArchiveEvidence(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.setLogFrames(fakeLogFrame{stream: 1, payload: resourceEvidenceLogMarker + compactResourceEvidence(t, completeResourceEvidence) + "\n"})
+	engine.resourceCopyErr = errors.New("RWLayer of container retry-evidence-worker is unexpectedly nil")
+	engine.addContainer("retry-evidence-worker", "completed", "exited")
+	sink := &memoryArtifacts{resourceErr: errors.New("resource store unavailable")}
+	recorder := &recordingTelemetry{}
+	options := testOptions(sink)
+	options.Telemetry = recorder
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	firstWatch := runtime.watchForTest("retry-evidence-worker")
+	engine.signalExit("retry-evidence-worker")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, firstWatch); err == nil || !strings.Contains(err.Error(), "resource store unavailable") {
+		t.Fatalf("first finalization error = %v", err)
+	}
+	if !engine.hasContainer("retry-evidence-worker") {
+		t.Fatal("resource evidence persistence failure removed retry source")
+	}
+
+	sink.mu.Lock()
+	sink.resourceErr = nil
+	sink.mu.Unlock()
+	if _, err := runtime.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	secondWatch := runtime.watchForTest("retry-evidence-worker")
+	engine.signalExit("retry-evidence-worker")
+	if err := waitForWatch(ctx, secondWatch); err != nil {
+		t.Fatalf("retry finalization: %v", err)
+	}
+	if engine.hasContainer("retry-evidence-worker") {
+		t.Fatal("successfully persisted retry evidence did not remove container")
+	}
+	if engine.resourceCopyCount() != 0 {
+		t.Fatalf("marker retry made %d resource archive copies", engine.resourceCopyCount())
+	}
+	sink.mu.Lock()
+	resourceAttempts := len(sink.resources)
+	sink.mu.Unlock()
+	if resourceAttempts != 2 {
+		t.Fatalf("resource persistence attempts = %d, want 2", resourceAttempts)
+	}
+	_, finalizations := recorder.snapshot()
+	if len(finalizations) != 2 || finalizations[0].value.RecordResourceEvidence || !finalizations[1].value.RecordResourceEvidence {
+		t.Fatalf("resource retry recording flags = %#v", finalizations)
 	}
 }
 
@@ -850,6 +1058,11 @@ type fakeContainer struct {
 	waitError   chan error
 }
 
+type fakeLogFrame struct {
+	stream  byte
+	payload string
+}
+
 type fakeEngine struct {
 	mu                  sync.Mutex
 	imagePresent        bool
@@ -872,6 +1085,8 @@ type fakeEngine struct {
 	activeLogs          int
 	maximumLogs         int
 	resourceCopyErr     error
+	resourceCopies      int
+	logFrames           []fakeLogFrame
 }
 
 func newFakeEngine() *fakeEngine {
@@ -983,14 +1198,20 @@ func (e *fakeEngine) ContainerLogs(_ context.Context, id string, _ client.Contai
 			e.mu.Unlock()
 		}}, nil
 	}
+	frames := append([]fakeLogFrame(nil), e.logFrames...)
 	e.mu.Unlock()
 	var buffer bytes.Buffer
-	payload := []byte("runner output\n")
-	header := make([]byte, 8)
-	header[0] = 1 // Docker multiplexed stdout stream
-	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
-	_, _ = buffer.Write(header)
-	_, _ = buffer.Write(payload)
+	if len(frames) == 0 {
+		frames = []fakeLogFrame{{stream: 1, payload: "runner output\n"}}
+	}
+	for _, frame := range frames {
+		payload := []byte(frame.payload)
+		header := make([]byte, 8)
+		header[0] = frame.stream
+		binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+		_, _ = buffer.Write(header)
+		_, _ = buffer.Write(payload)
+	}
 	return io.NopCloser(bytes.NewReader(buffer.Bytes())), nil
 }
 
@@ -1012,6 +1233,7 @@ func (e *fakeEngine) CopyFromContainer(_ context.Context, id string, options cli
 		return client.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(tarFile("state", []byte(state))))}, nil
 	}
 	if options.SourcePath == defaultResourceEvidencePath {
+		e.resourceCopies++
 		if e.resourceCopyErr != nil {
 			return client.CopyFromContainerResult{}, e.resourceCopyErr
 		}
@@ -1160,6 +1382,18 @@ func (e *fakeEngine) setBlockLogs(block bool) {
 	e.blockLogs = block
 }
 
+func (e *fakeEngine) setLogFrames(frames ...fakeLogFrame) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.logFrames = append([]fakeLogFrame(nil), frames...)
+}
+
+func (e *fakeEngine) resourceCopyCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.resourceCopies
+}
+
 type recordingConnection struct {
 	engine *fakeEngine
 }
@@ -1255,6 +1489,8 @@ type memoryArtifacts struct {
 	adopted         [][]ArtifactMetadata
 	events          []string
 	finalizeErr     error
+	diagnosticErr   error
+	resourceErr     error
 	resources       []ResourceEvidence
 	resourceWritten bool
 }
@@ -1417,13 +1653,16 @@ func (s *memoryArtifacts) WriteDiagnostics(_ context.Context, _ ArtifactMetadata
 	defer s.mu.Unlock()
 	s.events = append(s.events, "diagnostics")
 	s.diagnostics = append(s.diagnostics, content)
-	return err
+	return errors.Join(err, s.diagnosticErr)
 }
 func (s *memoryArtifacts) WriteResourceEvidence(_ context.Context, _ ArtifactMetadata, evidence ResourceEvidence) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, "resources")
 	s.resources = append(s.resources, evidence)
+	if s.resourceErr != nil {
+		return false, s.resourceErr
+	}
 	newlyPersisted := !s.resourceWritten
 	s.resourceWritten = true
 	return newlyPersisted, nil

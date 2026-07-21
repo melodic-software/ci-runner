@@ -90,21 +90,32 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   done
 '
 
-states="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
-  cat /home/runner/_runner_state/state
-  printf " "
+hook_contract="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
+  initial="$(cat /home/runner/_runner_state/state)"
   /usr/local/libexec/ci-runner-job-started.sh
-  cat /home/runner/_runner_state/state
-  printf " "
-  /usr/local/libexec/ci-runner-job-completed.sh
-  cat /home/runner/_runner_state/state
+  busy="$(cat /home/runner/_runner_state/state)"
+  marker="$(/usr/local/libexec/ci-runner-job-completed.sh)"
+  completed="$(cat /home/runner/_runner_state/state)"
+  evidence="$(cat /home/runner/_runner_state/cgroup-terminal.json)"
+  test "$(stat --format="%U:%G:%a" /home/runner/_runner_state/cgroup-terminal.json)" = "runner:runner:600"
+  test "$(wc --lines </home/runner/_runner_state/cgroup-terminal.json)" = 1
+  ! compgen -G "/home/runner/_runner_state/.cgroup-terminal.*" >/dev/null
+  capture_line="$(grep --line-number --fixed-strings "/usr/local/libexec/ci-runner-capture-cgroup" /usr/local/libexec/ci-runner-job-completed.sh | cut --delimiter=: --fields=1)"
+  completed_line="$(grep --line-number --fixed-strings "/usr/local/libexec/ci-runner-set-state completed" /usr/local/libexec/ci-runner-job-completed.sh | cut --delimiter=: --fields=1)"
+  test "$capture_line" -lt "$completed_line"
+  printf "%s\n%s\n%s\n%s\n%s\n" "$initial" "$busy" "$completed" "$marker" "$evidence"
 ')"
-[[ "$states" == 'idle busy completed' ]]
-
-resource_evidence="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
-  /usr/local/libexec/ci-runner-job-completed.sh
-  cat /home/runner/_runner_state/cgroup-terminal.json
-')"
+mapfile -t hook_lines <<<"$hook_contract"
+[[ "${#hook_lines[@]}" == 5 ]]
+[[ "${hook_lines[0]}" == idle ]]
+[[ "${hook_lines[1]}" == busy ]]
+[[ "${hook_lines[2]}" == completed ]]
+readonly resource_marker_prefix=ci-runner-resource-evidence-v1:
+resource_marker="${hook_lines[3]}"
+resource_evidence="${hook_lines[4]}"
+[[ "$resource_marker" == "$resource_marker_prefix$resource_evidence" ]]
+[[ "${#resource_evidence}" -le 32768 ]]
+[[ "$(jq --compact-output . <<<"$resource_evidence")" == "$resource_evidence" ]]
 jq --exit-status '
   .schemaVersion == 1 and
   .source == "cgroup-v2" and
@@ -135,13 +146,16 @@ fixture_evidence="$(printf 'test-jit\n' | docker run --rm --interactive "$image"
   printf "4\n" >"$fixture/pids.peak"
   for io_content in "" "8:0 rbytes=broken wbytes=20"; do
     printf "%s" "$io_content" >"$fixture/io.stat"
-    /usr/local/libexec/ci-runner-capture-cgroup "$fixture"
-    jq --compact-output . /home/runner/_runner_state/cgroup-terminal.json
+    marker="$(/usr/local/libexec/ci-runner-capture-cgroup "$fixture")"
+    evidence="$(cat /home/runner/_runner_state/cgroup-terminal.json)"
+    printf "%s\t%s\n" "$marker" "$evidence"
   done
 ')"
 fixture_count=0
-while IFS= read -r fixture_record; do
+while IFS=$'\t' read -r fixture_marker fixture_record; do
   fixture_count=$((fixture_count + 1))
+  [[ "$fixture_marker" == "$resource_marker_prefix$fixture_record" ]]
+  [[ "${#fixture_record}" -le 32768 ]]
   jq --exit-status '
     .status == "partial" and
     (.missing | index("io.stat") != null) and
@@ -150,6 +164,22 @@ while IFS= read -r fixture_record; do
   ' <<<"$fixture_record" >/dev/null
 done <<<"$fixture_evidence"
 [[ "$fixture_count" == 2 ]]
+
+unavailable_evidence="$(printf 'test-jit\n' | docker run --rm --interactive "$image" /bin/bash -Eeuo pipefail -c '
+  fixture="$(mktemp --directory)"
+  trap '\''rm --force --recursive "$fixture"'\'' EXIT
+  marker="$(/usr/local/libexec/ci-runner-capture-cgroup "$fixture")"
+  evidence="$(cat /home/runner/_runner_state/cgroup-terminal.json)"
+  printf "%s\t%s\n" "$marker" "$evidence"
+')"
+IFS=$'\t' read -r unavailable_marker unavailable_record <<<"$unavailable_evidence"
+[[ "$unavailable_marker" == "$resource_marker_prefix$unavailable_record" ]]
+[[ "${#unavailable_record}" -le 32768 ]]
+jq --exit-status '
+  .status == "unavailable" and
+  (.missing | length) == 9 and
+  ([.memory[], .cpu[], .pids[], .io[]] | all(. == 0))
+' <<<"$unavailable_record" >/dev/null
 
 if docker run --rm "$image" /bin/true; then
   echo 'worker accepted a start without controller-provided JIT input' >&2
