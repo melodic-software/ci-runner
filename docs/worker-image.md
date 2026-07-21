@@ -181,11 +181,31 @@ hook snapshots cgroup-v2 `memory.peak`, `memory.swap.peak`, OOM events,
 `cpu.stat` periods and throttling, `pids.peak`, and aggregate `io.stat` bytes
 into a compact, bounded, schema-versioned JSON file in the same state directory.
 It publishes that file by same-directory atomic rename, then writes the identical
-JSON as one reserved `ci-runner-resource-evidence-v1:` stdout marker. Only after
-the marker is visible does it atomically set the worker state to `completed`. It
-does not sample or resize the worker, and it never removes or interrupts the
-container, consistent with GitHub's warning that a post-job hook is not an
-autoscaler teardown mechanism.
+JSON as one reserved `ci-runner-resource-evidence-v1:` marker directly to
+`/proc/1/fd/1`. The pinned runner redirects hook stdout and stderr through its
+job-log pipeline instead of the worker process stdout that Docker captures.
+Within this image, the non-root `run.sh` launcher remains PID 1 for the container
+lifetime, shares uid 1001 with its hook descendants, and retains Docker's stdout
+pipe. The hook therefore bypasses only the runner's output redirect, without a
+mount, socket, host path, or elevated process. It queries that pipe's `PIPE_BUF`
+and refuses an oversized marker so the single write cannot interleave with other
+runner output. Only after the marker write attempt does it atomically set the
+worker state to `completed`. It does not sample or resize the worker, and it
+never removes or interrupts the container, consistent with GitHub's warning that
+a post-job hook is not an autoscaler teardown mechanism.
+
+Linux protects reopening another process's `/proc/<pid>/fd` entries through a
+ptrace-style permission check, so this transport is an explicit pinned-image
+contract rather than a general container assumption. The image verifier runs the
+normal entrypoint as uid 1001, redirects a child hook's stdout and stderr as the
+runner does, asserts the same-uid PID 1 descriptor is Docker's pipe, stops the
+container, and requires the marker in `docker logs` but not in the redirected
+hook output. A custom PID 1 supervisor was rejected: it would avoid the procfs
+reopen but replace the upstream launcher's process lifecycle and require new,
+security-sensitive guarantees for process-group `TERM`, `INT`, and `HUP`
+forwarding, restart behavior, exact child waiting, and exit-code propagation.
+The verified direct write is the smaller lifecycle change, and any failed reopen
+still leaves the atomic sidecar available to the compatibility archive fallback.
 
 The controller observes complete bounded lines while forwarding every Docker log
 byte unchanged, strictly validates marker payloads through the same 32 KiB JSON
