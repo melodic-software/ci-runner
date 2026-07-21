@@ -113,7 +113,6 @@ func TestCompleteControllerShutdownFailsClosedWithoutReceipt(t *testing.T) {
 		},
 	}
 	for name, test := range tests {
-		name, test := name, test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			err := completeControllerShutdown(context.Background(), test.shutdownErr, test.signal, test.writer, 4242, "1.2.3")

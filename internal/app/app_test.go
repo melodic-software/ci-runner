@@ -672,7 +672,6 @@ func TestControllerRestartRejectsMismatchedCompletionReceipt(t *testing.T) {
 		"completion": func(receipt *model.RestartReceipt) { receipt.CompletedAt = time.Time{} },
 	}
 	for name, mutate := range tests {
-		name, mutate := name, mutate
 		t.Run(name, func(t *testing.T) {
 			store := state.NewMemoryStore()
 			application, _, errOut := newTestApplication(t, "", store, nil)

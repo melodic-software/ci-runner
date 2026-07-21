@@ -241,7 +241,6 @@ func TestValidateRejectsInvalidTelemetry(t *testing.T) {
 `,
 	}
 	for name, block := range tests {
-		name, block := name, block
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			input := strings.Replace(validYAML, "paths:\n", block+"paths:\n", 1)
@@ -286,7 +285,6 @@ func TestTargetWorkerOverridesUseGlobalValidationContract(t *testing.T) {
 		"pids":        {field: "pids", mutate: func(worker *Worker) { worker.PIDs = 0 }},
 	}
 	for name, test := range tests {
-		name, test := name, test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			global, err := Load(strings.NewReader(validYAML))
@@ -347,7 +345,6 @@ func TestLoadRejectsNullBlankAndUnknownTargetWorkerOverrides(t *testing.T) {
 		)
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			input := strings.Replace(validYAML, "      warmIdle: 1", test.fragment+"\n      warmIdle: 1", 1)
@@ -367,7 +364,6 @@ func TestLoadRejectsYAMLMergeKeys(t *testing.T) {
 		"merge elsewhere":        strings.Replace(validYAML, "host:\n", "host:\n  <<: {id: inherited}\n", 1),
 	}
 	for name, input := range tests {
-		name, input := name, input
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			_, err := Load(strings.NewReader(input))
@@ -389,7 +385,6 @@ func TestLoadRejectsMultipleDocuments(t *testing.T) {
 func TestLoadRejectsInvalidUnits(t *testing.T) {
 	t.Parallel()
 	for _, replacement := range []string{"memory: 8GB", "cpuObservationWindow: 60"} {
-		replacement := replacement
 		t.Run(replacement, func(t *testing.T) {
 			t.Parallel()
 			input := validYAML
@@ -442,7 +437,6 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
 		"canonical equivalent roots": strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\diagnostics'`, `'c:/users/RUNNER/AppData/Local/ci-runner/state'`, 1),
 	}
 	for name, input := range tests {
-		name, input := name, input
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := Load(strings.NewReader(input)); err == nil {

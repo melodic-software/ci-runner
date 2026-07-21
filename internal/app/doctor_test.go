@@ -273,7 +273,6 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
 		{name: "past-grace", transition: now.Add(-81 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			store := state.NewMemoryStore()

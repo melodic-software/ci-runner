@@ -94,7 +94,6 @@ func TestSignalEnablementAndProtocolPrecedence(t *testing.T) {
 		{name: "unsupported exporter", values: map[string]string{"OTEL_TRACES_EXPORTER": "console"}, protocol: "http/protobuf", wantErr: true},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			lookup := mapLookup(test.values)

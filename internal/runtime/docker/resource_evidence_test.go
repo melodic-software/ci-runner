@@ -36,7 +36,6 @@ func TestParseResourceEvidenceRejectsUnknownAndInconsistentData(t *testing.T) {
 		"trailing value":     completeResourceEvidence + `{}`,
 	}
 	for name, input := range tests {
-		name, input := name, input
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := ParseResourceEvidence(strings.NewReader(input)); err == nil {

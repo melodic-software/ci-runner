@@ -62,7 +62,6 @@ func TestDiagnosticsRejectRawAndCompressedOverflowWithoutPublishingPartialFiles(
 		{name: "raw-input", maxFile: 1 << 20, maxInput: 32, inputBytes: 33},
 		{name: "compressed-output", maxFile: 64, maxInput: 4096, inputBytes: 2048},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
