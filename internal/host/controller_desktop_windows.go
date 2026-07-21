@@ -5,7 +5,7 @@ package host
 func NewControllerDesktopAdapter() ControllerDesktopAdapter {
 	return ControllerDesktopAdapter{
 		Desktop: DockerDesktopCLI{},
-		Docker:  DockerCLIInspector{},
+		Docker:  DockerEngineInspector{},
 		WSL:     WSLCLI{},
 	}
 }

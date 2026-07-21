@@ -32,19 +32,6 @@ func TestParseDesktopStatus(t *testing.T) {
 	}
 }
 
-func TestParseDockerPSMarksOnlyManagedContainers(t *testing.T) {
-	t.Parallel()
-	input := []byte("{\"ID\":\"one\",\"Names\":\"worker\",\"Image\":\"runner\",\"Status\":\"Up\",\"Labels\":\"com.melodic-software.ci-runner.managed=true,pool=org\"}\n" +
-		"{\"ID\":\"two\",\"Names\":\"database\",\"Image\":\"postgres\",\"Status\":\"Up\",\"Labels\":\"project=local\"}\n")
-	got, err := parseDockerPS(input)
-	if err != nil {
-		t.Fatalf("parseDockerPS: %v", err)
-	}
-	if len(got) != 2 || !got[0].Managed || got[1].Managed {
-		t.Fatalf("unexpected containers: %#v", got)
-	}
-}
-
 func TestParseWSLDistributionsUTF16(t *testing.T) {
 	t.Parallel()
 	text := "Ubuntu-24.04\r\ndocker-desktop\r\n"

@@ -6,8 +6,6 @@ import (
 	"fmt"
 )
 
-const managedContainerLabel = "com.melodic-software.ci-runner.managed"
-
 // GamingManager is the one implementation of the host-wide gaming shutdown
 // contract. The controller decides when to invoke it; this type owns only the
 // concrete Docker Desktop and WSL effects and their postcondition checks.

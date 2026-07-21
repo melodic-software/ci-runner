@@ -6,32 +6,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
+
+	"github.com/moby/moby/client"
 )
 
 // NewEngineMemoryProbe reports the Docker engine VM's total memory (the WSL2
 // VM's kernel MemTotal) for the controller's worker-memory-budget cross-check.
-func NewEngineMemoryProbe() DockerCLIInspector {
-	return DockerCLIInspector{}
+func NewEngineMemoryProbe() DockerEngineInspector {
+	return DockerEngineInspector{}
 }
 
-func (d DockerCLIInspector) EngineMemoryTotal(ctx context.Context) (uint64, error) {
-	executable, err := d.executable()
+func (d DockerEngineInspector) EngineMemoryTotal(ctx context.Context) (uint64, error) {
+	apiClient, err := d.dial()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("create Docker engine client: %w", err)
 	}
-	out, err := d.runner().Run(ctx, executable, "--host", localDockerEngineHost, "info", "--format", "{{json .MemTotal}}")
-	if err != nil {
-		return 0, fmt.Errorf("query Docker engine memory: %w", err)
+	result, infoErr := apiClient.Info(ctx, client.InfoOptions{})
+	closeErr := apiClient.Close()
+	if infoErr != nil {
+		return 0, errors.Join(fmt.Errorf("query Docker engine memory: %w", infoErr), closeErr)
 	}
-	value := strings.TrimSpace(string(out))
-	total, err := strconv.ParseUint(value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parse engine MemTotal %q: %w", value, err)
+	if closeErr != nil {
+		return 0, fmt.Errorf("close Docker engine client: %w", closeErr)
 	}
-	if total == 0 {
+	if result.Info.MemTotal <= 0 {
 		return 0, errors.New("docker engine reported zero MemTotal")
 	}
-	return total, nil
+	return uint64(result.Info.MemTotal), nil
 }
