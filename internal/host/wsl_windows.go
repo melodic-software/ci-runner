@@ -41,7 +41,7 @@ func (w WSLCLI) Shutdown(ctx context.Context) error {
 func NewPlatformGamingHost() GamingHost {
 	return GamingManager{
 		Desktop: DockerDesktopCLI{},
-		Docker:  DockerCLIInspector{},
+		Docker:  DockerEngineInspector{},
 		WSL:     WSLCLI{},
 	}
 }
