@@ -91,8 +91,12 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
 '
 
 run_with_runner_output_captured() {
-  local script="$1" container_id exit_code logs
-  container_id="$(docker create --interactive "$image" /bin/bash -Eeuo pipefail -c "$script")"
+  local script="$1" sidecar_destination="$2" container_id exit_code logs
+  container_id="$(docker create --interactive --log-driver local "$image" /bin/bash -Eeuo pipefail -c "$script")"
+  if [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" != local ]]; then
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
   if ! printf 'test-jit\n' | docker start --attach --interactive "$container_id" >/dev/null; then
     docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
@@ -107,9 +111,22 @@ run_with_runner_output_captured() {
     docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
+  if ! docker cp "$container_id":/home/runner/_runner_state/cgroup-terminal.json - |
+    tar --extract --to-stdout >"$sidecar_destination"; then
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
   docker rm "$container_id" >/dev/null
   printf '%s' "$logs"
 }
+
+temporary_sidecars=()
+cleanup_sidecars() {
+  if ((${#temporary_sidecars[@]} > 0)); then
+    rm --force "${temporary_sidecars[@]}"
+  fi
+}
+trap cleanup_sidecars EXIT
 
 # ScriptHandler redirects hook stdout/stderr and OutputManager consumes those
 # streams. Run the hook as a redirected child of the same-UID PID 1, then read
@@ -136,13 +153,16 @@ read -r -d '' hook_script <<'CONTAINER_SCRIPT' || true
   completed_line="$(grep --line-number --fixed-strings "/usr/local/libexec/ci-runner-set-state completed" /usr/local/libexec/ci-runner-job-completed.sh | cut --delimiter=: --fields=1)"
   test "$capture_line" -lt "$completed_line"
 CONTAINER_SCRIPT
-hook_logs="$(run_with_runner_output_captured "$hook_script")"
+hook_sidecar="$(mktemp)"
+temporary_sidecars+=("$hook_sidecar")
+hook_logs="$(run_with_runner_output_captured "$hook_script" "$hook_sidecar")"
 readonly resource_marker_prefix=ci-runner-resource-evidence-v1:
 mapfile -t hook_lines <<<"$hook_logs"
 [[ "${#hook_lines[@]}" == 1 ]]
+[[ "$hook_logs" != *runner-output-sentinel* ]]
 resource_marker="${hook_lines[0]}"
-[[ "$resource_marker" == "$resource_marker_prefix"* ]]
-resource_evidence="${resource_marker#"$resource_marker_prefix"}"
+resource_evidence="$(<"$hook_sidecar")"
+[[ "$resource_marker" == "$resource_marker_prefix$resource_evidence" ]]
 [[ "${#resource_evidence}" -le 32768 ]]
 [[ "${#resource_marker}" -lt 4096 ]]
 [[ "$(jq --compact-output . <<<"$resource_evidence")" == "$resource_evidence" ]]
@@ -183,7 +203,9 @@ read -r -d '' fixture_script <<'CONTAINER_SCRIPT' || true
     test "$(stat --format="%U:%G:%a" /home/runner/_runner_state/cgroup-terminal.json)" = "runner:runner:600"
   done
 CONTAINER_SCRIPT
-fixture_markers="$(run_with_runner_output_captured "$fixture_script")"
+fixture_sidecar="$(mktemp)"
+temporary_sidecars+=("$fixture_sidecar")
+fixture_markers="$(run_with_runner_output_captured "$fixture_script" "$fixture_sidecar")"
 mapfile -t fixture_lines <<<"$fixture_markers"
 [[ "${#fixture_lines[@]}" == 2 ]]
 for fixture_marker in "${fixture_lines[@]}"; do
@@ -198,6 +220,8 @@ for fixture_marker in "${fixture_lines[@]}"; do
     .io.writeBytes == 0
   ' <<<"$fixture_record" >/dev/null
 done
+fixture_evidence="$(<"$fixture_sidecar")"
+[[ "${fixture_lines[1]}" == "$resource_marker_prefix$fixture_evidence" ]]
 
 unavailable_script=
 read -r -d '' unavailable_script <<'CONTAINER_SCRIPT' || true
@@ -207,12 +231,14 @@ read -r -d '' unavailable_script <<'CONTAINER_SCRIPT' || true
   /usr/local/libexec/ci-runner-capture-cgroup "$fixture" >"$runner_output" 2>&1
   test ! -s "$runner_output"
 CONTAINER_SCRIPT
-unavailable_logs="$(run_with_runner_output_captured "$unavailable_script")"
+unavailable_sidecar="$(mktemp)"
+temporary_sidecars+=("$unavailable_sidecar")
+unavailable_logs="$(run_with_runner_output_captured "$unavailable_script" "$unavailable_sidecar")"
 mapfile -t unavailable_lines <<<"$unavailable_logs"
 [[ "${#unavailable_lines[@]}" == 1 ]]
 unavailable_marker="${unavailable_lines[0]}"
-[[ "$unavailable_marker" == "$resource_marker_prefix"* ]]
-unavailable_record="${unavailable_marker#"$resource_marker_prefix"}"
+unavailable_record="$(<"$unavailable_sidecar")"
+[[ "$unavailable_marker" == "$resource_marker_prefix$unavailable_record" ]]
 [[ "${#unavailable_record}" -le 32768 ]]
 [[ "${#unavailable_marker}" -lt 4096 ]]
 jq --exit-status '
