@@ -286,7 +286,6 @@ func TestControllerShutdownClassificationAcrossPostExitPhases(t *testing.T) {
 		{phase: "removal", wantOutcome: telemetry.WorkerFinalizationCanceled},
 		{phase: "index-with-artifact-failure", wantOutcome: telemetry.WorkerFinalizationRuntimeError},
 	} {
-		test := test
 		t.Run(test.phase, func(t *testing.T) {
 			t.Parallel()
 			baseEngine := newFakeEngine()
@@ -472,7 +471,6 @@ func TestResourceEvidenceAndDiagnosticsPersistenceAreIndependent(t *testing.T) {
 		{name: "resource persistence fails", resourceErr: errors.New("resource store unavailable"), wantError: "resource store unavailable"},
 		{name: "diagnostic persistence fails", diagnosticErr: errors.New("diagnostic store unavailable"), wantError: "diagnostic store unavailable"},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			engine := newFakeEngine()
@@ -542,7 +540,6 @@ func TestStartNeverForceRemovesAfterAmbiguousJITDelivery(t *testing.T) {
 		{name: "newline-write-returned-bytes-and-error", writeErrorAt: 2},
 		{name: "close-write-error-after-complete-line", closeWriteErr: errors.New("close-write response lost")},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			engine := newFakeEngine()

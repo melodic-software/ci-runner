@@ -133,7 +133,6 @@ func TestControlHandlerRejectsMatchingCountsForDifferentControllerIdentity(t *te
 		"version":    func(request *control.ShutdownRequest) { request.ExpectedVersion = "different-version" },
 	}
 	for name, changeIdentity := range tests {
-		name, changeIdentity := name, changeIdentity
 		t.Run(name, func(t *testing.T) {
 			harness := newHarness(t, model.ModeEnabled)
 			handler, err := NewControlHandler(harness.controller, 1234)

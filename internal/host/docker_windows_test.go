@@ -47,7 +47,6 @@ func TestDockerDesktopStatusClassifiesNonZeroExit(t *testing.T) {
 		{name: "non-exit error propagates", out: nil, err: errors.New("docker.exe not found"), wantErr: true},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runner := &recordingCommandRunner{out: test.out, err: test.err}
@@ -122,7 +121,6 @@ func TestDockerInspectorPinsLocalEngineHost(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runner := &recordingCommandRunner{}
@@ -157,7 +155,6 @@ func TestEngineMemoryTotalRejectsInvalidOutput(t *testing.T) {
 	t.Parallel()
 	executable := `C:\Program Files\Docker\Docker\resources\bin\docker.exe`
 	for name, out := range map[string]string{"empty": "", "zero": "0", "non-numeric": "unknown"} {
-		out := out
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			runner := &recordingCommandRunner{out: []byte(out)}

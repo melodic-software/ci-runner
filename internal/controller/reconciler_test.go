@@ -93,7 +93,6 @@ func TestReconcilerOmitsCheckpointAgeWithoutValidPriorCheckpoint(t *testing.T) {
 			}
 		}},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			harness := newHarness(t, model.ModeEnabled)
@@ -1539,7 +1538,6 @@ func TestPreStartFailureDeregistersJITButAmbiguousStartDoesNot(t *testing.T) {
 		{name: "pre-start", startError: &WorkerStartError{Err: errors.New("create failed")}, wantRemove: true},
 		{name: "ambiguous-after-start", startError: &WorkerStartError{Err: errors.New("stream response lost"), RunnerMayBeActive: true}, wantRemove: false},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			harness := newHarness(t, model.ModeEnabled)

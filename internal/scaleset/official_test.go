@@ -218,7 +218,6 @@ func TestOfficialMalformedJobCompletionFailsBeforeAcknowledgement(t *testing.T) 
 		"whitespace-runner-name": {RunnerID: 41, RunnerName: " ", Result: "Canceled", JobMessageBase: actionsscale.JobMessageBase{JobID: "job-1"}},
 	}
 	for name, completed := range tests {
-		completed := completed
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			api := newFakeOfficialAPI()

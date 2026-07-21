@@ -24,7 +24,6 @@ func TestShutdownRequestValidateRequiresExpectedControllerIdentity(t *testing.T)
 		"long version":       func(request *ShutdownRequest) { request.ExpectedVersion = strings.Repeat("v", 129) },
 	}
 	for name, invalidate := range tests {
-		name, invalidate := name, invalidate
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			request := valid

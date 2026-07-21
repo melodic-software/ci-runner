@@ -19,7 +19,6 @@ func TestParseDesktopStatus(t *testing.T) {
 		`{"SessionID":"one","Status":"running"}`: DesktopStatusRunning,
 	}
 	for input, want := range tests {
-		input, want := input, want
 		t.Run(string(want), func(t *testing.T) {
 			t.Parallel()
 			got, err := parseDesktopStatus([]byte(input))

@@ -88,7 +88,7 @@ func NewFileArtifactSink(logDirectory, diagnosticDirectory string, jobs jobindex
 		}
 	}
 	return &FileArtifactSink{
-		logDirectory: filepath.Clean(logDirectory), diagnosticDirectory: filepath.Clean(diagnosticDirectory),
+		logDirectory: logDirectory, diagnosticDirectory: diagnosticDirectory,
 		jobs: jobs, acl: acl, policy: policy,
 	}, nil
 }

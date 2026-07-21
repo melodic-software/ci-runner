@@ -80,7 +80,6 @@ func TestResourceEvidencePathDerivesFromLegacyDiagnosticPath(t *testing.T) {
 func TestEventThenArtifactAndArtifactThenEventConverge(t *testing.T) {
 	t.Parallel()
 	for _, eventFirst := range []bool{true, false} {
-		eventFirst := eventFirst
 		t.Run(map[bool]string{true: "event-first", false: "artifact-first"}[eventFirst], func(t *testing.T) {
 			t.Parallel()
 			store := newFileStoreForTest(t, t.TempDir())

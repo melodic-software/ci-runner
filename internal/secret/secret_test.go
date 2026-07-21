@@ -114,7 +114,6 @@ func TestImporterAcceptsPKCS1AndPKCS8WithoutPersistingPlaintext(t *testing.T) {
 	tests["pkcs8"] = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
 
 	for name, keyPEM := range tests {
-		name, keyPEM := name, keyPEM
 		t.Run(name, func(t *testing.T) {
 			directory := t.TempDir()
 			source := filepath.Join(directory, "input.pem")

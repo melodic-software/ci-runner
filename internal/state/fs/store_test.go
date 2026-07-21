@@ -107,7 +107,6 @@ func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {
 		"completion": func(value *model.RestartReceipt) { value.CompletedAt = time.Time{} },
 	}
 	for name, mutate := range tests {
-		name, mutate := name, mutate
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			value := valid

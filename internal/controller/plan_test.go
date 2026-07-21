@@ -94,7 +94,6 @@ func TestAdvertisedCapacityUsesMemorySchmittTriggerAtEverySlotBoundary(t *testin
 		{name: "second slot grows at its upper boundary", previousCapacity: 1, headroomBytes: 18 * gibibyte, wantCapacity: 2},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			input := healthyInput()
@@ -1083,7 +1082,6 @@ func TestBudgetBasisAdvertisedCapacityKeepsSchmittTriggerAtSlotBoundaries(t *tes
 		{name: "second slot grows at its upper boundary", previousCapacity: 1, budgetBytes: 4*gibibyte + gibibyte/2, wantCapacity: 2},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			input := budgetInput()
