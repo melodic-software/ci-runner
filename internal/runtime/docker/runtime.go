@@ -144,6 +144,11 @@ type containerWatch struct {
 	err  error
 }
 
+type logCaptureResult struct {
+	evidence *ResourceEvidence
+	err      error
+}
+
 func New(engine Engine, options Options) (*Runtime, error) {
 	if engine == nil {
 		return nil, errors.New("docker engine client is required")
@@ -586,7 +591,7 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	}()
 	logContext, cancelLogs := context.WithCancel(r.ctx)
 	defer cancelLogs()
-	logDone := make(chan error, 1)
+	logDone := make(chan logCaptureResult, 1)
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -642,12 +647,14 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 
 	finalizeCtx, cancel := context.WithTimeout(r.ctx, r.opts.FinalizationTimeout)
 	defer cancel()
+	var markerEvidence *ResourceEvidence
 	select {
-	case err := <-logDone:
+	case result := <-logDone:
 		cancelLogs()
-		if err != nil {
-			r.opts.OnError(err)
-			watch.err = errors.Join(watch.err, err)
+		markerEvidence = result.evidence
+		if result.err != nil {
+			r.opts.OnError(result.err)
+			watch.err = errors.Join(watch.err, result.err)
 		}
 	case <-finalizeCtx.Done():
 		err := errors.New("worker log stream did not close before finalization timeout")
@@ -660,23 +667,28 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		// Do not delete the watch while its log writer is still active. Keeping
 		// the watch registered prevents List from starting concurrent retries
 		// against the same artifact path.
-		if logErr := <-logDone; logErr != nil {
+		result := <-logDone
+		markerEvidence = result.evidence
+		if result.err != nil {
 			shutdownErr := r.ctx.Err()
-			if shutdownErr == nil || !errorCausedOnlyBy(logErr, shutdownErr) {
-				r.opts.OnError(logErr)
-				watch.err = errors.Join(watch.err, logErr)
+			if shutdownErr == nil || !errorCausedOnlyBy(result.err, shutdownErr) {
+				r.opts.OnError(result.err)
+				watch.err = errors.Join(watch.err, result.err)
 			}
 		}
 	}
-	if err := r.captureDiagnostics(finalizeCtx, id); err != nil {
-		r.opts.OnError(err)
-		watch.err = errors.Join(watch.err, err)
-	}
 	metadata := r.metadata(finalizeCtx, id)
-	evidence, evidenceRecorded, evidenceErr := r.captureResourceEvidence(finalizeCtx, id, metadata)
+	evidence, evidenceRecorded, evidenceErr := r.captureResourceEvidence(finalizeCtx, id, metadata, markerEvidence)
 	if evidenceErr != nil {
 		r.opts.OnError(evidenceErr)
 		watch.err = errors.Join(watch.err, evidenceErr)
+	}
+	// Evidence and diagnostics are independent durable artifacts. Attempt both
+	// even when either transport or persistence path fails, while retaining the
+	// container unless the complete artifact set can be finalized.
+	if err := r.captureDiagnostics(finalizeCtx, id); err != nil {
+		r.opts.OnError(err)
+		watch.err = errors.Join(watch.err, err)
 	}
 	finalization.ResourceTier = metadata.ResourceTier
 	finalization.RecordResourceEvidence = evidenceRecorded
@@ -712,16 +724,17 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	}
 }
 
-func (r *Runtime) captureLogs(ctx context.Context, id string) error {
+func (r *Runtime) captureLogs(ctx context.Context, id string) logCaptureResult {
 	metadata := r.metadata(ctx, id)
 	destination, err := r.opts.Artifacts.OpenLog(ctx, metadata)
 	if err != nil {
-		return err
+		return logCaptureResult{err: err}
 	}
 	logs, err := r.engine.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true})
 	if err != nil {
-		return errors.Join(fmt.Errorf("open worker log stream: %w", err), destination.Close())
+		return logCaptureResult{err: errors.Join(fmt.Errorf("open worker log stream: %w", err), destination.Close())}
 	}
+	observer := newResourceEvidenceLogObserver(destination)
 	copyDone := make(chan struct{})
 	go func() {
 		select {
@@ -730,13 +743,16 @@ func (r *Runtime) captureLogs(ctx context.Context, id string) error {
 		case <-copyDone:
 		}
 	}()
-	_, copyErr := stdcopy.StdCopy(destination, destination, logs)
+	_, copyErr := stdcopy.StdCopy(observer, observer, logs)
 	close(copyDone)
-	return errors.Join(
-		wrapIfError("copy worker log stream", copyErr),
-		wrapIfError("close worker log stream", logs.Close()),
-		wrapIfError("close worker log artifact", destination.Close()),
-	)
+	return logCaptureResult{
+		evidence: observer.lastEvidence(),
+		err: errors.Join(
+			wrapIfError("copy worker log stream", copyErr),
+			wrapIfError("close worker log stream", logs.Close()),
+			wrapIfError("close worker log artifact", destination.Close()),
+		),
+	}
 }
 
 func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr error) {
@@ -753,34 +769,38 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr 
 	return nil
 }
 
-func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata) (ResourceEvidence, bool, error) {
+func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata, marker *ResourceEvidence) (ResourceEvidence, bool, error) {
 	evidence := fallbackResourceEvidence("unavailable", "docker-copy-unavailable")
-	if err := ctx.Err(); err != nil {
+	if marker != nil {
+		evidence = *marker
+		evidence.Missing = append([]string(nil), marker.Missing...)
+	} else if err := ctx.Err(); err != nil {
 		// A finalization timeout is an attempt failure, not evidence that Docker
 		// or cgroup data is unavailable. Do not publish an immutable fallback;
 		// the retained container can provide real terminal evidence on retry.
 		return evidence, false, fmt.Errorf("terminal worker resource evidence context expired: %w", err)
-	}
-	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
-	if err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return evidence, false, fmt.Errorf("copy terminal worker resource evidence after finalization context expired: %w", errors.Join(err, contextErr))
-		}
-		if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
-			return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
-		}
-		r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
 	} else {
-		content, extractErr := readSingleRegularArchive(result.Content, maximumResourceEvidenceBytes)
-		closeErr := result.Content.Close()
-		if err := errors.Join(extractErr, closeErr); err != nil {
-			r.opts.OnError(fmt.Errorf("extract terminal worker resource evidence; preserving bounded fallback: %w", err))
-			evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
-		} else if parsed, parseErr := ParseResourceEvidence(strings.NewReader(string(content))); parseErr != nil {
-			r.opts.OnError(fmt.Errorf("validate terminal worker resource evidence; preserving bounded fallback: %w", parseErr))
-			evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
+		result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
+		if err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return evidence, false, fmt.Errorf("copy terminal worker resource evidence after finalization context expired: %w", errors.Join(err, contextErr))
+			}
+			if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
+				return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
+			}
+			r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
 		} else {
-			evidence = parsed
+			content, extractErr := readSingleRegularArchive(result.Content, maximumResourceEvidenceBytes)
+			closeErr := result.Content.Close()
+			if err := errors.Join(extractErr, closeErr); err != nil {
+				r.opts.OnError(fmt.Errorf("extract terminal worker resource evidence; preserving bounded fallback: %w", err))
+				evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
+			} else if parsed, parseErr := ParseResourceEvidence(strings.NewReader(string(content))); parseErr != nil {
+				r.opts.OnError(fmt.Errorf("validate terminal worker resource evidence; preserving bounded fallback: %w", parseErr))
+				evidence = fallbackResourceEvidence("invalid", "invalid-evidence")
+			} else {
+				evidence = parsed
+			}
 		}
 	}
 	if err := ctx.Err(); err != nil && evidence.Source == resourceEvidenceSourceHost {

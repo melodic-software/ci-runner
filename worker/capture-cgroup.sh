@@ -4,6 +4,8 @@ set -u
 readonly cgroup_root="${1:-/sys/fs/cgroup}"
 readonly state_directory=/home/runner/_runner_state
 readonly final_path="$state_directory/cgroup-terminal.json"
+readonly marker_prefix=ci-runner-resource-evidence-v1:
+readonly maximum_evidence_bytes=32768
 
 # Resource evidence is operational telemetry, not a security boundary. Workflow
 # code shares the disposable runner identity, so refuse a replaced state path
@@ -105,7 +107,7 @@ fi
 umask 077
 temporary="$(mktemp "$state_directory/.cgroup-terminal.XXXXXX")" || exit 0
 trap 'rm --force "$temporary"' EXIT
-if ! jq --null-input \
+if ! jq --compact-output --null-input \
   --arg status "$status" \
   --argjson missing "$(printf '%s\n' "${missing[@]}" | jq --raw-input --slurp 'split("\n") | map(select(length > 0))')" \
   --argjson memory_peak "$memory_peak" \
@@ -139,7 +141,14 @@ if ! jq --null-input \
   }' >"$temporary"; then
   exit 0
 fi
+evidence_size="$(wc --bytes <"$temporary")" || exit 0
+if ((evidence_size < 1 || evidence_size > maximum_evidence_bytes)); then
+  exit 0
+fi
 chmod 0600 "$temporary" || exit 0
 mv --force "$temporary" "$final_path" || exit 0
 trap - EXIT
+if IFS= read -r evidence <"$final_path"; then
+  printf '%s%s\n' "$marker_prefix" "$evidence"
+fi
 exit 0

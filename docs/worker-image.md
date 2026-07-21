@@ -176,25 +176,31 @@ hooks. A root-owned entrypoint atomically initializes
 `/home/runner/_runner_state/state` to `idle` immediately before starting the
 runner; the hooks atomically replace it with `busy` and `completed`. The file is
 inside the disposable writable layer and is copied through Docker's archive API;
-it is never mounted from the host. After recording `completed`, the terminal
+it is never mounted from the host. Before recording `completed`, the terminal
 hook snapshots cgroup-v2 `memory.peak`, `memory.swap.peak`, OOM events,
 `cpu.stat` periods and throttling, `pids.peak`, and aggregate `io.stat` bytes
-into a bounded, schema-versioned JSON file in the same state directory. It does
-not sample or resize the worker, and it never removes or interrupts the
+into a compact, bounded, schema-versioned JSON file in the same state directory.
+It publishes that file by same-directory atomic rename, then writes the identical
+JSON as one reserved `ci-runner-resource-evidence-v1:` stdout marker. Only after
+the marker is visible does it atomically set the worker state to `completed`. It
+does not sample or resize the worker, and it never removes or interrupts the
 container, consistent with GitHub's warning that a post-job hook is not an
 autoscaler teardown mechanism.
 
-The controller copies and strictly validates that terminal resource evidence
-before container removal and persists it beside the copied diagnostics. A
-missing Docker archive endpoint, absent cgroup field, or invalid payload creates
-a bounded controller-owned fallback record; it does not infer a zero peak or a
-job failure. Failure to durably persist either the fallback or real evidence
-retains the exited container for the same evidence retry contract as logs and
-`_diag`. The sidecar path is derived from the existing diagnostic archive so
+The controller observes complete bounded lines while forwarding every Docker log
+byte unchanged, strictly validates marker payloads through the same 32 KiB JSON
+schema as the sidecar, and retains the last valid marker. It persists marker
+evidence before independently attempting `_diag`; older images or log streams
+without a valid marker retain the post-exit Docker archive fallback. A missing
+Docker archive endpoint, absent cgroup field, or invalid payload creates a
+bounded controller-owned fallback record; it does not infer a zero peak or a job
+failure. Failure to durably persist either the fallback or real evidence retains
+the exited container for the same evidence retry contract as logs and `_diag`.
+The sidecar path is derived from the existing diagnostic archive so
 schema-version-1 `jobs.json` remains readable by v0.1.9 after rollback. Workflow
-code shares the disposable runner identity and can alter its
-own writable layer, so cgroup evidence is capacity-tuning telemetry, not a
-security attestation.
+code shares the disposable runner identity and can alter both its writable layer
+and stdout, so even a schema-valid marker is capacity-tuning telemetry with the
+same trust as the sidecar, not a security attestation.
 
 `scripts/verify-worker-image.sh` verifies the immutable image metadata, approved
 tool surface, exact runner version, non-root identity, rootless .NET/NuGet
