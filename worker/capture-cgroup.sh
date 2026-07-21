@@ -6,6 +6,7 @@ readonly state_directory=/home/runner/_runner_state
 readonly final_path="$state_directory/cgroup-terminal.json"
 readonly marker_prefix=ci-runner-resource-evidence-v1:
 readonly maximum_evidence_bytes=32768
+readonly container_stdout=/proc/1/fd/1
 
 # Resource evidence is operational telemetry, not a security boundary. Workflow
 # code shares the disposable runner identity, so refuse a replaced state path
@@ -149,6 +150,15 @@ chmod 0600 "$temporary" || exit 0
 mv --force "$temporary" "$final_path" || exit 0
 trap - EXIT
 if IFS= read -r evidence <"$final_path"; then
-  printf '%s%s\n' "$marker_prefix" "$evidence"
+  marker="$marker_prefix$evidence"
+  pipe_buffer="$(getconf PIPE_BUF "$container_stdout" 2>/dev/null)" || exit 0
+  if [[ ! "$pipe_buffer" =~ ^[0-9]+$ ]] || ((${#marker} + 1 > pipe_buffer)); then
+    exit 0
+  fi
+  # The pinned runner redirects completion-hook stdout/stderr into its job log
+  # pipeline. PID 1 is the same-UID runner launcher for the container lifetime,
+  # and its stdout is Docker's logging pipe. Open that pipe directly so the
+  # controller can observe one PIPE_BUF-bounded atomic marker write.
+  { printf '%s\n' "$marker" >"$container_stdout"; } 2>/dev/null || true
 fi
 exit 0
