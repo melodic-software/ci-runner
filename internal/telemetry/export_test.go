@@ -31,7 +31,7 @@ func TestConfiguredExportUsesReviewedSettingsInsteadOfSignalEnvironment(t *testi
 	provider, problems := NewFromEnv(context.Background(), Options{
 		HostID: "melo-desk-001", Version: "1.2.3",
 		Export: &ExportConfig{
-			Endpoint: "http://127.0.0.1:19889", Protocol: "grpc",
+			Endpoint: "http://127.0.0.1:4317", Protocol: "grpc",
 			Traces: true,
 		},
 	})

@@ -196,7 +196,7 @@ func TestLoadOmittedWorkerMemoryBudgetStaysZero(t *testing.T) {
 func TestLoadConfiguredTelemetry(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "paths:\n", `telemetry:
-  endpoint: http://127.0.0.1:19889
+  endpoint: http://127.0.0.1:4317
   protocol: grpc
   traces: true
   metrics: true
@@ -226,16 +226,16 @@ func TestValidateRejectsInvalidTelemetry(t *testing.T) {
   traces: true
 `,
 		"invalid protocol": `telemetry:
-  endpoint: http://127.0.0.1:19889
+  endpoint: http://127.0.0.1:4317
   protocol: thrift
   traces: true
 `,
 		"no signals": `telemetry:
-  endpoint: http://127.0.0.1:19889
+  endpoint: http://127.0.0.1:4317
   protocol: grpc
 `,
 		"missing metric cadence": `telemetry:
-  endpoint: http://127.0.0.1:19889
+  endpoint: http://127.0.0.1:4317
   protocol: grpc
   metrics: true
 `,
