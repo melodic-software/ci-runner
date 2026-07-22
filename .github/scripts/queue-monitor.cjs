@@ -132,8 +132,20 @@ function incidentMarker(targetOwner) {
   return `<!-- ci-runner:queued-job-monitor:incident:${targetOwner} -->`;
 }
 
+// Neutralizes '<' and '>' (not just '|') because this cell content is
+// untrusted: it comes from monitored-repo job/workflow names, not this
+// workflow's own source. Left unescaped, a crafted job name could inject a
+// literal '<!-- ... -->' sequence into a bot-authored incident body —
+// including another owner's incident marker, which findOpenIncident matches
+// as a raw substring — causing a cross-owner issue collision. HTML-entity
+// encoding renders as the literal characters (GitHub's Markdown renders
+// '&lt;'/'&gt;' back to '<'/'>' visually) while never forming a real '<!--'
+// or '-->' sequence in the raw body text this workflow's own code searches.
 function escapeMarkdownTableCell(value) {
-  return String(value).replace(/\|/g, '\\|');
+  return String(value)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\|/g, '\\|');
 }
 
 function renderStuckMarkdownTable(stuck) {
@@ -156,16 +168,13 @@ function isOwnIncidentAuthor(issue, issueAuthorLogin) {
 // (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
 // candidate carrying the marker) fails closed rather than guessing.
 //
-// Requiring an exact title match too, not just the marker, closes a second
-// path: renderStuckMarkdownTable embeds monitored-repo job/workflow names
-// verbatim (only pipe-escaped for table integrity, not HTML-comment-escaped),
-// so a crafted job name in a monitored repo could inject another owner's
-// marker string into a bot-authored incident body. The title is built solely
-// from the trusted targetOwner value, never from monitored content, so it
-// can't be spoofed the same way — an issue's body containing an injected
-// foreign marker still carries its own owner's title and is correctly
-// rejected as a candidate for that foreign owner.
-async function findOpenIncident({ github, homeOwner, homeRepo, title, marker, issueAuthorLogin }) {
+// Matching stays marker-only (not marker + title), matching the fleet
+// precedent's deliberate "a marker survives a retitle" property. A crafted
+// job name in a monitored repo could in principle try to inject a foreign
+// marker into a bot-authored body; escapeMarkdownTableCell neutralizes that
+// at the source (see its own comment) instead of layering a title guard here
+// that would trade retitle-survival for redundant protection.
+async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
   // Every incident issue this workflow creates carries the 'automated' label
   // (see upsertIncident's create call); filtering server-side keeps this
   // ~15-minutes-while-open scan from paginating every open issue in the repo.
@@ -177,7 +186,7 @@ async function findOpenIncident({ github, homeOwner, homeRepo, title, marker, is
     per_page: 100,
   });
   const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
-  const matches = candidates.filter(issue => issue.title === title && (issue.body ?? '').includes(marker));
+  const matches = candidates.filter(issue => (issue.body ?? '').includes(marker));
   if (matches.length > 1) {
     throw new Error(`Found ${matches.length} open incident issues carrying marker '${marker}'; reconcile manually.`);
   }
@@ -223,7 +232,7 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
 
   const title = incidentTitle(targetOwner);
   const marker = incidentMarker(targetOwner);
-  const existing = await findOpenIncident({ github, homeOwner, homeRepo, title, marker, issueAuthorLogin });
+  const existing = await findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin });
   const nowIso = new Date(now).toISOString();
 
   if (stuck.length === 0) {
