@@ -238,51 +238,82 @@ test('renderStuckMarkdownTable escapes pipes so a job or workflow name cannot co
 });
 
 test('findOpenIncident matches an own-authored issue carrying the marker and ignores pull requests', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
     existingIssues: [
       ownIssue({ number: 1, title: 'unrelated', body: 'no marker here' }),
-      ownIssue({ number: 2, body: `has marker ${marker}`, pull_request: { url: 'x' } }),
-      ownIssue({ number: 3, body: `has marker ${marker}` }),
+      ownIssue({ number: 2, title, body: `has marker ${marker}`, pull_request: { url: 'x' } }),
+      ownIssue({ number: 3, title, body: `has marker ${marker}` }),
     ],
   });
-  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title, marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
   assert.equal(found.number, 3);
 });
 
 test('findOpenIncident filters to the automated label server-side', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({ existingIssues: [] });
-  await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title, marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
   const [, parameters] = github.calls.find(([action]) => action === 'paginate');
   assert.equal(parameters.labels, 'automated');
   assert.equal(parameters.state, 'open');
 });
 
 test('findOpenIncident rejects a decoy issue that carries the marker but was not opened by this workflow\'s own identity', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
     existingIssues: [
-      { number: 9, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'kyle-sexton', type: 'User' } },
-      { number: 10, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'some-other-bot', type: 'Bot' } },
+      { number: 9, title, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'kyle-sexton', type: 'User' } },
+      { number: 10, title, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'some-other-bot', type: 'Bot' } },
     ],
   });
-  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title, marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
   assert.equal(found, null);
 });
 
 test('findOpenIncident fails closed when more than one own-authored issue carries the marker', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
     existingIssues: [
-      ownIssue({ number: 3, body: `has marker ${marker}` }),
-      ownIssue({ number: 4, body: `has marker ${marker}` }),
+      ownIssue({ number: 3, title, body: `has marker ${marker}` }),
+      ownIssue({ number: 4, title, body: `has marker ${marker}` }),
     ],
   });
   await assert.rejects(
-    findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN }),
+    findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title, marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN }),
     /Found 2 open incident issues carrying marker/,
   );
+});
+
+test('findOpenIncident rejects an own-authored issue whose body contains a foreign marker via injected content but whose title belongs to a different owner', async () => {
+  // Simulates renderStuckMarkdownTable embedding a crafted job/workflow name
+  // from a monitored repo: the injected text happens to contain owner B's
+  // marker, but the issue itself is genuinely owner A's incident (its title
+  // says so). The title guard must reject it as a candidate for owner B.
+  const ownerBTitle = incidentTitle('owner-b');
+  const ownerBMarker = incidentMarker('owner-b');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      ownIssue({
+        number: 5,
+        title: incidentTitle('owner-a'),
+        body: `owner-a's real incident, with an injected job name containing ${ownerBMarker}`,
+      }),
+    ],
+  });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title: ownerBTitle, marker: ownerBMarker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  assert.equal(found, null);
+});
+
+test('incidentMarker keeps prefix-related owners from substring-colliding', () => {
+  const shortOwner = incidentMarker('melodic-software');
+  const longOwner = incidentMarker('melodic-software-fork');
+  assert.ok(!longOwner.includes(shortOwner), 'the longer owner\'s marker must not contain the shorter owner\'s marker as a substring');
+  assert.ok(!shortOwner.includes(longOwner), 'the shorter owner\'s marker must not contain the longer owner\'s marker as a substring');
 });
 
 test('upsertIncident opens a new incident issue when none is open and jobs are stuck', async () => {
@@ -315,9 +346,10 @@ test('upsertIncident opens a new incident issue when none is open and jobs are s
 });
 
 test('upsertIncident silently updates an already-open incident, preserving the window start and without commenting', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
-    existingIssues: [ownIssue({ number: 55, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
+    existingIssues: [ownIssue({ number: 55, title, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
   });
   const core = fakeCore();
   await upsertIncident({
@@ -367,9 +399,10 @@ test('upsertIncident does not adopt a decoy issue: opens a fresh incident instea
 });
 
 test('upsertIncident closes and comments the incident on recovery', async () => {
+  const title = incidentTitle('melodic-software');
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
-    existingIssues: [ownIssue({ number: 55, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
+    existingIssues: [ownIssue({ number: 55, title, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
   });
   const core = fakeCore();
   await upsertIncident({

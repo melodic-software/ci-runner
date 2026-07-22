@@ -155,7 +155,17 @@ function isOwnIncidentAuthor(issue, issueAuthorLogin) {
 // no matter what text it carries. Mirrors the hardening in ci-workflows#213
 // (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
 // candidate carrying the marker) fails closed rather than guessing.
-async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
+//
+// Requiring an exact title match too, not just the marker, closes a second
+// path: renderStuckMarkdownTable embeds monitored-repo job/workflow names
+// verbatim (only pipe-escaped for table integrity, not HTML-comment-escaped),
+// so a crafted job name in a monitored repo could inject another owner's
+// marker string into a bot-authored incident body. The title is built solely
+// from the trusted targetOwner value, never from monitored content, so it
+// can't be spoofed the same way — an issue's body containing an injected
+// foreign marker still carries its own owner's title and is correctly
+// rejected as a candidate for that foreign owner.
+async function findOpenIncident({ github, homeOwner, homeRepo, title, marker, issueAuthorLogin }) {
   // Every incident issue this workflow creates carries the 'automated' label
   // (see upsertIncident's create call); filtering server-side keeps this
   // ~15-minutes-while-open scan from paginating every open issue in the repo.
@@ -167,7 +177,7 @@ async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuth
     per_page: 100,
   });
   const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
-  const matches = candidates.filter(issue => (issue.body ?? '').includes(marker));
+  const matches = candidates.filter(issue => issue.title === title && (issue.body ?? '').includes(marker));
   if (matches.length > 1) {
     throw new Error(`Found ${matches.length} open incident issues carrying marker '${marker}'; reconcile manually.`);
   }
@@ -213,7 +223,7 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
 
   const title = incidentTitle(targetOwner);
   const marker = incidentMarker(targetOwner);
-  const existing = await findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin });
+  const existing = await findOpenIncident({ github, homeOwner, homeRepo, title, marker, issueAuthorLogin });
   const nowIso = new Date(now).toISOString();
 
   if (stuck.length === 0) {

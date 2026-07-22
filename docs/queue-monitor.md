@@ -66,9 +66,16 @@ themselves public (embedded verbatim in this workflow's source), so adoption
 is additionally restricted to issues authored by this workflow's own
 `GITHUB_TOKEN` identity (`github-actions[bot]`) — otherwise a non-maintainer
 could open a decoy issue that gets silently adopted, updated, or closed as
-recovered, suppressing a real alert. More than one own-authored issue
-carrying the same marker fails the run closed rather than guessing which one
-is authoritative. The job's own `GITHUB_TOKEN` (job-level `issues: write`)
+recovered, suppressing a real alert. Adoption also requires an exact title
+match, not just the marker: the detection table embeds monitored-repo job and
+workflow names verbatim (pipe-escaped for table integrity only, not
+HTML-comment-escaped), so a crafted job name could otherwise inject a
+different owner's marker string into a bot-authored body and cause a
+cross-owner collision; the title is built solely from the trusted target
+owner, never from monitored content, so it closes that path. More than one
+own-authored issue carrying the same marker fails the run closed rather than
+guessing which one is authoritative. The job's own `GITHUB_TOKEN` (job-level
+`issues: write`)
 writes that issue, separately from the read-only, target-scoped observer
 token used to inspect queued jobs, which cannot write here. Normal GitHub
 notifications on issue creation answer the "no actor" constraint. The issue
