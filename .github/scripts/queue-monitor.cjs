@@ -156,10 +156,14 @@ function isOwnIncidentAuthor(issue, issueAuthorLogin) {
 // (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
 // candidate carrying the marker) fails closed rather than guessing.
 async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
+  // Every incident issue this workflow creates carries the 'automated' label
+  // (see upsertIncident's create call); filtering server-side keeps this
+  // ~15-minutes-while-open scan from paginating every open issue in the repo.
   const openIssues = await github.paginate(github.rest.issues.listForRepo, {
     owner: homeOwner,
     repo: homeRepo,
     state: 'open',
+    labels: 'automated',
     per_page: 100,
   });
   const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
@@ -179,7 +183,6 @@ async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuth
 // alert.
 async function upsertIncident({ github, core, env = process.env, now = Date.now() }) {
   const targetOwner = env.TARGET_OWNER;
-  const stuck = JSON.parse(env.STUCK_JSON || '[]');
   const [homeOwner, homeRepo] = (env.GITHUB_REPOSITORY || '').split('/');
   const issueAuthorLogin = env.ISSUE_AUTHOR_LOGIN;
   if (!homeOwner || !homeRepo) {
@@ -190,6 +193,22 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
   }
   if (!issueAuthorLogin) {
     throw new Error('ISSUE_AUTHOR_LOGIN is required to restrict incident-issue adoption to this workflow\'s own identity.');
+  }
+  // A missing or empty STUCK_JSON is never "zero stuck jobs" — that case is
+  // always an explicit "[]" from run()'s core.setOutput. Falling back to '[]'
+  // here would silently treat a missing detection-step output (a wiring bug,
+  // a skipped step) as a healthy recovery and close a real open incident.
+  if (env.STUCK_JSON === undefined || env.STUCK_JSON === '') {
+    throw new Error('STUCK_JSON is required: the detection step must set it via core.setOutput, even for zero stuck jobs.');
+  }
+  let stuck;
+  try {
+    stuck = JSON.parse(env.STUCK_JSON);
+  } catch (error) {
+    throw new Error(`STUCK_JSON is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!Array.isArray(stuck)) {
+    throw new Error('STUCK_JSON must decode to an array.');
   }
 
   const title = incidentTitle(targetOwner);

@@ -250,6 +250,15 @@ test('findOpenIncident matches an own-authored issue carrying the marker and ign
   assert.equal(found.number, 3);
 });
 
+test('findOpenIncident filters to the automated label server-side', async () => {
+  const marker = incidentMarker('melodic-software');
+  const github = fakeGithubIssues({ existingIssues: [] });
+  await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  const [, parameters] = github.calls.find(([action]) => action === 'paginate');
+  assert.equal(parameters.labels, 'automated');
+  assert.equal(parameters.state, 'open');
+});
+
 test('findOpenIncident rejects a decoy issue that carries the marker but was not opened by this workflow\'s own identity', async () => {
   const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
@@ -409,6 +418,29 @@ test('upsertIncident rejects a missing home repository, target owner, or issue-a
     upsertIncident({ github, core, env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' } }),
     /ISSUE_AUTHOR_LOGIN is required/,
   );
+});
+
+test('upsertIncident rejects a missing or empty STUCK_JSON instead of silently treating it as recovered', async () => {
+  const github = fakeGithubIssues({
+    existingIssues: [ownIssue({ number: 55, body: `open ${incidentMarker('melodic-software')}`, created_at: '2026-07-22T09:00:00.000Z' })],
+  });
+  const core = fakeCore();
+  const baseEnv = { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN };
+
+  await assert.rejects(upsertIncident({ github, core, env: baseEnv }), /STUCK_JSON is required/);
+  await assert.rejects(upsertIncident({ github, core, env: { ...baseEnv, STUCK_JSON: '' } }), /STUCK_JSON is required/);
+
+  // Neither rejection may have closed the pre-existing open incident.
+  assert.equal(github.calls.filter(([action]) => action === 'update' || action === 'createComment').length, 0);
+});
+
+test('upsertIncident rejects malformed or non-array STUCK_JSON', async () => {
+  const github = fakeGithubIssues();
+  const core = fakeCore();
+  const baseEnv = { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN };
+
+  await assert.rejects(upsertIncident({ github, core, env: { ...baseEnv, STUCK_JSON: '{not json' } }), /STUCK_JSON is not valid JSON/);
+  await assert.rejects(upsertIncident({ github, core, env: { ...baseEnv, STUCK_JSON: '{}' } }), /STUCK_JSON must decode to an array/);
 });
 
 test('rejects incomplete configuration and invalid thresholds', async () => {

@@ -10,6 +10,11 @@ permissions:
 
 concurrency:
   group: managed-runner-queue-monitor
+  # false, not true: this serializes scheduled runs (never runs two at once)
+  # instead of cancelling an in-flight one. The incident-issue upsert's
+  # create-if-absent race freedom for a given target owner depends on this —
+  # two runs racing on the same owner's issue could both find none open and
+  # both create one.
   cancel-in-progress: false
 
 env:
