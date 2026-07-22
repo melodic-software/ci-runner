@@ -335,6 +335,108 @@ test('a crafted job name embedding another owner\'s marker cannot cause cross-ow
   assert.equal(found, null, 'owner-b must not adopt owner-a\'s incident even though a crafted job name tried to embed owner-b\'s marker');
 });
 
+test('a job name that exactly equals a legitimate marker string still renders inert after escaping', () => {
+  const marker = incidentMarker('melodic-software');
+  const table = renderStuckMarkdownTable([
+    { repository: 'melodic-software/medley', workflow: 'CI', job: marker, queuedMinutes: 3, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/exact' },
+  ]);
+  assert.ok(!table.includes(marker), 'a job name that is exactly a marker string must not survive rendering as a functional marker');
+});
+
+test('pipe-escaping and HTML-comment-escaping compose without interfering with each other', () => {
+  const table = renderStuckMarkdownTable([
+    { repository: 'melodic-software/medley', workflow: 'CI <!-- | --> matrix', job: 'build', queuedMinutes: 4, labels: 'x', url: 'https://example.test/job/combo' },
+  ]);
+  assert.match(table, /CI &lt;!-- \\\| --&gt; matrix/);
+  assert.ok(!table.includes('<!--') && !table.includes('-->'), 'no raw HTML comment sequence may survive alongside an escaped pipe');
+});
+
+// End-to-end proof (per independent review, escalated CRITICAL against an
+// earlier commit that lacked this escaping) that a crafted job name cannot
+// achieve any of three failure modes against a DIFFERENT owner that has a
+// genuine, currently open incident: adopt-and-overwrite it, false-close it,
+// or trigger a false fail-closed ambiguity error that reds out that owner's
+// run. Bodies below are built through the real renderStuckMarkdownTable /
+// upsertIncident body-assembly shape, not hand-written, so the test exercises
+// the actual escaping pipeline end to end.
+function buildRealIncidentBody(owner, jobName, createdIso, nowIso) {
+  return [
+    `Managed runner queue capacity alert for \`${owner}\`.`,
+    '',
+    `Capacity window: constrained since ${createdIso} (last confirmed ${nowIso}). Affected queue depth: 1 managed job(s).`,
+    '',
+    renderStuckMarkdownTable([{ repository: 'melodic-software/medley', workflow: 'CI', job: jobName, queuedMinutes: 10, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/real' }]),
+    '',
+    routingRecoverySummary.trim(),
+    '',
+    incidentMarker(owner),
+  ].join('\n');
+}
+
+test('findOpenIncident resolves exactly owner-b\'s real incident without ambiguity, even though owner-a\'s incident carries an injected owner-b marker', async () => {
+  const ownerBMarker = incidentMarker('owner-b');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      ownIssue({ number: 100, title: incidentTitle('owner-b'), body: buildRealIncidentBody('owner-b', 'legit-build', '2026-07-22T08:00:00.000Z', '2026-07-22T08:00:00.000Z'), created_at: '2026-07-22T08:00:00.000Z' }),
+      ownIssue({ number: 101, title: incidentTitle('owner-a'), body: buildRealIncidentBody('owner-a', `evil ${ownerBMarker} name`, '2026-07-22T09:00:00.000Z', '2026-07-22T09:00:00.000Z'), created_at: '2026-07-22T09:00:00.000Z' }),
+    ],
+  });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker: ownerBMarker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  assert.equal(found.number, 100, 'must resolve to owner-b\'s own real issue, never owner-a\'s, and never throw ambiguity');
+});
+
+test('upsertIncident updates only owner-b\'s real issue while still stuck, never adopting owner-a\'s issue via an injected marker (prevents adopt-overwrite)', async () => {
+  const ownerBMarker = incidentMarker('owner-b');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      ownIssue({ number: 100, title: incidentTitle('owner-b'), body: buildRealIncidentBody('owner-b', 'legit-build', '2026-07-22T08:00:00.000Z', '2026-07-22T08:00:00.000Z'), created_at: '2026-07-22T08:00:00.000Z' }),
+      ownIssue({ number: 101, title: incidentTitle('owner-a'), body: buildRealIncidentBody('owner-a', `evil ${ownerBMarker} name`, '2026-07-22T09:00:00.000Z', '2026-07-22T09:00:00.000Z'), created_at: '2026-07-22T09:00:00.000Z' }),
+    ],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: {
+      TARGET_OWNER: 'owner-b',
+      GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      ISSUE_AUTHOR_LOGIN,
+      STUCK_JSON: JSON.stringify([{ repository: 'melodic-software/medley', workflow: 'CI', job: 'still-stuck', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/still' }]),
+    },
+    now: Date.parse('2026-07-22T10:00:00Z'),
+  });
+
+  const updateCalls = github.calls.filter(([action]) => action === 'update');
+  assert.equal(updateCalls.length, 1, 'exactly one issue must be updated');
+  assert.equal(updateCalls[0][1].issue_number, 100, 'the update must target owner-b\'s own real issue, never owner-a\'s');
+  assert.equal(github.calls.filter(([action]) => action === 'create').length, 0, 'no duplicate incident should be created when owner-b\'s real one is correctly found');
+});
+
+test('upsertIncident closes only owner-b\'s real issue on recovery, never owner-a\'s issue via an injected marker (prevents false-close)', async () => {
+  const ownerBMarker = incidentMarker('owner-b');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      ownIssue({ number: 100, title: incidentTitle('owner-b'), body: buildRealIncidentBody('owner-b', 'legit-build', '2026-07-22T08:00:00.000Z', '2026-07-22T08:00:00.000Z'), created_at: '2026-07-22T08:00:00.000Z' }),
+      ownIssue({ number: 101, title: incidentTitle('owner-a'), body: buildRealIncidentBody('owner-a', `evil ${ownerBMarker} name`, '2026-07-22T09:00:00.000Z', '2026-07-22T09:00:00.000Z'), created_at: '2026-07-22T09:00:00.000Z' }),
+    ],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: { TARGET_OWNER: 'owner-b', GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN, STUCK_JSON: '[]' },
+    now: Date.parse('2026-07-22T10:00:00Z'),
+  });
+
+  const updateCalls = github.calls.filter(([action]) => action === 'update');
+  assert.equal(updateCalls.length, 1, 'exactly one issue must be closed');
+  assert.equal(updateCalls[0][1].issue_number, 100, 'recovery must close owner-b\'s own real issue, never owner-a\'s');
+  assert.equal(updateCalls[0][1].state, 'closed');
+  const commentCalls = github.calls.filter(([action]) => action === 'createComment');
+  assert.equal(commentCalls.length, 1);
+  assert.equal(commentCalls[0][1].issue_number, 100);
+});
+
 test('incidentMarker keeps prefix-related owners from substring-colliding', () => {
   const shortOwner = incidentMarker('melodic-software');
   const longOwner = incidentMarker('melodic-software-fork');

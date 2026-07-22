@@ -40,6 +40,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Config-integrity assumption: each entry's owner is expected to be
+        # unique. Matrix jobs run in parallel *within* a run (only cross-run
+        # concurrency is serialized above), so two entries sharing an owner
+        # would race the incident-issue upsert for that owner — both could
+        # find none open and both create one.
         target: ${{ fromJSON(vars.CI_RUNNER_MONITOR_TARGETS_JSON) }}
     steps:
       - name: Checkout monitor implementation
