@@ -12,6 +12,24 @@ const routingRecoverySummary = `
 Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
 `;
 
+// A worst-case queue-wide outage could stall far more than a handful of
+// managed jobs; capping the rendered table keeps the incident body bounded
+// regardless of how many jobs are stuck.
+const MAX_STUCK_TABLE_ROWS = 50;
+
+// GitHub's issue/comment write endpoints reject a body over 65536
+// characters (observed API error "Body is too long (maximum is 65536
+// characters)"; not a value GitHub's docs state as a formal field limit,
+// but consistently reproduced — see
+// https://github.com/orgs/community/discussions/41331). The row cap above
+// already keeps ordinary bodies far under this, but this is the
+// defense-in-depth backstop: without it, a body that somehow still
+// exceeded the limit would throw on issues.create/update — genuinely
+// failing the run, which is correct, but truncating first keeps the
+// monitor's own alert delivery itself from being what breaks it. Stays
+// well under the observed limit for safety margin.
+const MAX_BODY_LENGTH = 60000;
+
 function splitList(value) {
   return (value || '')
     .split(/[\s,]+/)
@@ -148,10 +166,32 @@ function escapeMarkdownTableCell(value) {
     .replace(/\|/g, '\\|');
 }
 
-function renderStuckMarkdownTable(stuck) {
+function renderStuckMarkdownTable(stuck, { maxRows = MAX_STUCK_TABLE_ROWS, runUrl } = {}) {
   const header = '| Repository | Workflow | Job | Minutes | Labels | Link |\n| --- | --- | --- | --- | --- | --- |';
-  const rows = stuck.map(item => `| ${escapeMarkdownTableCell(item.repository)} | ${escapeMarkdownTableCell(item.workflow)} | ${escapeMarkdownTableCell(item.job)} | ${item.queuedMinutes} | ${escapeMarkdownTableCell(item.labels)} | [open job](${item.url}) |`);
-  return [header, ...rows].join('\n');
+  const shown = stuck.slice(0, maxRows);
+  const rows = shown.map(item => `| ${escapeMarkdownTableCell(item.repository)} | ${escapeMarkdownTableCell(item.workflow)} | ${escapeMarkdownTableCell(item.job)} | ${item.queuedMinutes} | ${escapeMarkdownTableCell(item.labels)} | [open job](${item.url}) |`);
+  const lines = [header, ...rows];
+  const remaining = stuck.length - shown.length;
+  if (remaining > 0) {
+    const runLink = runUrl ? ` — see the [workflow run](${runUrl}) for the full list` : '';
+    lines.push('', `_...and ${remaining} more managed job(s)${runLink}._`);
+  }
+  return lines.join('\n');
+}
+
+// Truncates the assembled body (everything except the trailing marker) if it
+// would still exceed MAX_BODY_LENGTH after the row cap — the marker must
+// never be truncated away, since findOpenIncident's future upserts and
+// closes depend on it surviving intact.
+function boundBodyLength(bodyWithoutMarker, marker, maxLength = MAX_BODY_LENGTH) {
+  const separator = '\n\n';
+  const budget = maxLength - marker.length - separator.length;
+  if (bodyWithoutMarker.length <= budget) {
+    return `${bodyWithoutMarker}${separator}${marker}`;
+  }
+  const notice = '\n\n_...truncated to stay under GitHub\'s issue body limit._';
+  const truncated = bodyWithoutMarker.slice(0, Math.max(0, budget - notice.length)) + notice;
+  return `${truncated}${separator}${marker}`;
 }
 
 function isOwnIncidentAuthor(issue, issueAuthorLogin) {
@@ -257,18 +297,25 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
     return;
   }
 
+  // GITHUB_SERVER_URL/GITHUB_RUN_ID are GitHub Actions' own default env
+  // vars, always set in a real run; undefined only in tests that don't
+  // provide them, in which case renderStuckMarkdownTable's remainder note
+  // simply omits the run link rather than producing a broken one.
+  const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID
+    ? `${env.GITHUB_SERVER_URL}/${homeOwner}/${homeRepo}/actions/runs/${env.GITHUB_RUN_ID}`
+    : undefined;
+
   const windowStart = existing ? existing.created_at : nowIso;
-  const body = [
+  const bodyWithoutMarker = [
     `Managed runner queue capacity alert for \`${targetOwner}\`.`,
     '',
     `Capacity window: constrained since ${windowStart} (last confirmed ${nowIso}). Affected queue depth: ${stuck.length} managed job(s).`,
     '',
-    renderStuckMarkdownTable(stuck),
+    renderStuckMarkdownTable(stuck, { runUrl }),
     '',
     routingRecoverySummary.trim(),
-    '',
-    marker,
   ].join('\n');
+  const body = boundBodyLength(bodyWithoutMarker, marker);
 
   if (existing) {
     // A silent body update, not a comment: this step runs every ~15 minutes
@@ -285,10 +332,13 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
 }
 
 module.exports = {
+  boundBodyLength,
   findOpenIncident,
   incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
+  MAX_BODY_LENGTH,
+  MAX_STUCK_TABLE_ROWS,
   nonterminalRunStatuses,
   renderStuckMarkdownTable,
   routingRecoverySummary,

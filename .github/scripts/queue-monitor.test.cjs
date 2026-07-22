@@ -4,10 +4,13 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  boundBodyLength,
   findOpenIncident,
   incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
+  MAX_BODY_LENGTH,
+  MAX_STUCK_TABLE_ROWS,
   nonterminalRunStatuses,
   renderStuckMarkdownTable,
   routingRecoverySummary,
@@ -245,6 +248,78 @@ test('renderStuckMarkdownTable neutralizes HTML comment sequences so a crafted j
   assert.ok(!table.includes(foreignMarker), 'the raw marker substring must not survive rendering');
   assert.ok(table.includes('&lt;!--'), 'the HTML comment opener must be neutralized to an entity');
   assert.ok(table.includes('--&gt;'), 'the HTML comment closer must be neutralized to an entity');
+});
+
+function fakeStuckList(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    repository: 'melodic-software/medley',
+    workflow: 'CI',
+    job: `build-${index}`,
+    queuedMinutes: 10,
+    labels: 'melodic-ubuntu-24.04-x64',
+    url: `https://example.test/job/${index}`,
+  }));
+}
+
+test('renderStuckMarkdownTable caps rows at MAX_STUCK_TABLE_ROWS and reports the correct remainder with a run link', () => {
+  const total = MAX_STUCK_TABLE_ROWS + 7;
+  const table = renderStuckMarkdownTable(fakeStuckList(total), { runUrl: 'https://example.test/actions/runs/123' });
+  const rowLines = table.split('\n').filter(line => line.startsWith('| melodic-software/medley'));
+  assert.equal(rowLines.length, MAX_STUCK_TABLE_ROWS, 'must render at most MAX_STUCK_TABLE_ROWS data rows');
+  assert.match(table, /_\.\.\.and 7 more managed job\(s\) — see the \[workflow run\]\(https:\/\/example\.test\/actions\/runs\/123\) for the full list\._/);
+});
+
+test('renderStuckMarkdownTable omits the run link when none is provided but still reports the remainder count', () => {
+  const total = MAX_STUCK_TABLE_ROWS + 3;
+  const table = renderStuckMarkdownTable(fakeStuckList(total));
+  assert.match(table, /_\.\.\.and 3 more managed job\(s\)\._/);
+  assert.doesNotMatch(table, /workflow run/);
+});
+
+test('renderStuckMarkdownTable does not add a remainder note when the stuck count is within the cap', () => {
+  const table = renderStuckMarkdownTable(fakeStuckList(MAX_STUCK_TABLE_ROWS));
+  assert.doesNotMatch(table, /more managed job/);
+});
+
+test('boundBodyLength leaves a body under the limit untouched, appending only the marker', () => {
+  const marker = incidentMarker('melodic-software');
+  const body = boundBodyLength('short body', marker);
+  assert.equal(body, `short body\n\n${marker}`);
+});
+
+test('boundBodyLength truncates an oversized body while preserving the marker fully intact', () => {
+  const marker = incidentMarker('melodic-software');
+  const oversized = 'x'.repeat(MAX_BODY_LENGTH * 2);
+  const body = boundBodyLength(oversized, marker, MAX_BODY_LENGTH);
+  assert.ok(body.length <= MAX_BODY_LENGTH, `bounded body must not exceed MAX_BODY_LENGTH (was ${body.length})`);
+  assert.ok(body.endsWith(marker), 'the marker must survive intact at the end of a truncated body');
+  assert.match(body, /truncated to stay under GitHub's issue body limit/);
+});
+
+test('upsertIncident renders a capped, length-bounded body with the run link for an oversized stuck array', async () => {
+  const github = fakeGithubIssues();
+  const core = fakeCore();
+  const total = MAX_STUCK_TABLE_ROWS + 12;
+  await upsertIncident({
+    github,
+    core,
+    env: {
+      TARGET_OWNER: 'melodic-software',
+      GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      GITHUB_SERVER_URL: 'https://github.com',
+      GITHUB_RUN_ID: '999999',
+      ISSUE_AUTHOR_LOGIN,
+      STUCK_JSON: JSON.stringify(fakeStuckList(total)),
+    },
+    now: Date.parse('2026-07-22T10:00:00Z'),
+  });
+
+  const created = github.calls.find(([action]) => action === 'create');
+  assert.ok(created, 'expected an issue create call');
+  const [, parameters] = created;
+  assert.ok(parameters.body.length <= MAX_BODY_LENGTH, `body must stay under MAX_BODY_LENGTH (was ${parameters.body.length})`);
+  assert.match(parameters.body, /_\.\.\.and 12 more managed job\(s\) — see the \[workflow run\]\(https:\/\/github\.com\/melodic-software\/ci-runner\/actions\/runs\/999999\) for the full list\._/);
+  assert.ok(parameters.body.endsWith(incidentMarker('melodic-software')), 'the marker must survive at the end of the body');
 });
 
 test('findOpenIncident matches an own-authored issue carrying the marker and ignores pull requests', async () => {

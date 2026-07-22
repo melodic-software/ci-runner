@@ -82,10 +82,14 @@ token used to inspect queued jobs, which cannot write here. Normal GitHub
 notifications on issue creation answer the "no actor" constraint. The issue
 body carries the detection table, the capacity window (`constrained since`
 the issue's creation timestamp), and the affected queue depth, so no-runner
-failures elsewhere can be cross-referenced against it. Only a genuine
-execution error — a bad configuration, a GitHub API failure, an ambiguous
-marker match — still fails the run; that is the monitor breaking, not a
-queue alert.
+failures elsewhere can be cross-referenced against it. The table caps at 50
+rows with a "…and N more, see the workflow run" remainder note linking back
+to the run, and the whole body is bounded well under GitHub's issue-body
+write limit (empirically 65536 characters) while always preserving the
+trailing marker intact, so a queue-wide outage with many stuck jobs cannot
+itself break the alert. Only a genuine execution error — a bad configuration,
+a GitHub API failure, an ambiguous marker match — still fails the run; that
+is the monitor breaking, not a queue alert.
 
 Each alert links directly to the affected jobs and carries this recovery
 instruction:
