@@ -17,6 +17,9 @@ jobs:
     name: Alert on ${{ matrix.target.owner }} jobs queued over five minutes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # Upsert the marker-deduped incident issue in this repo.
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +41,7 @@ jobs:
           permission-actions: read
 
       - name: Inspect queued jobs
+        id: inspect
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MONITOR_OWNER: ${{ matrix.target.owner }}
@@ -49,3 +53,21 @@ jobs:
           script: |
             const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
             await monitor.run({ github, core });
+
+      # Alerts by upserting a marker-deduped incident issue instead of failing
+      # this run (a successful execution is green even when it detects
+      # strain): schedule-triggered runs have no actor to notify, and a
+      # by-design red here pollutes fleet-wide failure statistics. Runs on the
+      # job's own GITHUB_TOKEN, scoped to this repository, because the
+      # detection step's observer token is read-only and scoped to the
+      # monitored repositories, not this one.
+      - name: Upsert queue capacity incident
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGET_OWNER: ${{ matrix.target.owner }}
+          STUCK_JSON: ${{ steps.inspect.outputs.stuck }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
+            await monitor.upsertIncident({ github, core });

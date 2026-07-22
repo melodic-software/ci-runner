@@ -4,11 +4,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  findOpenIncident,
+  incidentTitle,
   inspectQueuedJobs,
   nonterminalRunStatuses,
-  routingRecoveryFailure,
+  renderStuckMarkdownTable,
   routingRecoverySummary,
+  run,
   splitList,
+  upsertIncident,
 } = require('./queue-monitor.cjs');
 
 function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
@@ -39,10 +43,7 @@ test('recovery requires a verified hosted-only cutoff and fresh selector evaluat
   assert.match(routingRecoverySummary, /guarantee that the selector executes again/);
   assert.match(routingRecoverySummary, /partial-rerun dependency behavior/);
   assert.match(routingRecoverySummary, /does not recover the original pull-request check/);
-  assert.match(routingRecoveryFailure, /Re-run all jobs/);
-  assert.doesNotMatch(routingRecoveryFailure, /workflow_dispatch/);
   assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
-  assert.doesNotMatch(routingRecoveryFailure, /retry(?:ing)? (?:the )?workload/i);
 });
 
 test('queries every GitHub nonterminal run status and deduplicates runs', async () => {
@@ -128,6 +129,225 @@ test('propagates a pagination failure so the monitor becomes visibly red', async
       thresholdMinutes: 5,
     }),
     /API page failed/,
+  );
+});
+
+function fakeCore() {
+  const calls = { setOutput: [], setFailed: [], info: [] };
+  const summaryCalls = [];
+  const summary = {
+    addHeading(text) { summaryCalls.push(['addHeading', text]); return summary; },
+    addRaw(text) { summaryCalls.push(['addRaw', text]); return summary; },
+    addTable(rows) { summaryCalls.push(['addTable', rows]); return summary; },
+    async write() { summaryCalls.push(['write']); },
+  };
+  return {
+    calls,
+    summaryCalls,
+    summary,
+    setOutput(name, value) { calls.setOutput.push([name, value]); },
+    setFailed(message) { calls.setFailed.push(message); },
+    info(message) { calls.info.push(message); },
+  };
+}
+
+function fakeGithubIssues({ existingIssues = [] } = {}) {
+  const calls = [];
+  const listForRepo = Symbol('listForRepo');
+  return {
+    calls,
+    rest: {
+      issues: {
+        listForRepo,
+        async create(parameters) { calls.push(['create', parameters]); return { data: { number: 101 } }; },
+        async update(parameters) { calls.push(['update', parameters]); },
+        async createComment(parameters) { calls.push(['createComment', parameters]); },
+      },
+    },
+    async paginate(endpoint, parameters) {
+      calls.push(['paginate', parameters]);
+      if (endpoint === listForRepo) return existingIssues;
+      throw new Error('unexpected endpoint');
+    },
+  };
+}
+
+test('run() stays green and hands the stuck list to the incident step on detection', async () => {
+  const github = fakeGitHub({
+    runs: { queued: [{ id: 9, name: 'CI', html_url: 'https://example.test/run/9' }] },
+    jobs: {
+      9: [{ name: 'build', status: 'queued', created_at: '2026-07-22T09:48:00Z', labels: ['melodic-ubuntu-24.04-x64'], html_url: 'https://example.test/job/9' }],
+    },
+  });
+  const core = fakeCore();
+  await run({
+    github,
+    core,
+    env: {
+      MONITOR_OWNER: 'melodic-software',
+      MONITORED_REPOSITORIES: 'medley',
+      MANAGED_LABELS: 'melodic-ubuntu-24.04-x64',
+      QUEUE_THRESHOLD_MINUTES: '5',
+    },
+    now: Date.parse('2026-07-22T10:00:00Z'),
+  });
+
+  assert.deepEqual(core.calls.setFailed, []);
+  assert.equal(core.calls.setOutput.length, 1);
+  const [name, value] = core.calls.setOutput[0];
+  assert.equal(name, 'stuck');
+  assert.equal(JSON.parse(value).length, 1);
+});
+
+test('run() propagates a genuine execution error via setFailed and skips the stuck output', async () => {
+  const github = fakeGitHub({ failure: () => true });
+  const core = fakeCore();
+  await run({
+    github,
+    core,
+    env: {
+      MONITOR_OWNER: 'melodic-software',
+      MONITORED_REPOSITORIES: 'medley',
+      MANAGED_LABELS: 'melodic-ubuntu-24.04-x64',
+      QUEUE_THRESHOLD_MINUTES: '5',
+    },
+  });
+
+  assert.equal(core.calls.setFailed.length, 1);
+  assert.deepEqual(core.calls.setOutput, []);
+});
+
+test('incidentTitle and renderStuckMarkdownTable keep a stable, greppable shape', () => {
+  assert.equal(incidentTitle('melodic-software'), '[Alert] Managed runner queue capacity — melodic-software');
+  const table = renderStuckMarkdownTable([
+    { repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' },
+  ]);
+  assert.match(table, /^\| Repository \| Workflow \| Job \| Minutes \| Labels \| Link \|/);
+  assert.match(table, /\| melodic-software\/medley \| CI \| build \| 12 \| melodic-ubuntu-24.04-x64 \| \[open job\]\(https:\/\/example\.test\/job\/1\) \|/);
+});
+
+test('renderStuckMarkdownTable escapes pipes so a job or workflow name cannot corrupt the table', () => {
+  const table = renderStuckMarkdownTable([
+    { repository: 'melodic-software/medley', workflow: 'CI | matrix', job: 'build | test', queuedMinutes: 6, labels: 'a|b', url: 'https://example.test/job/2' },
+  ]);
+  assert.match(table, /\| CI \\\| matrix \| build \\\| test \| 6 \| a\\\|b \|/);
+});
+
+test('findOpenIncident matches an open issue by exact title and ignores pull requests', async () => {
+  const title = incidentTitle('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      { number: 1, title: 'unrelated', pull_request: undefined },
+      { number: 2, title, pull_request: { url: 'x' } },
+      { number: 3, title, pull_request: undefined },
+    ],
+  });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title });
+  assert.equal(found.number, 3);
+});
+
+test('upsertIncident opens a new incident issue when none is open and jobs are stuck', async () => {
+  const github = fakeGithubIssues();
+  const core = fakeCore();
+  const now = Date.parse('2026-07-22T10:00:00Z');
+  await upsertIncident({
+    github,
+    core,
+    env: {
+      TARGET_OWNER: 'melodic-software',
+      GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      STUCK_JSON: JSON.stringify([{ repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' }]),
+    },
+    now,
+  });
+
+  const created = github.calls.find(([action]) => action === 'create');
+  assert.ok(created, 'expected an issue create call');
+  const [, parameters] = created;
+  assert.equal(parameters.owner, 'melodic-software');
+  assert.equal(parameters.repo, 'ci-runner');
+  assert.equal(parameters.title, incidentTitle('melodic-software'));
+  assert.deepEqual(parameters.labels, ['automated']);
+  assert.match(parameters.body, /Affected queue depth: 1 managed job\(s\)/);
+  assert.match(parameters.body, /constrained since 2026-07-22T10:00:00\.000Z/);
+  assert.equal(github.calls.filter(([action]) => action === 'update' || action === 'createComment').length, 0);
+});
+
+test('upsertIncident silently updates an already-open incident, preserving the window start and without commenting', async () => {
+  const title = incidentTitle('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [{ number: 55, title, created_at: '2026-07-22T09:00:00.000Z', pull_request: undefined }],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: {
+      TARGET_OWNER: 'melodic-software',
+      GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      STUCK_JSON: JSON.stringify([
+        { repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' },
+        { repository: 'melodic-software/standards', workflow: 'CI', job: 'lint', queuedMinutes: 8, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/2' },
+      ]),
+    },
+    now: Date.parse('2026-07-22T10:15:00Z'),
+  });
+
+  const updated = github.calls.find(([action]) => action === 'update');
+  assert.ok(updated, 'expected an update call');
+  assert.equal(updated[1].issue_number, 55);
+  assert.match(updated[1].body, /constrained since 2026-07-22T09:00:00\.000Z/);
+  assert.match(updated[1].body, /Affected queue depth: 2 managed job\(s\)/);
+  assert.equal(github.calls.filter(([action]) => action === 'create' || action === 'createComment').length, 0);
+});
+
+test('upsertIncident closes and comments the incident on recovery', async () => {
+  const title = incidentTitle('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [{ number: 55, title, created_at: '2026-07-22T09:00:00.000Z', pull_request: undefined }],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' },
+    now: Date.parse('2026-07-22T11:00:00Z'),
+  });
+
+  const commented = github.calls.find(([action]) => action === 'createComment');
+  const updated = github.calls.find(([action]) => action === 'update');
+  assert.ok(commented && updated, 'expected a recovery comment and a close update');
+  assert.equal(commented[1].issue_number, 55);
+  assert.match(commented[1].body, /2026-07-22T09:00:00\.000Z.*2026-07-22T11:00:00\.000Z/s);
+  assert.equal(updated[1].issue_number, 55);
+  assert.equal(updated[1].state, 'closed');
+  assert.equal(updated[1].state_reason, 'completed');
+});
+
+test('upsertIncident is a no-op when recovered and no incident is open', async () => {
+  const github = fakeGithubIssues();
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' },
+    now: Date.parse('2026-07-22T11:00:00Z'),
+  });
+
+  assert.deepEqual(github.calls.filter(([action]) => action !== 'paginate'), []);
+  assert.equal(core.calls.info.length, 1);
+});
+
+test('upsertIncident rejects a missing home repository or target owner', async () => {
+  const github = fakeGithubIssues();
+  const core = fakeCore();
+  await assert.rejects(
+    upsertIncident({ github, core, env: { TARGET_OWNER: 'melodic-software', STUCK_JSON: '[]' } }),
+    /GITHUB_REPOSITORY must be set/,
+  );
+  await assert.rejects(
+    upsertIncident({ github, core, env: { GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' } }),
+    /TARGET_OWNER is required/,
   );
 });
 

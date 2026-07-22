@@ -11,7 +11,6 @@ const nonterminalRunStatuses = Object.freeze([
 const routingRecoverySummary = `
 Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
 `;
-const routingRecoveryFailure = 'Set the effective CI_RUNNER_POLICY value to hosted-only through audited routing control, verify it, then use Re-run all jobs and confirm hosted selection.';
 
 function splitList(value) {
   return (value || '')
@@ -98,6 +97,10 @@ async function run({ github, core, env = process.env, now = Date.now() }) {
     return;
   }
 
+  // Handed to the incident-upsert step via job output; a successful execution
+  // stays green from here regardless of what it found (see upsertIncident).
+  core.setOutput('stuck', JSON.stringify(stuck));
+
   if (stuck.length === 0) {
     await core.summary.addHeading('Managed runner queue').addRaw('No managed job has been queued for more than five minutes.').write();
     return;
@@ -119,14 +122,109 @@ async function run({ github, core, env = process.env, now = Date.now() }) {
     ])
     .addRaw(routingRecoverySummary)
     .write();
-  core.setFailed(`${stuck.length} managed job(s) exceeded the five-minute queue threshold. ${routingRecoveryFailure}`);
+}
+
+function incidentTitle(targetOwner) {
+  return `[Alert] Managed runner queue capacity — ${targetOwner}`;
+}
+
+function escapeMarkdownTableCell(value) {
+  return String(value).replace(/\|/g, '\\|');
+}
+
+function renderStuckMarkdownTable(stuck) {
+  const header = '| Repository | Workflow | Job | Minutes | Labels | Link |\n| --- | --- | --- | --- | --- | --- |';
+  const rows = stuck.map(item => `| ${escapeMarkdownTableCell(item.repository)} | ${escapeMarkdownTableCell(item.workflow)} | ${escapeMarkdownTableCell(item.job)} | ${item.queuedMinutes} | ${escapeMarkdownTableCell(item.labels)} | [open job](${item.url}) |`);
+  return [header, ...rows].join('\n');
+}
+
+async function findOpenIncident({ github, homeOwner, homeRepo, title }) {
+  const issues = await github.paginate(github.rest.issues.listForRepo, {
+    owner: homeOwner,
+    repo: homeRepo,
+    state: 'open',
+    per_page: 100,
+  });
+  return issues.find(issue => issue.title === title && !issue.pull_request) || null;
+}
+
+// Marker-deduped issue-per-incident alert channel (the fleet's established
+// pattern; see link-check.yml and queue-monitor-liveness.yml in ci-workflows).
+// The marker is an exact open-issue title match per target owner. Runs on the
+// job's own GITHUB_TOKEN against the monitor's home repository — distinct
+// from the read-only, target-scoped observer token the detection step uses,
+// which cannot write issues here. Any thrown error here fails the run: an
+// incident-issue write failure is the monitor breaking, not a queue alert.
+async function upsertIncident({ github, core, env = process.env, now = Date.now() }) {
+  const targetOwner = env.TARGET_OWNER;
+  const stuck = JSON.parse(env.STUCK_JSON || '[]');
+  const [homeOwner, homeRepo] = (env.GITHUB_REPOSITORY || '').split('/');
+  if (!homeOwner || !homeRepo) {
+    throw new Error('GITHUB_REPOSITORY must be set to the owner/repo of the monitor workflow.');
+  }
+  if (!targetOwner) {
+    throw new Error('TARGET_OWNER is required to key the incident issue.');
+  }
+
+  const title = incidentTitle(targetOwner);
+  const existing = await findOpenIncident({ github, homeOwner, homeRepo, title });
+  const nowIso = new Date(now).toISOString();
+
+  if (stuck.length === 0) {
+    if (!existing) {
+      core.info(`No open incident for ${targetOwner}; queue is healthy.`);
+      return;
+    }
+    await github.rest.issues.createComment({
+      owner: homeOwner,
+      repo: homeRepo,
+      issue_number: existing.number,
+      body: `Recovered: no managed job for \`${targetOwner}\` has been queued past the threshold as of ${nowIso}. Capacity window: ${existing.created_at} – ${nowIso}.`,
+    });
+    await github.rest.issues.update({
+      owner: homeOwner,
+      repo: homeRepo,
+      issue_number: existing.number,
+      state: 'closed',
+      state_reason: 'completed',
+    });
+    core.info(`Closed incident #${existing.number} for ${targetOwner}.`);
+    return;
+  }
+
+  const windowStart = existing ? existing.created_at : nowIso;
+  const body = [
+    `Managed runner queue capacity alert for \`${targetOwner}\`.`,
+    '',
+    `Capacity window: constrained since ${windowStart} (last confirmed ${nowIso}). Affected queue depth: ${stuck.length} managed job(s).`,
+    '',
+    renderStuckMarkdownTable(stuck),
+    '',
+    routingRecoverySummary.trim(),
+  ].join('\n');
+
+  if (existing) {
+    // A silent body update, not a comment: this step runs every ~15 minutes
+    // while an incident stays open, and GitHub notifies watchers on every
+    // comment but not on a body edit. Commenting here would re-create the
+    // notification noise this alert channel replaces. The body's "last
+    // confirmed" timestamp already carries freshness.
+    await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body });
+    core.info(`Updated incident #${existing.number} for ${targetOwner}.`);
+  } else {
+    const created = await github.rest.issues.create({ owner: homeOwner, repo: homeRepo, title, body, labels: ['automated'] });
+    core.info(`Opened incident #${created.data.number} for ${targetOwner}.`);
+  }
 }
 
 module.exports = {
+  findOpenIncident,
+  incidentTitle,
   inspectQueuedJobs,
   nonterminalRunStatuses,
-  routingRecoveryFailure,
+  renderStuckMarkdownTable,
   routingRecoverySummary,
   run,
   splitList,
+  upsertIncident,
 };
