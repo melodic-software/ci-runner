@@ -128,6 +128,10 @@ function incidentTitle(targetOwner) {
   return `[Alert] Managed runner queue capacity — ${targetOwner}`;
 }
 
+function incidentMarker(targetOwner) {
+  return `<!-- ci-runner:queued-job-monitor:incident:${targetOwner} -->`;
+}
+
 function escapeMarkdownTableCell(value) {
   return String(value).replace(/\|/g, '\\|');
 }
@@ -138,36 +142,59 @@ function renderStuckMarkdownTable(stuck) {
   return [header, ...rows].join('\n');
 }
 
-async function findOpenIncident({ github, homeOwner, homeRepo, title }) {
-  const issues = await github.paginate(github.rest.issues.listForRepo, {
+function isOwnIncidentAuthor(issue, issueAuthorLogin) {
+  return issue.user?.login === issueAuthorLogin && issue.user?.type === 'Bot';
+}
+
+// The marker and title strings are public (embedded verbatim in this
+// workflow's source, in a public repository), so matching on them alone
+// would let anyone with issue-creation permission here craft a decoy this
+// automation adopts, silently updates, or closes as recovered — suppressing
+// a real alert. Restricting candidates to issues opened by this workflow's
+// own token identity closes that: an attacker's issue is never a candidate,
+// no matter what text it carries. Mirrors the hardening in ci-workflows#213
+// (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
+// candidate carrying the marker) fails closed rather than guessing.
+async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
+  const openIssues = await github.paginate(github.rest.issues.listForRepo, {
     owner: homeOwner,
     repo: homeRepo,
     state: 'open',
     per_page: 100,
   });
-  return issues.find(issue => issue.title === title && !issue.pull_request) || null;
+  const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
+  const matches = candidates.filter(issue => (issue.body ?? '').includes(marker));
+  if (matches.length > 1) {
+    throw new Error(`Found ${matches.length} open incident issues carrying marker '${marker}'; reconcile manually.`);
+  }
+  return matches[0] || null;
 }
 
 // Marker-deduped issue-per-incident alert channel (the fleet's established
 // pattern; see link-check.yml and queue-monitor-liveness.yml in ci-workflows).
-// The marker is an exact open-issue title match per target owner. Runs on the
-// job's own GITHUB_TOKEN against the monitor's home repository — distinct
-// from the read-only, target-scoped observer token the detection step uses,
-// which cannot write issues here. Any thrown error here fails the run: an
-// incident-issue write failure is the monitor breaking, not a queue alert.
+// Runs on the job's own GITHUB_TOKEN against the monitor's home repository —
+// distinct from the read-only, target-scoped observer token the detection
+// step uses, which cannot write issues here. Any thrown error here fails the
+// run: an incident-issue write failure is the monitor breaking, not a queue
+// alert.
 async function upsertIncident({ github, core, env = process.env, now = Date.now() }) {
   const targetOwner = env.TARGET_OWNER;
   const stuck = JSON.parse(env.STUCK_JSON || '[]');
   const [homeOwner, homeRepo] = (env.GITHUB_REPOSITORY || '').split('/');
+  const issueAuthorLogin = env.ISSUE_AUTHOR_LOGIN;
   if (!homeOwner || !homeRepo) {
     throw new Error('GITHUB_REPOSITORY must be set to the owner/repo of the monitor workflow.');
   }
   if (!targetOwner) {
     throw new Error('TARGET_OWNER is required to key the incident issue.');
   }
+  if (!issueAuthorLogin) {
+    throw new Error('ISSUE_AUTHOR_LOGIN is required to restrict incident-issue adoption to this workflow\'s own identity.');
+  }
 
   const title = incidentTitle(targetOwner);
-  const existing = await findOpenIncident({ github, homeOwner, homeRepo, title });
+  const marker = incidentMarker(targetOwner);
+  const existing = await findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin });
   const nowIso = new Date(now).toISOString();
 
   if (stuck.length === 0) {
@@ -201,6 +228,8 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
     renderStuckMarkdownTable(stuck),
     '',
     routingRecoverySummary.trim(),
+    '',
+    marker,
   ].join('\n');
 
   if (existing) {
@@ -219,6 +248,7 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
 
 module.exports = {
   findOpenIncident,
+  incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
   nonterminalRunStatuses,

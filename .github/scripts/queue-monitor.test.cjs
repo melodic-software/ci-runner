@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const {
   findOpenIncident,
+  incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
   nonterminalRunStatuses,
@@ -14,6 +15,9 @@ const {
   splitList,
   upsertIncident,
 } = require('./queue-monitor.cjs');
+
+const ISSUE_AUTHOR_LOGIN = 'github-actions[bot]';
+const ownIssue = (overrides) => ({ user: { login: ISSUE_AUTHOR_LOGIN, type: 'Bot' }, pull_request: undefined, ...overrides });
 
 function fakeGitHub({ runs = {}, jobs = {}, failure } = {}) {
   const calls = [];
@@ -233,17 +237,43 @@ test('renderStuckMarkdownTable escapes pipes so a job or workflow name cannot co
   assert.match(table, /\| CI \\\| matrix \| build \\\| test \| 6 \| a\\\|b \|/);
 });
 
-test('findOpenIncident matches an open issue by exact title and ignores pull requests', async () => {
-  const title = incidentTitle('melodic-software');
+test('findOpenIncident matches an own-authored issue carrying the marker and ignores pull requests', async () => {
+  const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
     existingIssues: [
-      { number: 1, title: 'unrelated', pull_request: undefined },
-      { number: 2, title, pull_request: { url: 'x' } },
-      { number: 3, title, pull_request: undefined },
+      ownIssue({ number: 1, title: 'unrelated', body: 'no marker here' }),
+      ownIssue({ number: 2, body: `has marker ${marker}`, pull_request: { url: 'x' } }),
+      ownIssue({ number: 3, body: `has marker ${marker}` }),
     ],
   });
-  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', title });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
   assert.equal(found.number, 3);
+});
+
+test('findOpenIncident rejects a decoy issue that carries the marker but was not opened by this workflow\'s own identity', async () => {
+  const marker = incidentMarker('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      { number: 9, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'kyle-sexton', type: 'User' } },
+      { number: 10, body: `decoy ${marker}`, pull_request: undefined, user: { login: 'some-other-bot', type: 'Bot' } },
+    ],
+  });
+  const found = await findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN });
+  assert.equal(found, null);
+});
+
+test('findOpenIncident fails closed when more than one own-authored issue carries the marker', async () => {
+  const marker = incidentMarker('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [
+      ownIssue({ number: 3, body: `has marker ${marker}` }),
+      ownIssue({ number: 4, body: `has marker ${marker}` }),
+    ],
+  });
+  await assert.rejects(
+    findOpenIncident({ github, homeOwner: 'melodic-software', homeRepo: 'ci-runner', marker, issueAuthorLogin: ISSUE_AUTHOR_LOGIN }),
+    /Found 2 open incident issues carrying marker/,
+  );
 });
 
 test('upsertIncident opens a new incident issue when none is open and jobs are stuck', async () => {
@@ -256,6 +286,7 @@ test('upsertIncident opens a new incident issue when none is open and jobs are s
     env: {
       TARGET_OWNER: 'melodic-software',
       GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      ISSUE_AUTHOR_LOGIN,
       STUCK_JSON: JSON.stringify([{ repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' }]),
     },
     now,
@@ -270,13 +301,14 @@ test('upsertIncident opens a new incident issue when none is open and jobs are s
   assert.deepEqual(parameters.labels, ['automated']);
   assert.match(parameters.body, /Affected queue depth: 1 managed job\(s\)/);
   assert.match(parameters.body, /constrained since 2026-07-22T10:00:00\.000Z/);
+  assert.ok(parameters.body.includes(incidentMarker('melodic-software')), 'body must carry the incident marker');
   assert.equal(github.calls.filter(([action]) => action === 'update' || action === 'createComment').length, 0);
 });
 
 test('upsertIncident silently updates an already-open incident, preserving the window start and without commenting', async () => {
-  const title = incidentTitle('melodic-software');
+  const marker = incidentMarker('melodic-software');
   const github = fakeGithubIssues({
-    existingIssues: [{ number: 55, title, created_at: '2026-07-22T09:00:00.000Z', pull_request: undefined }],
+    existingIssues: [ownIssue({ number: 55, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
   });
   const core = fakeCore();
   await upsertIncident({
@@ -285,6 +317,7 @@ test('upsertIncident silently updates an already-open incident, preserving the w
     env: {
       TARGET_OWNER: 'melodic-software',
       GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      ISSUE_AUTHOR_LOGIN,
       STUCK_JSON: JSON.stringify([
         { repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' },
         { repository: 'melodic-software/standards', workflow: 'CI', job: 'lint', queuedMinutes: 8, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/2' },
@@ -301,16 +334,39 @@ test('upsertIncident silently updates an already-open incident, preserving the w
   assert.equal(github.calls.filter(([action]) => action === 'create' || action === 'createComment').length, 0);
 });
 
-test('upsertIncident closes and comments the incident on recovery', async () => {
+test('upsertIncident does not adopt a decoy issue: opens a fresh incident instead', async () => {
   const title = incidentTitle('melodic-software');
   const github = fakeGithubIssues({
-    existingIssues: [{ number: 55, title, created_at: '2026-07-22T09:00:00.000Z', pull_request: undefined }],
+    existingIssues: [{ number: 66, title, body: 'no marker, wrong author', pull_request: undefined, user: { login: 'kyle-sexton', type: 'User' } }],
   });
   const core = fakeCore();
   await upsertIncident({
     github,
     core,
-    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' },
+    env: {
+      TARGET_OWNER: 'melodic-software',
+      GITHUB_REPOSITORY: 'melodic-software/ci-runner',
+      ISSUE_AUTHOR_LOGIN,
+      STUCK_JSON: JSON.stringify([{ repository: 'melodic-software/medley', workflow: 'CI', job: 'build', queuedMinutes: 12, labels: 'melodic-ubuntu-24.04-x64', url: 'https://example.test/job/1' }]),
+    },
+    now: Date.parse('2026-07-22T10:00:00Z'),
+  });
+
+  const created = github.calls.find(([action]) => action === 'create');
+  assert.ok(created, 'expected a fresh issue create call, not an update of the decoy');
+  assert.equal(github.calls.filter(([action]) => action === 'update').length, 0);
+});
+
+test('upsertIncident closes and comments the incident on recovery', async () => {
+  const marker = incidentMarker('melodic-software');
+  const github = fakeGithubIssues({
+    existingIssues: [ownIssue({ number: 55, body: `stale ${marker}`, created_at: '2026-07-22T09:00:00.000Z' })],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN, STUCK_JSON: '[]' },
     now: Date.parse('2026-07-22T11:00:00Z'),
   });
 
@@ -330,7 +386,7 @@ test('upsertIncident is a no-op when recovered and no incident is open', async (
   await upsertIncident({
     github,
     core,
-    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' },
+    env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN, STUCK_JSON: '[]' },
     now: Date.parse('2026-07-22T11:00:00Z'),
   });
 
@@ -338,16 +394,20 @@ test('upsertIncident is a no-op when recovered and no incident is open', async (
   assert.equal(core.calls.info.length, 1);
 });
 
-test('upsertIncident rejects a missing home repository or target owner', async () => {
+test('upsertIncident rejects a missing home repository, target owner, or issue-author login', async () => {
   const github = fakeGithubIssues();
   const core = fakeCore();
   await assert.rejects(
-    upsertIncident({ github, core, env: { TARGET_OWNER: 'melodic-software', STUCK_JSON: '[]' } }),
+    upsertIncident({ github, core, env: { TARGET_OWNER: 'melodic-software', ISSUE_AUTHOR_LOGIN, STUCK_JSON: '[]' } }),
     /GITHUB_REPOSITORY must be set/,
   );
   await assert.rejects(
-    upsertIncident({ github, core, env: { GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' } }),
+    upsertIncident({ github, core, env: { GITHUB_REPOSITORY: 'melodic-software/ci-runner', ISSUE_AUTHOR_LOGIN, STUCK_JSON: '[]' } }),
     /TARGET_OWNER is required/,
+  );
+  await assert.rejects(
+    upsertIncident({ github, core, env: { TARGET_OWNER: 'melodic-software', GITHUB_REPOSITORY: 'melodic-software/ci-runner', STUCK_JSON: '[]' } }),
+    /ISSUE_AUTHOR_LOGIN is required/,
   );
 });
 

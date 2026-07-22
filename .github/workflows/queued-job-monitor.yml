@@ -12,6 +12,18 @@ concurrency:
   group: managed-runner-queue-monitor
   cancel-in-progress: false
 
+env:
+  # The identity that opens/updates/closes this workflow's own incident
+  # issues: the default GITHUB_TOKEN's REST-created content is authored by
+  # this exact bot. The incident title and marker are public (embedded
+  # verbatim in this workflow's source, in a public repo), so restricting
+  # adoption to this author — not just marker/title text — is what stops a
+  # non-maintainer from opening a decoy issue that gets adopted, silently
+  # closed on the next healthy run, or used to fail the lookup closed and
+  # suppress a real alert. Mirrors ci-workflows#213
+  # (standards-sync-stuck-automerge-alert.yml).
+  ISSUE_AUTHOR_LOGIN: github-actions[bot]
+
 jobs:
   monitor:
     name: Alert on ${{ matrix.target.owner }} jobs queued over five minutes
