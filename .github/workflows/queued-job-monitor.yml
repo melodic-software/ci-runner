@@ -10,16 +10,41 @@ permissions:
 
 concurrency:
   group: managed-runner-queue-monitor
+  # false, not true: this serializes scheduled runs (never runs two at once)
+  # instead of cancelling an in-flight one. The incident-issue upsert's
+  # create-if-absent race freedom for a given target owner depends on this —
+  # two runs racing on the same owner's issue could both find none open and
+  # both create one.
   cancel-in-progress: false
+
+env:
+  # The identity that opens/updates/closes this workflow's own incident
+  # issues: the default GITHUB_TOKEN's REST-created content is authored by
+  # this exact bot. The incident title and marker are public (embedded
+  # verbatim in this workflow's source, in a public repo), so restricting
+  # adoption to this author — not just marker/title text — is what stops a
+  # non-maintainer from opening a decoy issue that gets adopted, silently
+  # closed on the next healthy run, or used to fail the lookup closed and
+  # suppress a real alert. Mirrors ci-workflows#213
+  # (standards-sync-stuck-automerge-alert.yml).
+  ISSUE_AUTHOR_LOGIN: github-actions[bot]
 
 jobs:
   monitor:
     name: Alert on ${{ matrix.target.owner }} jobs queued over five minutes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # Upsert the marker-deduped incident issue in this repo.
     strategy:
       fail-fast: false
       matrix:
+        # Config-integrity assumption: each entry's owner is expected to be
+        # unique. Matrix jobs run in parallel *within* a run (only cross-run
+        # concurrency is serialized above), so two entries sharing an owner
+        # would race the incident-issue upsert for that owner — both could
+        # find none open and both create one.
         target: ${{ fromJSON(vars.CI_RUNNER_MONITOR_TARGETS_JSON) }}
     steps:
       - name: Checkout monitor implementation
@@ -38,6 +63,7 @@ jobs:
           permission-actions: read
 
       - name: Inspect queued jobs
+        id: inspect
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MONITOR_OWNER: ${{ matrix.target.owner }}
@@ -49,3 +75,21 @@ jobs:
           script: |
             const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
             await monitor.run({ github, core });
+
+      # Alerts by upserting a marker-deduped incident issue instead of failing
+      # this run (a successful execution is green even when it detects
+      # strain): schedule-triggered runs have no actor to notify, and a
+      # by-design red here pollutes fleet-wide failure statistics. Runs on the
+      # job's own GITHUB_TOKEN, scoped to this repository, because the
+      # detection step's observer token is read-only and scoped to the
+      # monitored repositories, not this one.
+      - name: Upsert queue capacity incident
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGET_OWNER: ${{ matrix.target.owner }}
+          STUCK_JSON: ${{ steps.inspect.outputs.stuck }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
+            await monitor.upsertIncident({ github, core });

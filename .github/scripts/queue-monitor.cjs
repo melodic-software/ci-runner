@@ -11,7 +11,24 @@ const nonterminalRunStatuses = Object.freeze([
 const routingRecoverySummary = `
 Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
 `;
-const routingRecoveryFailure = 'Set the effective CI_RUNNER_POLICY value to hosted-only through audited routing control, verify it, then use Re-run all jobs and confirm hosted selection.';
+
+// A worst-case queue-wide outage could stall far more than a handful of
+// managed jobs; capping the rendered table keeps the incident body bounded
+// regardless of how many jobs are stuck.
+const MAX_STUCK_TABLE_ROWS = 50;
+
+// GitHub's issue/comment write endpoints reject a body over 65536
+// characters (observed API error "Body is too long (maximum is 65536
+// characters)"; not a value GitHub's docs state as a formal field limit,
+// but consistently reproduced — see
+// https://github.com/orgs/community/discussions/41331). The row cap above
+// already keeps ordinary bodies far under this, but this is the
+// defense-in-depth backstop: without it, a body that somehow still
+// exceeded the limit would throw on issues.create/update — genuinely
+// failing the run, which is correct, but truncating first keeps the
+// monitor's own alert delivery itself from being what breaks it. Stays
+// well under the observed limit for safety margin.
+const MAX_BODY_LENGTH = 60000;
 
 function splitList(value) {
   return (value || '')
@@ -98,6 +115,10 @@ async function run({ github, core, env = process.env, now = Date.now() }) {
     return;
   }
 
+  // Handed to the incident-upsert step via job output; a successful execution
+  // stays green from here regardless of what it found (see upsertIncident).
+  core.setOutput('stuck', JSON.stringify(stuck));
+
   if (stuck.length === 0) {
     await core.summary.addHeading('Managed runner queue').addRaw('No managed job has been queued for more than five minutes.').write();
     return;
@@ -119,14 +140,209 @@ async function run({ github, core, env = process.env, now = Date.now() }) {
     ])
     .addRaw(routingRecoverySummary)
     .write();
-  core.setFailed(`${stuck.length} managed job(s) exceeded the five-minute queue threshold. ${routingRecoveryFailure}`);
+}
+
+function incidentTitle(targetOwner) {
+  return `[Alert] Managed runner queue capacity — ${targetOwner}`;
+}
+
+function incidentMarker(targetOwner) {
+  return `<!-- ci-runner:queued-job-monitor:incident:${targetOwner} -->`;
+}
+
+// Neutralizes '<' and '>' (not just '|') because this cell content is
+// untrusted: it comes from monitored-repo job/workflow names, not this
+// workflow's own source. Left unescaped, a crafted job name could inject a
+// literal '<!-- ... -->' sequence into a bot-authored incident body —
+// including another owner's incident marker, which findOpenIncident matches
+// as a raw substring — causing a cross-owner issue collision. HTML-entity
+// encoding renders as the literal characters (GitHub's Markdown renders
+// '&lt;'/'&gt;' back to '<'/'>' visually) while never forming a real '<!--'
+// or '-->' sequence in the raw body text this workflow's own code searches.
+function escapeMarkdownTableCell(value) {
+  return String(value)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\|/g, '\\|');
+}
+
+function renderStuckMarkdownTable(stuck, { maxRows = MAX_STUCK_TABLE_ROWS, runUrl } = {}) {
+  const header = '| Repository | Workflow | Job | Minutes | Labels | Link |\n| --- | --- | --- | --- | --- | --- |';
+  const shown = stuck.slice(0, maxRows);
+  const rows = shown.map(item => `| ${escapeMarkdownTableCell(item.repository)} | ${escapeMarkdownTableCell(item.workflow)} | ${escapeMarkdownTableCell(item.job)} | ${item.queuedMinutes} | ${escapeMarkdownTableCell(item.labels)} | [open job](${item.url}) |`);
+  const lines = [header, ...rows];
+  const remaining = stuck.length - shown.length;
+  if (remaining > 0) {
+    const runLink = runUrl ? ` — see the [workflow run](${runUrl}) for the full list` : '';
+    lines.push('', `_...and ${remaining} more managed job(s)${runLink}._`);
+  }
+  return lines.join('\n');
+}
+
+// Truncates the assembled body (everything except the trailing marker) if it
+// would still exceed MAX_BODY_LENGTH after the row cap — the marker must
+// never be truncated away, since findOpenIncident's future upserts and
+// closes depend on it surviving intact.
+function boundBodyLength(bodyWithoutMarker, marker, maxLength = MAX_BODY_LENGTH) {
+  const separator = '\n\n';
+  const budget = maxLength - marker.length - separator.length;
+  if (bodyWithoutMarker.length <= budget) {
+    return `${bodyWithoutMarker}${separator}${marker}`;
+  }
+  const notice = '\n\n_...truncated to stay under GitHub\'s issue body limit._';
+  const truncated = bodyWithoutMarker.slice(0, Math.max(0, budget - notice.length)) + notice;
+  return `${truncated}${separator}${marker}`;
+}
+
+function isOwnIncidentAuthor(issue, issueAuthorLogin) {
+  return issue.user?.login === issueAuthorLogin && issue.user?.type === 'Bot';
+}
+
+// The marker and title strings are public (embedded verbatim in this
+// workflow's source, in a public repository), so matching on them alone
+// would let anyone with issue-creation permission here craft a decoy this
+// automation adopts, silently updates, or closes as recovered — suppressing
+// a real alert. Restricting candidates to issues opened by this workflow's
+// own token identity closes that: an attacker's issue is never a candidate,
+// no matter what text it carries. Mirrors the hardening in ci-workflows#213
+// (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
+// candidate carrying the marker) fails closed rather than guessing.
+//
+// Matching stays marker-only (not marker + title), matching the fleet
+// precedent's deliberate "a marker survives a retitle" property. A crafted
+// job name in a monitored repo could in principle try to inject a foreign
+// marker into a bot-authored body; escapeMarkdownTableCell neutralizes that
+// at the source (see its own comment) instead of layering a title guard here
+// that would trade retitle-survival for redundant protection.
+async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
+  // Every incident issue this workflow creates carries the 'automated' label
+  // (see upsertIncident's create call); filtering server-side keeps this
+  // ~15-minutes-while-open scan from paginating every open issue in the repo.
+  const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+    owner: homeOwner,
+    repo: homeRepo,
+    state: 'open',
+    labels: 'automated',
+    per_page: 100,
+  });
+  const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
+  const matches = candidates.filter(issue => (issue.body ?? '').includes(marker));
+  if (matches.length > 1) {
+    throw new Error(`Found ${matches.length} open incident issues carrying marker '${marker}'; reconcile manually.`);
+  }
+  return matches[0] || null;
+}
+
+// Marker-deduped issue-per-incident alert channel (the fleet's established
+// pattern; see link-check.yml and queue-monitor-liveness.yml in ci-workflows).
+// Runs on the job's own GITHUB_TOKEN against the monitor's home repository —
+// distinct from the read-only, target-scoped observer token the detection
+// step uses, which cannot write issues here. Any thrown error here fails the
+// run: an incident-issue write failure is the monitor breaking, not a queue
+// alert.
+async function upsertIncident({ github, core, env = process.env, now = Date.now() }) {
+  const targetOwner = env.TARGET_OWNER;
+  const [homeOwner, homeRepo] = (env.GITHUB_REPOSITORY || '').split('/');
+  const issueAuthorLogin = env.ISSUE_AUTHOR_LOGIN;
+  if (!homeOwner || !homeRepo) {
+    throw new Error('GITHUB_REPOSITORY must be set to the owner/repo of the monitor workflow.');
+  }
+  if (!targetOwner) {
+    throw new Error('TARGET_OWNER is required to key the incident issue.');
+  }
+  if (!issueAuthorLogin) {
+    throw new Error('ISSUE_AUTHOR_LOGIN is required to restrict incident-issue adoption to this workflow\'s own identity.');
+  }
+  // A missing or empty STUCK_JSON is never "zero stuck jobs" — that case is
+  // always an explicit "[]" from run()'s core.setOutput. Falling back to '[]'
+  // here would silently treat a missing detection-step output (a wiring bug,
+  // a skipped step) as a healthy recovery and close a real open incident.
+  if (env.STUCK_JSON === undefined || env.STUCK_JSON === '') {
+    throw new Error('STUCK_JSON is required: the detection step must set it via core.setOutput, even for zero stuck jobs.');
+  }
+  let stuck;
+  try {
+    stuck = JSON.parse(env.STUCK_JSON);
+  } catch (error) {
+    throw new Error(`STUCK_JSON is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!Array.isArray(stuck)) {
+    throw new Error('STUCK_JSON must decode to an array.');
+  }
+
+  const title = incidentTitle(targetOwner);
+  const marker = incidentMarker(targetOwner);
+  const existing = await findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin });
+  const nowIso = new Date(now).toISOString();
+
+  if (stuck.length === 0) {
+    if (!existing) {
+      core.info(`No open incident for ${targetOwner}; queue is healthy.`);
+      return;
+    }
+    await github.rest.issues.createComment({
+      owner: homeOwner,
+      repo: homeRepo,
+      issue_number: existing.number,
+      body: `Recovered: no managed job for \`${targetOwner}\` has been queued past the threshold as of ${nowIso}. Capacity window: ${existing.created_at} – ${nowIso}.`,
+    });
+    await github.rest.issues.update({
+      owner: homeOwner,
+      repo: homeRepo,
+      issue_number: existing.number,
+      state: 'closed',
+      state_reason: 'completed',
+    });
+    core.info(`Closed incident #${existing.number} for ${targetOwner}.`);
+    return;
+  }
+
+  // GITHUB_SERVER_URL/GITHUB_RUN_ID are GitHub Actions' own default env
+  // vars, always set in a real run; undefined only in tests that don't
+  // provide them, in which case renderStuckMarkdownTable's remainder note
+  // simply omits the run link rather than producing a broken one.
+  const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID
+    ? `${env.GITHUB_SERVER_URL}/${homeOwner}/${homeRepo}/actions/runs/${env.GITHUB_RUN_ID}`
+    : undefined;
+
+  const windowStart = existing ? existing.created_at : nowIso;
+  const bodyWithoutMarker = [
+    `Managed runner queue capacity alert for \`${targetOwner}\`.`,
+    '',
+    `Capacity window: constrained since ${windowStart} (last confirmed ${nowIso}). Affected queue depth: ${stuck.length} managed job(s).`,
+    '',
+    renderStuckMarkdownTable(stuck, { runUrl }),
+    '',
+    routingRecoverySummary.trim(),
+  ].join('\n');
+  const body = boundBodyLength(bodyWithoutMarker, marker);
+
+  if (existing) {
+    // A silent body update, not a comment: this step runs every ~15 minutes
+    // while an incident stays open, and GitHub notifies watchers on every
+    // comment but not on a body edit. Commenting here would re-create the
+    // notification noise this alert channel replaces. The body's "last
+    // confirmed" timestamp already carries freshness.
+    await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body });
+    core.info(`Updated incident #${existing.number} for ${targetOwner}.`);
+  } else {
+    const created = await github.rest.issues.create({ owner: homeOwner, repo: homeRepo, title, body, labels: ['automated'] });
+    core.info(`Opened incident #${created.data.number} for ${targetOwner}.`);
+  }
 }
 
 module.exports = {
+  boundBodyLength,
+  findOpenIncident,
+  incidentMarker,
+  incidentTitle,
   inspectQueuedJobs,
+  MAX_BODY_LENGTH,
+  MAX_STUCK_TABLE_ROWS,
   nonterminalRunStatuses,
-  routingRecoveryFailure,
+  renderStuckMarkdownTable,
   routingRecoverySummary,
   run,
   splitList,
+  upsertIncident,
 };
