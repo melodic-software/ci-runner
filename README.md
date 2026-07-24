@@ -413,6 +413,14 @@ restore the prior immutable pair, restore the prior reusable-workflow SHA if
 needed, then use **Re-run all jobs** for affected workflows and confirm hosted
 selection.
 
+## Troubleshooting
+
+A completed one-job worker's captured runner log can contain an
+`ERR BrokerServer` line carrying a `TaskCanceledException` when the stock runner
+cancels its broker long-poll at teardown. This is expected teardown noise, not a
+failed job or worker; see
+[Cancellation and runner shutdown noise](docs/observability.md#cancellation-and-runner-shutdown-noise).
+
 ## Further documentation
 
 - [Worker image and isolation contract](docs/worker-image.md)
