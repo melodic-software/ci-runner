@@ -29,6 +29,7 @@ image_env() {
 [[ "$(image_env DOTNET_ROOT)" == 'DOTNET_ROOT=/home/runner/.dotnet' ]]
 [[ "$(image_env NUGET_PACKAGES)" == 'NUGET_PACKAGES=/home/runner/.nuget/packages' ]]
 [[ "$(image_env PATH)" == 'PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:'* ]]
+[[ "$(image_env RUNNER_MANUALLY_TRAP_SIG)" == 'RUNNER_MANUALLY_TRAP_SIG=1' ]]
 
 for dynamic_runner_variable in RUNNER_TOOL_CACHE RUNNER_TOOLSDIRECTORY AGENT_TOOLSDIRECTORY; do
   if jq --exit-status --arg name "$dynamic_runner_variable" \
@@ -90,9 +91,27 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   done
 '
 
-run_with_runner_output_captured() {
+temporary_sidecars=()
+temporary_containers=()
+temporary_images=()
+cleanup_verifier_resources() {
+  local container verifier_image
+  for container in "${temporary_containers[@]}"; do
+    docker rm --force "$container" >/dev/null 2>&1 || true
+  done
+  for verifier_image in "${temporary_images[@]}"; do
+    docker image rm --force "$verifier_image" >/dev/null 2>&1 || true
+  done
+  if ((${#temporary_sidecars[@]} > 0)); then
+    rm --force "${temporary_sidecars[@]}"
+  fi
+}
+trap cleanup_verifier_resources EXIT
+
+run_fixture_with_captured_output() {
   local script="$1" sidecar_destination="$2" container_id exit_code logs
   container_id="$(docker create --interactive --log-driver local "$image" /bin/bash -Eeuo pipefail -c "$script")"
+  temporary_containers+=("$container_id")
   if [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" != local ]]; then
     docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
@@ -120,51 +139,94 @@ run_with_runner_output_captured() {
   printf '%s' "$logs"
 }
 
-temporary_sidecars=()
-cleanup_sidecars() {
-  if ((${#temporary_sidecars[@]} > 0)); then
-    rm --force "${temporary_sidecars[@]}"
-  fi
-}
-trap cleanup_sidecars EXIT
+production_harness_image="ci-runner-worker-production-cmd-verifier:${BASHPID}-${RANDOM}"
+temporary_images+=("$production_harness_image")
+docker build --quiet \
+  --build-arg "BASE_IMAGE=$image" \
+  --tag "$production_harness_image" \
+  scripts/fixtures/production-cmd-harness >/dev/null
+harness_config="$(docker image inspect "$production_harness_image" --format '{{json .Config}}')"
+[[ "$harness_config" == "$config" ]]
 
-# ScriptHandler redirects hook stdout/stderr and OutputManager consumes those
-# streams. Run the hook as a redirected child of the same-UID PID 1, then read
-# the stopped container through `docker logs`. A marker here proves it bypassed
-# the runner capture boundary through PID 1's Docker logging pipe.
-hook_script=
-read -r -d '' hook_script <<'CONTAINER_SCRIPT' || true
-  initial="$(cat /home/runner/_runner_state/state)"
-  /usr/local/libexec/ci-runner-job-started.sh
-  busy="$(cat /home/runner/_runner_state/state)"
-  runner_output="$(mktemp)"
-  /bin/bash -Eeuo pipefail -c "printf \"runner-output-sentinel\\n\"; /usr/local/libexec/ci-runner-job-completed.sh" >"$runner_output" 2>&1
-  completed="$(cat /home/runner/_runner_state/state)"
-  test "$(cat "$runner_output")" = runner-output-sentinel
-  test "$initial" = idle
-  test "$busy" = busy
-  test "$completed" = completed
-  test "$(stat --format=%u /proc/1)" = "$(id -u)"
-  [[ "$(readlink /proc/1/fd/1)" == pipe:\[*\] ]]
-  test "$(stat --format="%U:%G:%a" /home/runner/_runner_state/cgroup-terminal.json)" = "runner:runner:600"
-  test "$(wc --lines </home/runner/_runner_state/cgroup-terminal.json)" = 1
-  ! compgen -G "/home/runner/_runner_state/.cgroup-terminal.*" >/dev/null
-  capture_line="$(grep --line-number --fixed-strings "/usr/local/libexec/ci-runner-capture-cgroup" /usr/local/libexec/ci-runner-job-completed.sh | cut --delimiter=: --fields=1)"
-  completed_line="$(grep --line-number --fixed-strings "/usr/local/libexec/ci-runner-set-state completed" /usr/local/libexec/ci-runner-job-completed.sh | cut --delimiter=: --fields=1)"
-  test "$capture_line" -lt "$completed_line"
-CONTAINER_SCRIPT
-hook_sidecar="$(mktemp)"
-temporary_sidecars+=("$hook_sidecar")
-hook_logs="$(run_with_runner_output_captured "$hook_script" "$hook_sidecar")"
+run_production_command_transport() {
+  local container_id exit_code logs
+  container_id="$(docker create --interactive --log-driver local "$production_harness_image")"
+  temporary_containers+=("$container_id")
+  [[ "$(docker inspect --format '{{.Path}}' "$container_id")" == /usr/local/bin/ci-runner-entrypoint ]]
+  [[ "$(docker inspect --format '{{json .Args}}' "$container_id")" == '["/home/runner/run.sh"]' ]]
+  [[ "$(docker inspect --format '{{.Config.User}}' "$container_id")" == runner ]]
+  [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" == local ]]
+  [[ "$(docker inspect --format '{{.HostConfig.Privileged}}' "$container_id")" == false ]]
+  [[ "$(docker inspect --format '{{json .HostConfig.Binds}}' "$container_id")" == null ]]
+  [[ "$(docker inspect --format '{{json .HostConfig.CapAdd}}' "$container_id")" == null ]]
+  [[ "$(docker inspect --format '{{json .Mounts}}' "$container_id")" == '[]' ]]
+  if ! printf 'test-jit\n' | timeout 60s docker start --attach --interactive "$container_id" >/dev/null; then
+    docker logs --timestamps "$container_id" >&2 || true
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
+  if [[ "$exit_code" != 0 ]]; then
+    docker logs --timestamps "$container_id" >&2 || true
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  if ! logs="$(docker logs --timestamps "$container_id" 2>&1)"; then
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  docker rm "$container_id" >/dev/null
+  printf '%s' "$logs"
+}
+
 readonly resource_marker_prefix=ci-runner-resource-evidence-v1:
-mapfile -t hook_lines <<<"$hook_logs"
-[[ "${#hook_lines[@]}" == 1 ]]
-[[ "$hook_logs" != *runner-output-sentinel* ]]
-resource_marker="${hook_lines[0]}"
-resource_evidence="$(<"$hook_sidecar")"
-[[ "$resource_marker" == "$resource_marker_prefix$resource_evidence" ]]
+readonly harness_sentinel=ci-runner-production-cmd-verifier-v1
+readonly sidecar_digest_prefix=ci-runner-sidecar-sha256:
+readonly pipe_buffer_prefix=ci-runner-stdout-pipe-buf:
+production_logs="$(run_production_command_transport)"
+mapfile -t production_lines <<<"$production_logs"
+resource_marker=
+sidecar_digest=
+pipe_buffer=
+marker_count=0
+sentinel_count=0
+digest_count=0
+pipe_buffer_count=0
+for timestamped_line in "${production_lines[@]}"; do
+  timestamp="${timestamped_line%% *}"
+  line="${timestamped_line#* }"
+  [[ "$timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]
+  case "$line" in
+  "$resource_marker_prefix"*)
+    marker_count=$((marker_count + 1))
+    resource_marker="$line"
+    ;;
+  "$harness_sentinel")
+    sentinel_count=$((sentinel_count + 1))
+    ;;
+  "$sidecar_digest_prefix"*)
+    digest_count=$((digest_count + 1))
+    sidecar_digest="${line#"$sidecar_digest_prefix"}"
+    ;;
+  "$pipe_buffer_prefix"*)
+    pipe_buffer_count=$((pipe_buffer_count + 1))
+    pipe_buffer="${line#"$pipe_buffer_prefix"}"
+    ;;
+  *) ;;
+  esac
+done
+[[ "$marker_count" == 1 ]]
+[[ "$sentinel_count" == 1 ]]
+[[ "$digest_count" == 1 ]]
+[[ "$pipe_buffer_count" == 1 ]]
+[[ "$sidecar_digest" =~ ^[0-9a-f]{64}$ ]]
+[[ "$pipe_buffer" =~ ^[0-9]+$ ]]
+resource_evidence="${resource_marker#"$resource_marker_prefix"}"
 [[ "${#resource_evidence}" -le 32768 ]]
-[[ "${#resource_marker}" -lt 4096 ]]
+marker_bytes="$(printf '%s\n' "$resource_marker" | wc --bytes)"
+((marker_bytes <= pipe_buffer))
+calculated_digest="$(printf '%s\n' "$resource_evidence" | sha256sum | cut --delimiter=' ' --fields=1)"
+[[ "$calculated_digest" == "$sidecar_digest" ]]
 [[ "$(jq --compact-output . <<<"$resource_evidence")" == "$resource_evidence" ]]
 jq --exit-status '
   .schemaVersion == 1 and
@@ -205,7 +267,7 @@ read -r -d '' fixture_script <<'CONTAINER_SCRIPT' || true
 CONTAINER_SCRIPT
 fixture_sidecar="$(mktemp)"
 temporary_sidecars+=("$fixture_sidecar")
-fixture_markers="$(run_with_runner_output_captured "$fixture_script" "$fixture_sidecar")"
+fixture_markers="$(run_fixture_with_captured_output "$fixture_script" "$fixture_sidecar")"
 mapfile -t fixture_lines <<<"$fixture_markers"
 [[ "${#fixture_lines[@]}" == 2 ]]
 for fixture_marker in "${fixture_lines[@]}"; do
@@ -233,7 +295,7 @@ read -r -d '' unavailable_script <<'CONTAINER_SCRIPT' || true
 CONTAINER_SCRIPT
 unavailable_sidecar="$(mktemp)"
 temporary_sidecars+=("$unavailable_sidecar")
-unavailable_logs="$(run_with_runner_output_captured "$unavailable_script" "$unavailable_sidecar")"
+unavailable_logs="$(run_fixture_with_captured_output "$unavailable_script" "$unavailable_sidecar")"
 mapfile -t unavailable_lines <<<"$unavailable_logs"
 [[ "${#unavailable_lines[@]}" == 1 ]]
 unavailable_marker="${unavailable_lines[0]}"

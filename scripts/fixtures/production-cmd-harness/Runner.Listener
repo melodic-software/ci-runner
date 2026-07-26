@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$#" == 1 && "$1" == run ]]
+[[ "$(id -u)" == 1001 ]]
+[[ "$(id -g)" == 1001 ]]
+[[ "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" == test-jit ]]
+[[ "${ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT:-}" == 1 ]]
+[[ "${ACTIONS_RUNNER_HOOK_JOB_STARTED:-}" == /usr/local/libexec/ci-runner-job-started.sh ]]
+[[ "${ACTIONS_RUNNER_HOOK_JOB_COMPLETED:-}" == /usr/local/libexec/ci-runner-job-completed.sh ]]
+
+mapfile -d '' -t pid1_argv </proc/1/cmdline
+[[ "${#pid1_argv[@]}" == 2 ]]
+[[ "${pid1_argv[0]}" == /bin/bash ]]
+[[ "${pid1_argv[1]}" == /home/runner/run.sh ]]
+[[ "$(stat --format=%u /proc/1)" == 1001 ]]
+[[ "$(readlink /proc/1/fd/1)" == pipe:\[*\] ]]
+pipe_buffer="$(getconf PIPE_BUF /proc/1/fd/1)"
+[[ "$pipe_buffer" =~ ^[0-9]+$ ]]
+
+initial="$(cat /home/runner/_runner_state/state)"
+captured_output="$(mktemp)"
+trap 'rm --force "$captured_output"' EXIT
+"$ACTIONS_RUNNER_HOOK_JOB_STARTED" >"$captured_output" 2>&1
+[[ ! -s "$captured_output" ]]
+busy="$(cat /home/runner/_runner_state/state)"
+"$ACTIONS_RUNNER_HOOK_JOB_COMPLETED" >"$captured_output" 2>&1
+[[ ! -s "$captured_output" ]]
+completed="$(cat /home/runner/_runner_state/state)"
+
+[[ "$initial" == idle ]]
+[[ "$busy" == busy ]]
+[[ "$completed" == completed ]]
+readonly evidence_path=/home/runner/_runner_state/cgroup-terminal.json
+[[ "$(stat --format='%U:%G:%a' "$evidence_path")" == runner:runner:600 ]]
+[[ "$(wc --lines <"$evidence_path")" == 1 ]]
+if compgen -G "/home/runner/_runner_state/.cgroup-terminal.*" >/dev/null; then
+    exit 1
+fi
+
+evidence_digest="$(sha256sum "$evidence_path" | cut --delimiter=' ' --fields=1)"
+printf 'ci-runner-production-cmd-verifier-v1\n'
+printf 'ci-runner-sidecar-sha256:%s\n' "$evidence_digest"
+printf 'ci-runner-stdout-pipe-buf:%s\n' "$pipe_buffer"
