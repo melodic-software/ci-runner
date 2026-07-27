@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# Every transport helper runs inside a command substitution. Without this, bash
+# clears errexit in that subshell and a failed contract assertion is swallowed:
+# the helper runs on to its final printf and the verifier reports success.
+shopt -s inherit_errexit
 
 image="${1:?usage: verify-worker-image.sh IMAGE}"
 dependencies="${2:-release/dependencies.json}"
