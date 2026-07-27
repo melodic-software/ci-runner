@@ -112,34 +112,24 @@ cleanup_verifier_resources() {
 }
 trap cleanup_verifier_resources EXIT
 
+# Every transport helper runs inside a command substitution, so anything it
+# appends to the teardown arrays is discarded with the subshell. Containers are
+# therefore created by the caller, which records them before handing the id
+# over, and the EXIT trap is the single owner of removal.
 run_fixture_with_captured_output() {
-  local script="$1" sidecar_destination="$2" container_id exit_code logs
-  container_id="$(docker create --interactive --log-driver local "$image" /bin/bash -Eeuo pipefail -c "$script")"
-  temporary_containers+=("$container_id")
-  if [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" != local ]]; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
-    return 1
-  fi
+  local container_id="$1" sidecar_destination="$2" exit_code logs
+  [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" == local ]]
   if ! printf 'test-jit\n' | docker start --attach --interactive "$container_id" >/dev/null; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
   if [[ "$exit_code" != 0 ]]; then
     docker logs "$container_id" >&2 || true
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
-  if ! logs="$(docker logs "$container_id")"; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
-    return 1
-  fi
-  if ! docker cp "$container_id":/home/runner/_runner_state/cgroup-terminal.json - |
-    tar --extract --to-stdout >"$sidecar_destination"; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
-    return 1
-  fi
-  docker rm "$container_id" >/dev/null
+  logs="$(docker logs "$container_id")"
+  docker cp "$container_id":/home/runner/_runner_state/cgroup-terminal.json - |
+    tar --extract --to-stdout >"$sidecar_destination"
   printf '%s' "$logs"
 }
 
@@ -153,9 +143,7 @@ harness_config="$(docker image inspect "$production_harness_image" --format '{{j
 [[ "$harness_config" == "$config" ]]
 
 run_production_command_transport() {
-  local container_id exit_code logs
-  container_id="$(docker create --interactive --log-driver local "$production_harness_image")"
-  temporary_containers+=("$container_id")
+  local container_id="$1" exit_code logs
   [[ "$(docker inspect --format '{{.Path}}' "$container_id")" == /usr/local/bin/ci-runner-entrypoint ]]
   [[ "$(docker inspect --format '{{json .Args}}' "$container_id")" == '["/home/runner/run.sh"]' ]]
   [[ "$(docker inspect --format '{{.Config.User}}' "$container_id")" == runner ]]
@@ -166,20 +154,14 @@ run_production_command_transport() {
   [[ "$(docker inspect --format '{{json .Mounts}}' "$container_id")" == '[]' ]]
   if ! printf 'test-jit\n' | timeout 60s docker start --attach --interactive "$container_id" >/dev/null; then
     docker logs --timestamps "$container_id" >&2 || true
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
   if [[ "$exit_code" != 0 ]]; then
     docker logs --timestamps "$container_id" >&2 || true
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
-  if ! logs="$(docker logs --timestamps "$container_id" 2>&1)"; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
-    return 1
-  fi
-  docker rm "$container_id" >/dev/null
+  logs="$(docker logs --timestamps "$container_id" 2>&1)"
   printf '%s' "$logs"
 }
 
@@ -187,7 +169,9 @@ readonly resource_marker_prefix=ci-runner-resource-evidence-v1:
 readonly harness_sentinel=ci-runner-production-cmd-verifier-v1
 readonly sidecar_digest_prefix=ci-runner-sidecar-sha256:
 readonly pipe_buffer_prefix=ci-runner-stdout-pipe-buf:
-production_logs="$(run_production_command_transport)"
+production_container="$(docker create --interactive --log-driver local "$production_harness_image")"
+temporary_containers+=("$production_container")
+production_logs="$(run_production_command_transport "$production_container")"
 mapfile -t production_lines <<<"$production_logs"
 resource_marker=
 sidecar_digest=
@@ -271,7 +255,9 @@ read -r -d '' fixture_script <<'CONTAINER_SCRIPT' || true
 CONTAINER_SCRIPT
 fixture_sidecar="$(mktemp)"
 temporary_sidecars+=("$fixture_sidecar")
-fixture_markers="$(run_fixture_with_captured_output "$fixture_script" "$fixture_sidecar")"
+fixture_container="$(docker create --interactive --log-driver local "$image" /bin/bash -Eeuo pipefail -c "$fixture_script")"
+temporary_containers+=("$fixture_container")
+fixture_markers="$(run_fixture_with_captured_output "$fixture_container" "$fixture_sidecar")"
 mapfile -t fixture_lines <<<"$fixture_markers"
 [[ "${#fixture_lines[@]}" == 2 ]]
 for fixture_marker in "${fixture_lines[@]}"; do
@@ -299,7 +285,9 @@ read -r -d '' unavailable_script <<'CONTAINER_SCRIPT' || true
 CONTAINER_SCRIPT
 unavailable_sidecar="$(mktemp)"
 temporary_sidecars+=("$unavailable_sidecar")
-unavailable_logs="$(run_fixture_with_captured_output "$unavailable_script" "$unavailable_sidecar")"
+unavailable_container="$(docker create --interactive --log-driver local "$image" /bin/bash -Eeuo pipefail -c "$unavailable_script")"
+temporary_containers+=("$unavailable_container")
+unavailable_logs="$(run_fixture_with_captured_output "$unavailable_container" "$unavailable_sidecar")"
 mapfile -t unavailable_lines <<<"$unavailable_logs"
 [[ "${#unavailable_lines[@]}" == 1 ]]
 unavailable_marker="${unavailable_lines[0]}"
