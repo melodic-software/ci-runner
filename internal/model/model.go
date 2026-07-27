@@ -80,6 +80,11 @@ type Worker struct {
 	JobID     string      `json:"jobId,omitempty"`
 	RunnerID  int64       `json:"runnerId,omitempty"`
 	StartedAt time.Time   `json:"startedAt"`
+	// MemoryLimitBytes is the memory limit the runtime reports this worker was
+	// actually started with, so a budget reservation survives a config profile
+	// change under it. A non-positive value means the runtime reported no limit
+	// (or could not be read) and reservations fall back to the current profile.
+	MemoryLimitBytes int64 `json:"memoryLimitBytes,omitempty"`
 }
 
 func (w Worker) Active() bool {

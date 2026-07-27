@@ -1024,6 +1024,54 @@ func TestBudgetBasisSubtractsAllActiveWorkersUpFrontWithoutDoubleCounting(t *tes
 	}
 }
 
+func TestBudgetBasisChargesWorkersTheMemoryLimitTheyWereStartedWith(t *testing.T) {
+	t.Parallel()
+	// The controller has restarted onto a 2GiB profile while two workers started
+	// under the previous 4GiB profile are still active. Reserving the current
+	// profile for them would undercharge 4GiB of the 8GiB budget and fund two
+	// starts the VM cannot actually hold.
+	input := budgetInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 4
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
+	input.Config.GitHub.Targets[0].MaxCapacity = 4
+	input.Config.GitHub.Targets[0].WarmIdle = 4
+	input.Workers = []model.Worker{
+		{ID: "w1", PoolID: "default", State: model.WorkerBusy, MemoryLimitBytes: 4 << 30},
+		{ID: "w2", PoolID: "default", State: model.WorkerIdle, MemoryLimitBytes: 4 << 30},
+	}
+
+	plan := BuildPlan(input)
+
+	if got := totalStarts(plan.Start); got != 0 {
+		t.Fatalf("starts = %d, want 0: the started limits already consume the budget", got)
+	}
+	if plan.MemoryHeadroom != 0 {
+		t.Fatalf("memory headroom = %d, want 0 after charging 2x4GiB against the 8GiB budget", plan.MemoryHeadroom)
+	}
+}
+
+func TestBudgetBasisFallsBackToTheProfileWhenNoStartedLimitIsReported(t *testing.T) {
+	t.Parallel()
+	// A limitless container, or one whose limit could not be read, reports no
+	// memory limit. Those workers must keep reserving the effective profile.
+	input := budgetInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 4
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
+	input.Config.GitHub.Targets[0].MaxCapacity = 4
+	input.Config.GitHub.Targets[0].WarmIdle = 4
+	input.Workers = []model.Worker{
+		{ID: "w1", PoolID: "default", State: model.WorkerBusy},
+		{ID: "w2", PoolID: "default", State: model.WorkerIdle},
+	}
+
+	plan := BuildPlan(input)
+
+	// 8GiB budget minus 2 profile reservations of 2GiB funds exactly two starts.
+	if got := totalStarts(plan.Start); got != 2 {
+		t.Fatalf("starts = %d, want 2 from the unchanged profile fallback", got)
+	}
+}
+
 func TestBudgetBasisFloorGateBlocksNewStartsAndGrowthWhenHostMemoryCritical(t *testing.T) {
 	t.Parallel()
 	input := budgetInput()

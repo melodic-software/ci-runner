@@ -724,11 +724,18 @@ func evaluateMemoryBasis(input PlanInput) memoryBasis {
 	return basis
 }
 
-// activeWorkerReservations sums the effective worker memory profile of every
-// busy, starting, and idle worker. A static budget seed must subtract busy
-// workers explicitly: the legacy host reading excluded them implicitly because
-// their consumption had already lowered AvailablePhysical. Workers in unknown
-// pools still occupy VM memory, so they reserve the global default profile.
+// activeWorkerReservations sums the memory reservation of every busy, starting,
+// and idle worker. A static budget seed must subtract busy workers explicitly:
+// the legacy host reading excluded them implicitly because their consumption had
+// already lowered AvailablePhysical.
+//
+// A worker's own runtime-reported limit wins over the configured profile, so a
+// worker started under a larger profile keeps charging what it actually holds
+// after the controller restarts onto a smaller one. Without that, the sum
+// undercharges those workers and can fund slots above the real VM budget until
+// they drain. Workers with no reported limit fall back to their pool profile,
+// and workers in unknown pools still occupy VM memory, so they reserve the
+// global default profile.
 func activeWorkerReservations(cfg config.Config, workers []model.Worker) uint64 {
 	memoryByPool := make(map[string]config.ByteSize, len(cfg.GitHub.Targets))
 	for _, target := range cfg.GitHub.Targets {
@@ -737,6 +744,10 @@ func activeWorkerReservations(cfg config.Config, workers []model.Worker) uint64 
 	var total uint64
 	for _, worker := range workers {
 		if !worker.Active() {
+			continue
+		}
+		if worker.MemoryLimitBytes > 0 {
+			total = saturatingAddUint64(total, uint64(worker.MemoryLimitBytes))
 			continue
 		}
 		memory, known := memoryByPool[worker.PoolID]
