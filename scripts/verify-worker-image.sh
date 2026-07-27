@@ -119,7 +119,7 @@ trap cleanup_verifier_resources EXIT
 run_fixture_with_captured_output() {
   local container_id="$1" sidecar_destination="$2" exit_code logs
   [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" == local ]]
-  if ! printf 'test-jit\n' | docker start --attach --interactive "$container_id" >/dev/null; then
+  if ! printf 'test-jit\n' | timeout 60s docker start --attach --interactive "$container_id" >/dev/null; then
     return 1
   fi
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
@@ -156,6 +156,11 @@ run_production_command_transport() {
     docker logs --timestamps "$container_id" >&2 || true
     return 1
   fi
+  # This exit code is not what catches a stub that dies before printing. run.sh
+  # translates several listener exits into a graceful no-retry shutdown and
+  # exits 0 itself, so a stub killed on its first line still yields 0 here. The
+  # exactly-one marker counts below are the load-bearing check for that class of
+  # failure; do not weaken them on the assumption this covers it.
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
   if [[ "$exit_code" != 0 ]]; then
     docker logs --timestamps "$container_id" >&2 || true
