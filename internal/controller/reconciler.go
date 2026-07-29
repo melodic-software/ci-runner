@@ -467,7 +467,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pollWatchDone chan pollCadenceResult
 	)
 	if containsReadyPool(pools) {
-		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
+		checkpointErr := r.persistObserved(ctx, checkpoint)
 		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
 		// separate per-request deadline would expire this cadence watcher during a
 		// normal multi-attempt poll retry sequence, so none is set here.
@@ -967,7 +967,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
 		Problems: problems,
 	}
-	if saveErr := r.deps.State.SaveObserved(ctx, observed); saveErr != nil {
+	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
 	return ReconcileResult{
@@ -1245,6 +1245,34 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 		return 0
 	}
 	return available - reserved
+}
+
+// observedPersistTimeout bounds every detached observed-state write. It is
+// sized against the reconcile loop's post-cancellation drain grace
+// (reconcileStepDrainGrace in internal/app, RequestTimeout + Retry.Maximum --
+// tens of seconds under any realistic configuration) so a wedged state lock
+// can never hold an unwinding Step past that grace and trip the abandoned-step
+// escalation. It is deliberately longer than diagnosticLogWriteTimeout: this
+// write must first acquire the very state lock whose contention is the failure
+// being recorded, where a log write contends with nothing.
+const observedPersistTimeout = 5 * time.Second
+
+// persistObserved writes observed state on a context detached from cycle
+// cancellation, bounded by its own timeout.
+//
+// The cycle context is precisely the one a watchdog cancellation or a wedged
+// state lock has already cancelled, so persisting on it means the degraded
+// phase and the problem records explaining that failure never land:
+// observed.json silently keeps its pre-incident contents and doctor and
+// monitoring report a healthy fleet through the outage. Detaching costs
+// nothing in write safety -- statefs.Store.save stages a temporary file, syncs
+// it, replaces the target atomically and syncs the directory, all while
+// holding the same lock every other writer takes -- so a detached write can
+// neither land partially nor interleave with another writer.
+func (r *Reconciler) persistObserved(ctx context.Context, observed model.ObservedState) error {
+	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), observedPersistTimeout)
+	defer cancel()
+	return r.deps.State.SaveObserved(persistContext, observed)
 }
 
 const diagnosticLogWriteTimeout = 2 * time.Second
