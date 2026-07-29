@@ -169,7 +169,9 @@ Under a budget, each active worker is charged the memory limit the container
 runtime reports it was started with, so headroom stays honest across a worker
 profile change: workers started under the previous profile keep charging it
 until they drain. Workers the runtime reports as unlimited are charged their
-pool's effective profile instead.
+pool's effective profile instead, as are workers whose limit could not be read —
+that read failure is surfaced as an adapter error, but it degrades the
+reservation to the profile rather than failing the observation.
 
 Two budget-specific signals are problems or warnings: a configured budget
 larger than the probed engine VM memory raises the

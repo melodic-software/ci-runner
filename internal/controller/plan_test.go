@@ -1050,6 +1050,35 @@ func TestBudgetBasisChargesWorkersTheMemoryLimitTheyWereStartedWith(t *testing.T
 	}
 }
 
+func TestBudgetBasisChargesMixedProfileWorkersEachTheirOwnLimit(t *testing.T) {
+	t.Parallel()
+	// A rolling profile change leaves workers from several profiles active at
+	// once, plus one the runtime reports no limit for. Each must charge its own
+	// reservation rather than one profile standing in for all of them: 4GiB and
+	// 1GiB from the reported limits, and the 2GiB effective profile for the
+	// worker without one, leaving 1GiB of the 8GiB budget - short of the 2GiB a
+	// further start would need.
+	input := budgetInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 4
+	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
+	input.Config.GitHub.Targets[0].MaxCapacity = 4
+	input.Config.GitHub.Targets[0].WarmIdle = 4
+	input.Workers = []model.Worker{
+		{ID: "w1", PoolID: "default", State: model.WorkerBusy, MemoryLimitBytes: 4 << 30},
+		{ID: "w2", PoolID: "default", State: model.WorkerIdle, MemoryLimitBytes: 1 << 30},
+		{ID: "w3", PoolID: "default", State: model.WorkerBusy},
+	}
+
+	plan := BuildPlan(input)
+
+	if plan.MemoryHeadroom != 1<<30 {
+		t.Fatalf("memory headroom = %d, want 1GiB after charging 4GiB + 1GiB + the 2GiB profile", plan.MemoryHeadroom)
+	}
+	if got := totalStarts(plan.Start); got != 0 {
+		t.Fatalf("starts = %d, want 0: 1GiB of headroom cannot fund a 2GiB worker", got)
+	}
+}
+
 func TestBudgetBasisFallsBackToTheProfileWhenNoStartedLimitIsReported(t *testing.T) {
 	t.Parallel()
 	// A limitless container, or one whose limit could not be read, reports no

@@ -56,8 +56,9 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	if worker.State != model.WorkerStarting || worker.PoolID != "org" || worker.RunnerID != 99 {
 		t.Fatalf("worker = %#v", worker)
 	}
-	// The worker carries its own limit from the first reconcile onward, so its
-	// budget reservation never depends on the profile still being configured.
+	// Both worker producers report the limit the container actually holds, not the
+	// profile in force when it is read. The reservation itself reads the limit back
+	// from the next List, which is what survives a restart.
 	if worker.MemoryLimitBytes != 8<<30 {
 		t.Fatalf("memory limit = %d, want the requested 8GiB", worker.MemoryLimitBytes)
 	}
@@ -713,6 +714,57 @@ func TestListReportsNoMemoryLimitWhenTheEngineReportsANonPositiveOne(t *testing.
 	}
 }
 
+func TestListReportsNoMemoryLimitWhenTheResponseCarriesNoHostConfig(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("no-host-config", "idle", "running")
+	engine.setMemoryLimit("no-host-config", 4<<30)
+	engine.omitHostConfig("no-host-config")
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A response without the resource section must read as no limit rather than
+	// panicking the reconcile on a nil dereference.
+	if len(workers) != 1 || workers[0].MemoryLimitBytes != 0 {
+		t.Fatalf("workers = %#v", workers)
+	}
+}
+
+func TestListKeepsWorkerStateWhenTheMemoryLimitCannotBeRead(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("unreadable", "idle", "running")
+	engine.failInspect("unreadable", errors.New("engine refused inspect"))
+	var reported []error
+	options := testOptions(&memoryArtifacts{})
+	options.OnError = func(err error) { reported = append(reported, err) }
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An unreadable limit costs the reservation precision it would have added, and
+	// nothing else: the worker keeps the idle state its own probe reported instead
+	// of being forced to Starting, and the failure is still surfaced.
+	if len(workers) != 1 || workers[0].State != model.WorkerIdle || workers[0].MemoryLimitBytes != 0 {
+		t.Fatalf("workers = %#v", workers)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v, want the limit read surfaced once", reported)
+	}
+}
+
 func TestListAdoptsAllContainersBeforeStartingFinalizers(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -1095,18 +1147,20 @@ func testOptions(sink ArtifactSink) Options {
 }
 
 type fakeContainer struct {
-	id          string
-	labels      map[string]string
-	state       string
-	hookState   string
-	created     int64
-	stateReads  int
-	changeAfter int
-	changeTo    string
-	exitCode    int
-	memoryLimit int64
-	waitResult  chan containertypes.WaitResponse
-	waitError   chan error
+	id             string
+	labels         map[string]string
+	state          string
+	hookState      string
+	created        int64
+	stateReads     int
+	changeAfter    int
+	changeTo       string
+	exitCode       int
+	memoryLimit    int64
+	omitHostConfig bool
+	inspectErr     error
+	waitResult     chan containertypes.WaitResponse
+	waitError      chan error
 }
 
 type fakeLogFrame struct {
@@ -1210,14 +1264,18 @@ func (e *fakeEngine) ContainerInspect(_ context.Context, id string, _ client.Con
 	if !ok {
 		return client.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("container missing")
 	}
+	if container.inspectErr != nil {
+		return client.ContainerInspectResult{}, container.inspectErr
+	}
 	response := containertypes.InspectResponse{
 		ID:     id,
 		State:  &containertypes.State{Running: container.state == "running", ExitCode: container.exitCode},
 		Config: &containertypes.Config{Labels: cloneLabels(container.labels)},
 	}
-	// A container created without resource limits inspects with no HostConfig at
-	// all, which the memory read must tolerate.
-	if container.memoryLimit != 0 {
+	// The engine always reports a HostConfig, carrying Memory 0 for an unlimited
+	// container rather than omitting the section. omitHostConfig models a response
+	// without one at all, which the memory read still has to tolerate.
+	if !container.omitHostConfig {
 		response.HostConfig = &containertypes.HostConfig{
 			Resources: containertypes.Resources{Memory: container.memoryLimit},
 		}
@@ -1358,6 +1416,18 @@ func (e *fakeEngine) setMemoryLimit(id string, limit int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.containers[id].memoryLimit = limit
+}
+
+func (e *fakeEngine) omitHostConfig(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].omitHostConfig = true
+}
+
+func (e *fakeEngine) failInspect(id string, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].inspectErr = err
 }
 
 func (e *fakeEngine) changeStateAfterReads(id string, reads int, state string) {
