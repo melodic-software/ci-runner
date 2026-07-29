@@ -11,7 +11,7 @@ script runs inside the worker.
 
 ## Reviewed upstream baseline
 
-- Final base: `ghcr.io/actions/actions-runner:2.335.1@sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29`.
+- Final base: `ghcr.io/actions/actions-runner:2.336.0@sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda`.
 - The tag is GitHub's runner release; the digest is the GHCR multi-platform index.
 - The selected image is Ubuntu 24.04 and runs as the upstream `runner` identity
   (uid/gid 1001).
