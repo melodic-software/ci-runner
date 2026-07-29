@@ -92,6 +92,110 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	}
 }
 
+// observed.json is read by operators during an incident, so quiesceReason has
+// to be on the wire under that exact key when the controller is draining, and
+// absent rather than empty or "none" when it is not.
+func TestObservedQuiesceReasonIsOnTheWireOnlyWhileDraining(t *testing.T) {
+	tests := []struct {
+		name       string
+		observed   model.ObservedState
+		wantOnWire bool
+	}{
+		{
+			name: "draining",
+			observed: model.ObservedState{
+				SchemaVersion: 1, Phase: model.PhaseDraining, HeartbeatAt: time.Now().UTC(),
+				QuiesceReason: model.QuiesceReasonAdvertisementBudgetExhausted,
+			},
+			wantOnWire: true,
+		},
+		{
+			name:     "ready",
+			observed: model.ObservedState{SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: time.Now().UTC()},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, directory := newTestStore(t)
+			ctx := context.Background()
+			if err := store.SaveObserved(ctx, test.observed); err != nil {
+				t.Fatalf("SaveObserved: %v", err)
+			}
+
+			contents, err := os.ReadFile(filepath.Join(directory, "observed.json"))
+			if err != nil {
+				t.Fatalf("read observed.json: %v", err)
+			}
+			if got := strings.Contains(string(contents), `"quiesceReason"`); got != test.wantOnWire {
+				t.Fatalf("quiesceReason present = %v, want %v in %s", got, test.wantOnWire, contents)
+			}
+
+			// The observed reader rejects unknown fields, so a round trip also
+			// proves the persisted key matches the struct tag exactly.
+			loaded, err := store.LoadObserved(ctx)
+			if err != nil {
+				t.Fatalf("LoadObserved: %v", err)
+			}
+			if loaded.QuiesceReason != test.observed.QuiesceReason {
+				t.Fatalf("quiesce reason = %q, want %q", loaded.QuiesceReason, test.observed.QuiesceReason)
+			}
+		})
+	}
+}
+
+// TestObservedRejectsATopLevelKeyItDoesNotKnow pins the rollback cost that
+// adding quiesceReason accepts, so the tradeoff is a checked property rather
+// than a review-time observation.
+//
+// The observed reader sets DisallowUnknownFields, so any top-level key a
+// reader does not know is fatal to it -- and a failed LoadObserved is not a
+// benign parse error: the reconciler quarantines the file and takes a forced
+// capacity-zero recovery pass, and the CLI status and doctor surfaces that
+// share this loader fail or report zero values until the controller rewrites
+// it. A controller rolled back to a release predating quiesceReason is exactly
+// such a reader, and the documented rollback order drains before restoring, so
+// the key is present precisely then.
+//
+// This asserts the mechanism in the direction that is actually testable --
+// this binary reading a key from a hypothetical newer one -- rather than
+// freezing a duplicate copy of the previous ObservedState shape that would
+// drift on the next field added. Flipping observed-state decoding to be
+// forward-tolerant is what would make this test's expectation change.
+func TestObservedRejectsATopLevelKeyItDoesNotKnow(t *testing.T) {
+	store, directory := newTestStore(t)
+	ctx := context.Background()
+	if err := store.SaveObserved(ctx, model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseDraining, HeartbeatAt: time.Now().UTC(),
+		QuiesceReason: model.QuiesceReasonExcessWorkers,
+	}); err != nil {
+		t.Fatalf("SaveObserved: %v", err)
+	}
+
+	path := filepath.Join(directory, "observed.json")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read observed.json: %v", err)
+	}
+	withFutureKey := strings.Replace(
+		string(contents),
+		`"schemaVersion": 1,`,
+		`"schemaVersion": 1,`+"\n  "+`"aKeyThisReaderDoesNotKnow": "value",`,
+		1,
+	)
+	if withFutureKey == string(contents) {
+		t.Fatal("could not inject a top-level key; the observed.json layout changed")
+	}
+	if err := os.WriteFile(path, []byte(withFutureKey), 0o600); err != nil {
+		t.Fatalf("write observed.json: %v", err)
+	}
+
+	if _, err := store.LoadObserved(ctx); err == nil {
+		t.Fatal("LoadObserved accepted an unknown top-level key; adding an observed-state field would no longer be a rollback break")
+	} else if !strings.Contains(err.Error(), "aKeyThisReaderDoesNotKnow") {
+		t.Fatalf("LoadObserved error = %v, want it to name the unknown key", err)
+	}
+}
+
 func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)

@@ -49,7 +49,12 @@ type StartDecision struct {
 }
 
 type Plan struct {
-	Phase              model.Phase
+	Phase model.Phase
+	// QuiesceReason is empty unless this plan holds capacity at zero to drain.
+	// It is both the record surfaced to operators and the condition phase
+	// selection reads, so the reported reason can never disagree with the
+	// decision that produced it.
+	QuiesceReason      model.QuiesceReason
 	AdvertisedCapacity map[string]int
 	DesiredWorkers     map[string]int
 	Start              []StartDecision
@@ -86,6 +91,15 @@ func EffectiveMaximumConcurrentWorkers(resources config.Resources, desired model
 		return *desired.TemporaryCapacityOverride
 	}
 	return resources.MaximumConcurrentWorkers
+}
+
+// quiesce records why this plan drains. The first reason wins so that a
+// multi-pool reconcile reports its highest-priority cause deterministically
+// instead of whichever pool happened to be evaluated last.
+func (p *Plan) quiesce(reason model.QuiesceReason) {
+	if p.QuiesceReason == "" {
+		p.QuiesceReason = reason
+	}
 }
 
 // BuildPlan is pure: it computes a complete desired transition without
@@ -165,6 +179,7 @@ func BuildPlan(input PlanInput) Plan {
 		outstanding := applyOutstandingAssignments(&plan, input, workersByPool, targetIDs, activeWorkers)
 		if hasActiveWorkers(input.Workers) || outstanding || len(plan.Start) > 0 {
 			plan.Phase = model.PhaseDraining
+			plan.quiesce(model.QuiesceReasonOperatorDisabled)
 		} else {
 			plan.Phase = model.PhaseDisabled
 		}
@@ -174,12 +189,14 @@ func BuildPlan(input PlanInput) Plan {
 		outstanding := applyOutstandingAssignments(&plan, input, workersByPool, targetIDs, activeWorkers)
 		if busyWorkers > 0 || outstanding || len(plan.Start) > 0 {
 			plan.Phase = model.PhaseDraining
+			plan.quiesce(model.QuiesceReasonGamingActiveWork)
 			return plan
 		}
 		plan.StopDesktop = input.Desktop.DesktopRunning || input.Desktop.EngineReachable
 		plan.ShutdownWSL = input.Desktop.RunningWSLCount > 0
 		if plan.StopDesktop || plan.ShutdownWSL || hasActiveWorkers(input.Workers) {
 			plan.Phase = model.PhaseDraining
+			plan.quiesce(model.QuiesceReasonGamingHostTeardown)
 		} else {
 			plan.Phase = model.PhaseGaming
 		}
@@ -332,7 +349,6 @@ func BuildPlan(input PlanInput) Plan {
 	}
 
 	capacityDebt := busyWorkers > hostLimit
-	quiescing := false
 	advertisable := make(map[string]bool, len(targets))
 	type burstCandidate struct {
 		poolID      string
@@ -379,7 +395,7 @@ func BuildPlan(input PlanInput) Plan {
 					poolID: target.ID, maxCapacity: target.MaxCapacity, removable: removable,
 				})
 			} else {
-				quiescing = true
+				plan.quiesce(model.QuiesceReasonExcessWorkers)
 				for _, worker := range removable {
 					if excess == 0 {
 						break
@@ -422,7 +438,7 @@ func BuildPlan(input PlanInput) Plan {
 		if capacity != 0 {
 			continue
 		}
-		quiescing = true
+		plan.quiesce(model.QuiesceReasonAdvertisementBudgetExhausted)
 		advertisable[candidate.poolID] = false
 		if len(candidate.removable) > 0 {
 			plan.Remove = append(plan.Remove, candidate.removable[0])
@@ -491,9 +507,11 @@ func BuildPlan(input PlanInput) Plan {
 	for _, target := range targets {
 		plan.MemoryAffordable[target.ID] = affordableWorkerCount(memoryRemaining, target.EffectiveWorker(input.Config.Resources.Worker).Memory)
 	}
+	// A degraded plan still reports the quiesce reason it computed: a controller
+	// that is both wedged and degraded is exactly when the reason is needed.
 	if len(plan.Problems) > 0 {
 		plan.Phase = model.PhaseDegraded
-	} else if quiescing {
+	} else if plan.QuiesceReason != "" {
 		plan.Phase = model.PhaseDraining
 	} else {
 		plan.Phase = model.PhaseReady

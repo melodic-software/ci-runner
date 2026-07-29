@@ -1240,6 +1240,131 @@ func TestMemoryClampSignalFiresOnLegacyHostBasisToo(t *testing.T) {
 	}
 }
 
+func TestQuiesceReasonDistinguishesOperatorDrainFromConvergenceQuiesce(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		mutate     func(*PlanInput)
+		wantPhase  model.Phase
+		wantReason model.QuiesceReason
+	}{
+		{
+			name:       "operator disabled with active work",
+			mutate:     func(in *PlanInput) { in.Desired.Mode = model.ModeDisabled; in.Workers = idleWorkers("org", 1) },
+			wantPhase:  model.PhaseDraining,
+			wantReason: model.QuiesceReasonOperatorDisabled,
+		},
+		{
+			name: "gaming mode holds for busy work",
+			mutate: func(in *PlanInput) {
+				in.Desired.Mode = model.ModeGaming
+				in.Workers = []model.Worker{{ID: "busy", PoolID: "org", State: model.WorkerBusy}}
+			},
+			wantPhase:  model.PhaseDraining,
+			wantReason: model.QuiesceReasonGamingActiveWork,
+		},
+		{
+			name:       "gaming mode tears the host down",
+			mutate:     func(in *PlanInput) { in.Desired.Mode = model.ModeGaming },
+			wantPhase:  model.PhaseDraining,
+			wantReason: model.QuiesceReasonGamingHostTeardown,
+		},
+		{
+			name:       "enabled mode shrinks more excess workers than burst inventory retains",
+			mutate:     func(in *PlanInput) { in.Workers = idleWorkers("org", 3) },
+			wantPhase:  model.PhaseDraining,
+			wantReason: model.QuiesceReasonExcessWorkers,
+		},
+		{
+			name:       "enabled mode converged and ready",
+			mutate:     func(*PlanInput) {},
+			wantPhase:  model.PhaseReady,
+			wantReason: "",
+		},
+		{
+			name:       "disabled mode with nothing left to drain",
+			mutate:     func(in *PlanInput) { in.Desired.Mode = model.ModeDisabled },
+			wantPhase:  model.PhaseDisabled,
+			wantReason: "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input := healthyInput()
+			test.mutate(&input)
+
+			plan := BuildPlan(input)
+
+			if plan.Phase != test.wantPhase {
+				t.Fatalf("phase = %s, want %s", plan.Phase, test.wantPhase)
+			}
+			if plan.QuiesceReason != test.wantReason {
+				t.Fatalf("quiesce reason = %q, want %q", plan.QuiesceReason, test.wantReason)
+			}
+			if plan.Phase == model.PhaseDraining && plan.QuiesceReason == "" {
+				t.Fatal("a draining plan must always name why it drains")
+			}
+		})
+	}
+}
+
+// The #102 wedge shape: a lone excess worker is burst-eligible, but the
+// host-wide advertisement budget is already spent, so its pool falls back to
+// quiescence with capacity pinned at zero.
+func TestQuiesceReasonNamesAnExhaustedAdvertisementBudget(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Config.Resources.MaximumConcurrentWorkers = 2
+	input.Config.GitHub.Targets = []config.Target{
+		{ID: "org", MaxCapacity: 3, WarmIdle: 0, Priority: 0},
+		{ID: "build", MaxCapacity: 2, WarmIdle: 2, Priority: 1},
+	}
+	input.Pools = []PoolSnapshot{{TargetID: "org", Ready: true}, {TargetID: "build", Ready: true}}
+	input.Workers = idleWorkers("org", 1)
+
+	plan := BuildPlan(input)
+
+	if plan.AdvertisedCapacity["org"] != 0 {
+		t.Fatalf("advertised capacity = %#v, want the budget-starved pool held at zero", plan.AdvertisedCapacity)
+	}
+	if plan.Phase != model.PhaseDraining {
+		t.Fatalf("phase = %s, want draining", plan.Phase)
+	}
+	if plan.QuiesceReason != model.QuiesceReasonAdvertisementBudgetExhausted {
+		t.Fatalf("quiesce reason = %q, want %q", plan.QuiesceReason, model.QuiesceReasonAdvertisementBudgetExhausted)
+	}
+}
+
+// Phase selection gives problems priority over draining, so a wedged controller
+// can report "degraded". The reason must survive that overlay: the moment the
+// controller is both wedged and degraded is exactly when it is being diagnosed.
+func TestQuiesceReasonSurvivesTheDegradedPhaseOverlay(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Pools = []PoolSnapshot{{TargetID: "org", Ready: false}}
+	input.Workers = idleWorkers("org", 2)
+
+	plan := BuildPlan(input)
+
+	if plan.Phase != model.PhaseDegraded {
+		t.Fatalf("phase = %s, want degraded", plan.Phase)
+	}
+	if plan.QuiesceReason != model.QuiesceReasonExcessWorkers {
+		t.Fatalf("quiesce reason = %q, want the reason retained under a degraded overlay", plan.QuiesceReason)
+	}
+}
+
+func idleWorkers(poolID string, count int) []model.Worker {
+	workers := make([]model.Worker, 0, count)
+	for index := range count {
+		workers = append(workers, model.Worker{
+			ID: fmt.Sprintf("%s-idle-%d", poolID, index), PoolID: poolID, State: model.WorkerIdle,
+		})
+	}
+	return workers
+}
+
 func healthyInput() PlanInput {
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	return PlanInput{

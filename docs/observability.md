@@ -215,6 +215,44 @@ and `job.started` events without runner or job identities. `jobs.json` remains
 the durable exact-identity ledger for operator diagnostics and retains
 `jobStartedAt`, artifact start, completion, and finalization timestamps.
 
+## Why the controller is draining
+
+`observed.json` carries `quiesceReason` alongside `drainStartedAt` whenever the
+controller holds capacity at zero to drain, and omits the key entirely
+otherwise. Diagnosing a stuck `draining` phase previously required reading
+`plan.go`'s quiesce path, because observed state recorded only when the drain
+started, never why.
+
+The reason names the branch the plan actually took, not the intent behind it:
+an operator-disabled drain, a gaming-mode drain while work is active or while
+the host is being torn down, excess workers that cannot be represented as
+advertised burst capacity, or an exhausted host-wide advertisement budget. A
+mechanism name is deliberate — an operator setting `temporaryCapacityOverride`
+to zero converges through the same downscale branch as an automatic downscale,
+so a value implying "operator versus convergence" would misreport that case.
+
+The reason is also the condition phase selection reads, rather than a field
+written beside a separate boolean, so the reported reason cannot disagree with
+the decision that produced it. A degraded plan still reports the reason it
+computed: a controller that is both wedged and degraded is exactly when the
+reason is wanted.
+
+### Rollback cost of this field
+
+Unlike the pool `updatedAt` reuse described above, this change does add a
+top-level key, and the observed-state reader sets `DisallowUnknownFields`. A
+controller rolled back to a release predating this field cannot decode an
+`observed.json` that carries it: the reconciler quarantines the file and takes
+one forced capacity-zero recovery pass, and the CLI status and doctor surfaces
+that share the loader fail or report zero values until the file is rewritten.
+Quarantine also discards `drainStartedAt`, so the drain clock restarts.
+
+The exposure is bounded but not hypothetical — the documented rollback order
+drains before restoring the prior pair, which is precisely when the key is
+present. `TestObservedRejectsATopLevelKeyItDoesNotKnow` pins the mechanism so
+the cost stays a checked property; making observed-state decoding
+forward-tolerant is what would retire it.
+
 ## Cancellation and runner shutdown noise
 
 The stock one-job GitHub runner cancels its broker long-poll after a terminal

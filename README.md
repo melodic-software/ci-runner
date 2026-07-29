@@ -190,7 +190,7 @@ Mutable local state is separate:
 ```text
 %LOCALAPPDATA%\ci-runner\
   state\desired.json       # user-owned mode and temporary capacity override
-  state\observed.json      # controller heartbeat, pools, workers, and problems
+  state\observed.json      # controller heartbeat, pools, workers, problems, drain reason
   state\jobs.json          # exact job-to-artifact correlation
   state\restart-completed.json # last authenticated restart completion receipt
   secrets\                 # current-user DPAPI-protected App keys

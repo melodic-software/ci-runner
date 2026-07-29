@@ -1764,6 +1764,61 @@ type harness struct {
 	now time.Time
 }
 
+func TestObservedStateRecordsWhyTheControllerDrainsAndClearsItOnRecovery(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.workers = []model.Worker{
+		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
+		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
+		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
+	}
+
+	first, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Observed.Phase != model.PhaseDraining {
+		t.Fatalf("phase = %s, want draining", first.Observed.Phase)
+	}
+	if first.Observed.QuiesceReason != model.QuiesceReasonExcessWorkers {
+		t.Fatalf("quiesce reason = %q, want %q", first.Observed.QuiesceReason, model.QuiesceReasonExcessWorkers)
+	}
+	if first.Observed.DrainStartedAt == nil {
+		t.Fatal("a drain that names its reason must also stamp when it started")
+	}
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	third, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Observed.Phase != model.PhaseReady {
+		t.Fatalf("phase = %s, want ready once the pool converged", third.Observed.Phase)
+	}
+	if third.Observed.QuiesceReason != "" {
+		t.Fatalf("quiesce reason = %q, want it cleared once the controller is no longer draining", third.Observed.QuiesceReason)
+	}
+}
+
+func TestObservedStateSeparatesAnOperatorDrainFromAConvergenceQuiesce(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeDisabled)
+	harness.runtime.workers = []model.Worker{{ID: "idle", Name: "runner", PoolID: "org", RunnerID: 44, State: model.WorkerIdle}}
+
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Observed.Phase != model.PhaseDraining {
+		t.Fatalf("phase = %s, want draining", result.Observed.Phase)
+	}
+	if result.Observed.QuiesceReason != model.QuiesceReasonOperatorDisabled {
+		t.Fatalf("quiesce reason = %q, want the operator-requested drain to be distinguishable", result.Observed.QuiesceReason)
+	}
+}
+
 func newHarness(t *testing.T, mode model.Mode) *harness {
 	t.Helper()
 	store := statepkg.NewMemoryStore()
