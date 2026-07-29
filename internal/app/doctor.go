@@ -176,6 +176,14 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	return ExitOK
 }
 
+// listenerAcknowledgementPollWindows is how many listener poll timeouts of
+// non-convergence the grace window spans. A poll acknowledges the advertised
+// capacity only when it completes, and the cadence watcher cancels open polls
+// whenever reconciliation safety inputs change, so a churning fleet can cross
+// several poll windows with nothing wrong. A single window would assume the
+// first poll always completes, which a busy fleet routinely violates.
+const listenerAcknowledgementPollWindows = 3
+
 func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
 	const maximum = time.Duration(1<<63 - 1)
 	reconcile := cfg.Controller.ReconcileInterval.Duration
@@ -183,10 +191,15 @@ func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
 		return maximum
 	}
 	extra := 2 * reconcile
-	if cfg.GitHub.RequestTimeout.Duration > maximum-extra {
+	request := cfg.GitHub.RequestTimeout.Duration
+	if request > maximum/listenerAcknowledgementPollWindows {
 		return maximum
 	}
-	return cfg.GitHub.RequestTimeout.Duration + extra
+	polls := listenerAcknowledgementPollWindows * request
+	if polls > maximum-extra {
+		return maximum
+	}
+	return polls + extra
 }
 
 func validPhase(phase model.Phase) bool {

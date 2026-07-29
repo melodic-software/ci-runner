@@ -261,9 +261,55 @@ func TestObservedFreshnessLimitUsesConfiguredRequestsRetriesAndTargets(t *testin
 	}
 }
 
+// observedBusyFleetAcknowledgementLag is the longest benign acknowledgement lag
+// observed on a busy production fleet. The grace window must classify it as
+// healthy; a window that fails it degrades the doctor exit code on a known-good
+// state.
+const observedBusyFleetAcknowledgementLag = 129 * time.Second
+
+func TestListenerAcknowledgementGraceSpansConfiguredPollWindows(t *testing.T) {
+	t.Parallel()
+	cfg := doctorTestConfig()
+	got := listenerAcknowledgementGrace(cfg)
+	want := listenerAcknowledgementPollWindows*cfg.GitHub.RequestTimeout.Duration + 2*cfg.Controller.ReconcileInterval.Duration
+	if got != want {
+		t.Fatalf("listener acknowledgement grace = %s, want %s (%d x requestTimeout + 2 x reconcileInterval)",
+			got, want, listenerAcknowledgementPollWindows)
+	}
+	if got <= observedBusyFleetAcknowledgementLag {
+		t.Fatalf("listener acknowledgement grace = %s, want more than the observed benign busy-fleet lag %s",
+			got, observedBusyFleetAcknowledgementLag)
+	}
+}
+
+func TestListenerAcknowledgementGraceSaturatesInsteadOfOverflowing(t *testing.T) {
+	t.Parallel()
+	const maximum = time.Duration(1<<63 - 1)
+	for _, test := range []struct {
+		name      string
+		reconcile time.Duration
+		request   time.Duration
+	}{
+		{name: "reconcile-overflows", reconcile: maximum, request: time.Second},
+		{name: "poll-windows-overflow", reconcile: time.Second, request: maximum / 2},
+		{name: "sum-overflows", reconcile: maximum / 4, request: maximum / 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := doctorTestConfig()
+			cfg.Controller.ReconcileInterval = config.Duration{Duration: test.reconcile}
+			cfg.GitHub.RequestTimeout = config.Duration{Duration: test.request}
+			if got := listenerAcknowledgementGrace(cfg); got != maximum {
+				t.Fatalf("listener acknowledgement grace = %s, want saturation at %s", got, maximum)
+			}
+		})
+	}
+}
+
 func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	grace := listenerAcknowledgementGrace(doctorTestConfig())
 	for _, test := range []struct {
 		name       string
 		transition time.Time
@@ -271,7 +317,9 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		wantMarker string
 	}{
 		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
-		{name: "past-grace", transition: now.Add(-81 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
+		{name: "observed-busy-fleet-lag", transition: now.Add(-observedBusyFleetAcknowledgementLag), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "grace-boundary", transition: now.Add(-grace), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "past-grace", transition: now.Add(-(grace + time.Second)), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

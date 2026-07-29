@@ -194,10 +194,16 @@ reconcile errors, lifecycle-event timestamps, and repeated gaps before alerting.
 Capacity acknowledgement has its own transition signal. While a listener is
 accepting a new resource-driven capacity, the pool transition timestamp remains
 stable instead of resetting on each heartbeat. `host doctor` treats that state
-as healthy for one configured listener request timeout plus two reconciliation
-intervals; a transition still pending after that bounded grace is unhealthy.
-This reuses the existing schema-version-1 pool `updatedAt` field and does not
-change the rollback-readable observed-state shape.
+as healthy for three configured listener request timeouts plus two
+reconciliation intervals; a transition still pending after that bounded grace is
+unhealthy. Only a poll that runs to completion acknowledges the advertised
+capacity, and the cadence watcher cancels open polls whenever reconciliation
+safety inputs change, so a busy fleet can cross several poll windows before
+converging; the window spans more than one so that benign churn does not degrade
+the exit code, while a wedged listener still shows sustained, monotonically
+growing non-acknowledgement past it. This reuses the existing schema-version-1
+pool `updatedAt` field and does not change the rollback-readable observed-state
+shape.
 
 JIT registration, Docker start, validated job start, and finalization record
 bounded counters and event timestamps. Registration/start/finalization also
@@ -230,7 +236,7 @@ CPU, and both admission gates. Useful alerts include:
 
 - assigned capacity remaining above desired capacity for multiple reconciles;
 - advertised capacity at zero while enabled and neither gate is active;
-- unacknowledged capacity persisting beyond one listener request timeout plus
+- unacknowledged capacity persisting beyond three listener request timeouts plus
   two reconciliation intervals;
 - repeated reconcile errors or worker finalization runtime errors;
 - sustained resource-gate activation;
