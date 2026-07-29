@@ -387,7 +387,7 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	}
 	attached.Close()
 	attachedClosed = true
-	return model.Worker{ID: created.ID, AdapterID: created.ID, PoolID: request.PoolID, Name: request.Name, RunnerID: runnerID, State: model.WorkerStarting, StartedAt: startedAt}, nil
+	return model.Worker{ID: created.ID, AdapterID: created.ID, PoolID: request.PoolID, Name: request.Name, RunnerID: runnerID, State: model.WorkerStarting, StartedAt: startedAt, MemoryLimitBytes: int64(request.Limits.Memory)}, nil
 }
 
 func (r *Runtime) validateEngine(ctx context.Context) error {
@@ -506,6 +506,16 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 		worker.State = model.WorkerExited
 		return worker, nil
 	}
+	// Read the started memory limit before the state probe: a worker whose state
+	// read fails is still counted active, so it must already carry the limit it
+	// reserves against the budget. A limit that cannot be read is not fatal on its
+	// own - the worker keeps its real state and reserves its pool profile, the
+	// same fallback an unlimited container takes.
+	memoryLimit, err := r.readWorkerMemoryLimit(ctx, id)
+	if err != nil {
+		r.opts.OnError(fmt.Errorf("read worker %s memory limit; reserving the configured profile: %w", id, err))
+	}
+	worker.MemoryLimitBytes = memoryLimit
 	state, err := r.readWorkerState(ctx, id)
 	if err != nil {
 		return worker, fmt.Errorf("read worker %s state: %w", id, err)
@@ -519,6 +529,22 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 		return worker, fmt.Errorf("worker %s returned unsupported state %q", id, state)
 	}
 	return worker, nil
+}
+
+// readWorkerMemoryLimit reports the memory limit the engine recorded when the
+// container was created, which outlives any later change to the configured
+// worker profile. The container list summary carries no resource fields, so the
+// limit only comes back from an inspect. A zero or negative reading means the
+// engine reports the container as unlimited; callers fall back to the profile.
+func (r *Runtime) readWorkerMemoryLimit(ctx context.Context, id string) (int64, error) {
+	result, err := r.engine.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	if result.Container.HostConfig == nil || result.Container.HostConfig.Memory <= 0 {
+		return 0, nil
+	}
+	return result.Container.HostConfig.Memory, nil
 }
 
 func (r *Runtime) readWorkerState(ctx context.Context, id string) (_ string, resultErr error) {

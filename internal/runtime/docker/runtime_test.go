@@ -56,6 +56,12 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	if worker.State != model.WorkerStarting || worker.PoolID != "org" || worker.RunnerID != 99 {
 		t.Fatalf("worker = %#v", worker)
 	}
+	// Both worker producers report the limit the container actually holds, not the
+	// profile in force when it is read. The reservation itself reads the limit back
+	// from the next List, which is what survives a restart.
+	if worker.MemoryLimitBytes != 8<<30 {
+		t.Fatalf("memory limit = %d, want the requested 8GiB", worker.MemoryLimitBytes)
+	}
 	created := engine.createOptions()
 	if created.Config == nil || created.HostConfig == nil {
 		t.Fatal("missing container or host configuration")
@@ -660,6 +666,105 @@ func TestListReconstructsStateFromOfficialHookFile(t *testing.T) {
 	}
 }
 
+func TestListReportsTheMemoryLimitEachWorkerWasStartedWith(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("large-profile", "busy", "running")
+	engine.addContainer("small-profile", "idle", "running")
+	engine.addContainer("unlimited", "idle", "running")
+	engine.setMemoryLimit("large-profile", 4<<30)
+	engine.setMemoryLimit("small-profile", 2<<30)
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	limits := map[string]int64{}
+	for _, worker := range workers {
+		limits[worker.ID] = worker.MemoryLimitBytes
+	}
+	// Workers report what the engine recorded at creation, not the profile the
+	// running controller would apply now. A container the engine reports as
+	// unlimited reads zero so reservations fall back to the profile.
+	if limits["large-profile"] != 4<<30 || limits["small-profile"] != 2<<30 || limits["unlimited"] != 0 {
+		t.Fatalf("memory limits = %#v", limits)
+	}
+}
+
+func TestListReportsNoMemoryLimitWhenTheEngineReportsANonPositiveOne(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("negative", "idle", "running")
+	engine.setMemoryLimit("negative", -1)
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A negative reading must never reach the unsigned reservation sum, where it
+	// would saturate the budget and collapse advertised capacity fleet-wide.
+	if len(workers) != 1 || workers[0].MemoryLimitBytes != 0 {
+		t.Fatalf("workers = %#v", workers)
+	}
+}
+
+func TestListReportsNoMemoryLimitWhenTheResponseCarriesNoHostConfig(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("no-host-config", "idle", "running")
+	engine.setMemoryLimit("no-host-config", 4<<30)
+	engine.omitHostConfig("no-host-config")
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A response without the resource section must read as no limit rather than
+	// panicking the reconcile on a nil dereference.
+	if len(workers) != 1 || workers[0].MemoryLimitBytes != 0 {
+		t.Fatalf("workers = %#v", workers)
+	}
+}
+
+func TestListKeepsWorkerStateWhenTheMemoryLimitCannotBeRead(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("unreadable", "idle", "running")
+	engine.failInspect("unreadable", errors.New("engine refused inspect"))
+	var reported []error
+	options := testOptions(&memoryArtifacts{})
+	options.OnError = func(err error) { reported = append(reported, err) }
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An unreadable limit costs the reservation precision it would have added, and
+	// nothing else: the worker keeps the idle state its own probe reported instead
+	// of being forced to Starting, and the failure is still surfaced.
+	if len(workers) != 1 || workers[0].State != model.WorkerIdle || workers[0].MemoryLimitBytes != 0 {
+		t.Fatalf("workers = %#v", workers)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v, want the limit read surfaced once", reported)
+	}
+}
+
 func TestListAdoptsAllContainersBeforeStartingFinalizers(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -1042,17 +1147,20 @@ func testOptions(sink ArtifactSink) Options {
 }
 
 type fakeContainer struct {
-	id          string
-	labels      map[string]string
-	state       string
-	hookState   string
-	created     int64
-	stateReads  int
-	changeAfter int
-	changeTo    string
-	exitCode    int
-	waitResult  chan containertypes.WaitResponse
-	waitError   chan error
+	id             string
+	labels         map[string]string
+	state          string
+	hookState      string
+	created        int64
+	stateReads     int
+	changeAfter    int
+	changeTo       string
+	exitCode       int
+	memoryLimit    int64
+	omitHostConfig bool
+	inspectErr     error
+	waitResult     chan containertypes.WaitResponse
+	waitError      chan error
 }
 
 type fakeLogFrame struct {
@@ -1136,7 +1244,8 @@ func (e *fakeEngine) ContainerCreate(_ context.Context, options client.Container
 	id := "created-container"
 	e.containers[id] = &fakeContainer{
 		id: id, labels: cloneLabels(options.Config.Labels), state: "created", hookState: "idle", created: time.Now().Unix(),
-		waitResult: make(chan containertypes.WaitResponse, 1), waitError: make(chan error, 1),
+		memoryLimit: options.HostConfig.Memory,
+		waitResult:  make(chan containertypes.WaitResponse, 1), waitError: make(chan error, 1),
 	}
 	return client.ContainerCreateResult{ID: id}, nil
 }
@@ -1155,11 +1264,23 @@ func (e *fakeEngine) ContainerInspect(_ context.Context, id string, _ client.Con
 	if !ok {
 		return client.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("container missing")
 	}
-	return client.ContainerInspectResult{Container: containertypes.InspectResponse{
+	if container.inspectErr != nil {
+		return client.ContainerInspectResult{}, container.inspectErr
+	}
+	response := containertypes.InspectResponse{
 		ID:     id,
 		State:  &containertypes.State{Running: container.state == "running", ExitCode: container.exitCode},
 		Config: &containertypes.Config{Labels: cloneLabels(container.labels)},
-	}}, nil
+	}
+	// The engine always reports a HostConfig, carrying Memory 0 for an unlimited
+	// container rather than omitting the section. omitHostConfig models a response
+	// without one at all, which the memory read still has to tolerate.
+	if !container.omitHostConfig {
+		response.HostConfig = &containertypes.HostConfig{
+			Resources: containertypes.Resources{Memory: container.memoryLimit},
+		}
+	}
+	return client.ContainerInspectResult{Container: response}, nil
 }
 
 func (e *fakeEngine) ContainerStart(_ context.Context, id string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
@@ -1289,6 +1410,24 @@ func (e *fakeEngine) addContainer(id, hookState, state string) {
 		labels:     map[string]string{managedLabel: "true", hostLabel: "melo-desk-001", poolLabel: "org", workerNameLabel: id, startedAtLabel: time.Now().UTC().Format(time.RFC3339Nano)},
 		waitResult: make(chan containertypes.WaitResponse, 1), waitError: make(chan error, 1),
 	}
+}
+
+func (e *fakeEngine) setMemoryLimit(id string, limit int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].memoryLimit = limit
+}
+
+func (e *fakeEngine) omitHostConfig(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].omitHostConfig = true
+}
+
+func (e *fakeEngine) failInspect(id string, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].inspectErr = err
 }
 
 func (e *fakeEngine) changeStateAfterReads(id string, reads int, state string) {
