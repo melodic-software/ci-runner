@@ -285,22 +285,33 @@ func TestListenerAcknowledgementGraceSpansConfiguredPollWindows(t *testing.T) {
 func TestListenerAcknowledgementGraceSaturatesInsteadOfOverflowing(t *testing.T) {
 	t.Parallel()
 	const maximum = time.Duration(1<<63 - 1)
+	windows := time.Duration(listenerAcknowledgementPollWindows)
+	// The largest request timeout that still fits: each guard must let it
+	// through and return exact arithmetic. A guard that saturates here is
+	// inverted, and a product that wrapped would not match the expected value.
+	widestRequest := (maximum - 2*time.Second) / windows
 	for _, test := range []struct {
 		name      string
 		reconcile time.Duration
 		request   time.Duration
+		want      time.Duration
 	}{
-		{name: "reconcile-overflows", reconcile: maximum, request: time.Second},
-		{name: "poll-windows-overflow", reconcile: time.Second, request: maximum / 2},
-		{name: "sum-overflows", reconcile: maximum / 4, request: maximum / 4},
+		{name: "reconcile-doubling-overflows", reconcile: maximum, request: time.Second, want: maximum},
+		{name: "poll-window-product-overflows", reconcile: time.Second, request: maximum/windows + 1, want: maximum},
+		{name: "sum-overflows", reconcile: maximum / 4, request: maximum / windows, want: maximum},
+		{name: "widest-fitting-input-stays-exact", reconcile: time.Second, request: widestRequest, want: widestRequest*windows + 2*time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := doctorTestConfig()
 			cfg.Controller.ReconcileInterval = config.Duration{Duration: test.reconcile}
 			cfg.GitHub.RequestTimeout = config.Duration{Duration: test.request}
-			if got := listenerAcknowledgementGrace(cfg); got != maximum {
-				t.Fatalf("listener acknowledgement grace = %s, want saturation at %s", got, maximum)
+			got := listenerAcknowledgementGrace(cfg)
+			if got != test.want {
+				t.Fatalf("listener acknowledgement grace = %s, want %s", got, test.want)
+			}
+			if got <= 0 {
+				t.Fatalf("listener acknowledgement grace = %s, want a positive duration", got)
 			}
 		})
 	}
@@ -316,9 +327,10 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		wantCode   int
 		wantMarker string
 	}{
-		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "within-grace", transition: now.Add(-grace / 2), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
 		{name: "observed-busy-fleet-lag", transition: now.Add(-observedBusyFleetAcknowledgementLag), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
 		{name: "grace-boundary", transition: now.Add(-grace), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		// One tick past the window is the smallest lag the check must reject.
 		{name: "past-grace", transition: now.Add(-(grace + time.Second)), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
