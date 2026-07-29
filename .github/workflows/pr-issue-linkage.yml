@@ -23,3 +23,7 @@ jobs:
   pr-issue-linkage:
     permissions: {}
     uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@87fb95c3b05fa318b9dd8c2c164cc550071a1ccb # v0.7.0
+    with:
+      # Dependabot's generated PR bodies cannot carry the closing-keyword +
+      # "## Related" markers; exact-login exemption per the reusable's contract.
+      exempt-authors: dependabot[bot]
