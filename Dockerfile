@@ -74,8 +74,8 @@ ENV DOTNET_INSTALL_DIR=/home/runner/.dotnet \
     ImageOS=ubuntu24
 
 LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
-      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.335.1" \
-      org.opencontainers.image.base.digest="sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29" \
+      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.336.0" \
+      org.opencontainers.image.base.digest="sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda" \
       org.opencontainers.image.description="Ephemeral one-job GitHub Actions worker for ci-runner"
 
 # The upstream user is uid/gid 1001 and has passwordless sudo, matching the
