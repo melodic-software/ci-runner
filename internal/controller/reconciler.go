@@ -962,7 +962,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		phase = model.PhaseDegraded
 	}
 	observed := model.ObservedState{
-		SchemaVersion: 1, Phase: phase, HeartbeatAt: time.Now().UTC(), DrainStartedAt: drainStartedAt, Version: r.version,
+		SchemaVersion: 1, Phase: phase, HeartbeatAt: time.Now().UTC(), DrainStartedAt: drainStartedAt,
+		QuiesceReason: postPlan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
 		Problems: problems,

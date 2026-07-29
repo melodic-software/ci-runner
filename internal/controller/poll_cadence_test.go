@@ -753,6 +753,48 @@ func (s *notifyingStateStore) SaveObserved(ctx context.Context, observed model.O
 	return nil
 }
 
+// The long-poll checkpoint is the second observed-state writer. An operator
+// reading observed.json mid-incident is as likely to catch a checkpoint as a
+// full reconcile, so the reason has to survive both paths.
+func TestPollCheckpointCarriesTheQuiesceReason(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		plan       Plan
+		wantReason model.QuiesceReason
+	}{
+		{
+			name:       "draining plan",
+			plan:       Plan{Phase: model.PhaseDraining, QuiesceReason: model.QuiesceReasonAdvertisementBudgetExhausted},
+			wantReason: model.QuiesceReasonAdvertisementBudgetExhausted,
+		},
+		{
+			name:       "converged plan",
+			plan:       Plan{Phase: model.PhaseReady},
+			wantReason: "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			harness := newHarness(t, model.ModeEnabled)
+			now := time.Now().UTC()
+			plan := test.plan
+			plan.AdvertisedCapacity = map[string]int{}
+			plan.DesiredWorkers = map[string]int{}
+
+			checkpoint := harness.controller.pollCheckpoint(
+				model.ObservedState{}, nil, nil, model.ResourceSnapshot{}, model.PowerSnapshot{},
+				model.DesktopStatus{}, plan, now, nil,
+			)
+
+			if checkpoint.QuiesceReason != test.wantReason {
+				t.Fatalf("quiesce reason = %q, want %q", checkpoint.QuiesceReason, test.wantReason)
+			}
+		})
+	}
+}
+
 func waitForObserved(t *testing.T, saved <-chan model.ObservedState, predicate func(model.ObservedState) bool, message string) model.ObservedState {
 	t.Helper()
 	timer := time.NewTimer(time.Second)

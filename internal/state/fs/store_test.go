@@ -92,6 +92,57 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	}
 }
 
+// observed.json is read by operators during an incident, so quiesceReason has
+// to be on the wire under that exact key when the controller is draining, and
+// absent rather than empty or "none" when it is not.
+func TestObservedQuiesceReasonIsOnTheWireOnlyWhileDraining(t *testing.T) {
+	tests := []struct {
+		name       string
+		observed   model.ObservedState
+		wantOnWire bool
+	}{
+		{
+			name: "draining",
+			observed: model.ObservedState{
+				SchemaVersion: 1, Phase: model.PhaseDraining, HeartbeatAt: time.Now().UTC(),
+				QuiesceReason: model.QuiesceReasonAdvertisementBudgetExhausted,
+			},
+			wantOnWire: true,
+		},
+		{
+			name:     "ready",
+			observed: model.ObservedState{SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: time.Now().UTC()},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, directory := newTestStore(t)
+			ctx := context.Background()
+			if err := store.SaveObserved(ctx, test.observed); err != nil {
+				t.Fatalf("SaveObserved: %v", err)
+			}
+
+			contents, err := os.ReadFile(filepath.Join(directory, "observed.json"))
+			if err != nil {
+				t.Fatalf("read observed.json: %v", err)
+			}
+			if got := strings.Contains(string(contents), `"quiesceReason"`); got != test.wantOnWire {
+				t.Fatalf("quiesceReason present = %v, want %v in %s", got, test.wantOnWire, contents)
+			}
+
+			// The observed reader rejects unknown fields, so a round trip also
+			// proves the persisted key matches the struct tag exactly.
+			loaded, err := store.LoadObserved(ctx)
+			if err != nil {
+				t.Fatalf("LoadObserved: %v", err)
+			}
+			if loaded.QuiesceReason != test.observed.QuiesceReason {
+				t.Fatalf("quiesce reason = %q, want %q", loaded.QuiesceReason, test.observed.QuiesceReason)
+			}
+		})
+	}
+}
+
 func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)
