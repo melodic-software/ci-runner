@@ -230,7 +230,7 @@ jobs:
         with:
           node-version: 24.18.0
           package-manager-cache: false
-      - name: Test queue monitor and resumable release transaction
+      - name: Test workflow scripts
         run: node --test .github/scripts/*.test.cjs
       - name: Verify immutable dependency and publication contracts
         shell: pwsh
