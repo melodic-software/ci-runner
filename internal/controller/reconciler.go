@@ -1247,15 +1247,20 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 	return available - reserved
 }
 
-// observedPersistTimeout bounds every detached observed-state write. It is
-// sized against the reconcile loop's post-cancellation drain grace
-// (reconcileStepDrainGrace in internal/app, RequestTimeout + Retry.Maximum --
-// tens of seconds under any realistic configuration) so a wedged state lock
-// can never hold an unwinding Step past that grace and trip the abandoned-step
-// escalation. It is deliberately longer than diagnosticLogWriteTimeout: this
-// write must first acquire the very state lock whose contention is the failure
-// being recorded, where a log write contends with nothing.
-const observedPersistTimeout = 5 * time.Second
+// ObservedPersistTimeout bounds every detached observed-state write. Because
+// the write ignores cycle cancellation, this bound is also the longest a
+// cancelled Step can keep holding stepMu solely to finish persisting, so the
+// reconcile loop's post-cancellation drain grace budgets it as a term
+// (reconcileStepDrainGrace in internal/app) rather than assuming the
+// configured GitHub timeouts already exceed it -- configuration validation
+// requires those durations only to be positive, so a valid configuration can
+// set a grace far below this bound, and an unwinding Step that outlasts the
+// grace trips the abandoned-step escalation and exits the controller.
+//
+// It is deliberately longer than diagnosticLogWriteTimeout: this write must
+// first acquire the very state lock whose contention is the failure being
+// recorded, where a log write contends with nothing.
+const ObservedPersistTimeout = 5 * time.Second
 
 // persistObserved writes observed state on a context detached from cycle
 // cancellation, bounded by its own timeout.
@@ -1270,7 +1275,7 @@ const observedPersistTimeout = 5 * time.Second
 // holding the same lock every other writer takes -- so a detached write can
 // neither land partially nor interleave with another writer.
 func (r *Reconciler) persistObserved(ctx context.Context, observed model.ObservedState) error {
-	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), observedPersistTimeout)
+	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), ObservedPersistTimeout)
 	defer cancel()
 	return r.deps.State.SaveObserved(persistContext, observed)
 }

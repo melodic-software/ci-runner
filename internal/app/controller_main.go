@@ -574,12 +574,26 @@ func saturatingAddDuration(left, right time.Duration) time.Duration {
 // start the next one. RetryValue checks ctx.Err() before every attempt and
 // every backoff wait is context-cancellable (see internal/controller/retry.go),
 // so a well-behaved goroutine returns almost immediately after cancellation.
-// The only legitimate remaining delay is one more in-flight adapter call,
-// bounded by RequestTimeout, or a backoff sleep it was about to enter, bounded
-// by Retry.Maximum. Reusing those same watchdog-mechanism constants keeps this
+// One legitimate remaining delay is one more in-flight adapter call, bounded by
+// RequestTimeout, or a backoff sleep it was about to enter, bounded by
+// Retry.Maximum. Reusing those same watchdog-mechanism constants keeps this
 // grace period proportionate without introducing a new tunable.
+//
+// The other is the Step's observed-state write, which is deliberately detached
+// from cycle cancellation so the degraded phase and problem records explaining
+// an outage still land (see controller.persistObserved). Being detached, it
+// keeps running after the watchdog cancels -- and it takes the state lock,
+// exactly the resource whose contention it may be recording -- so its own bound
+// is a term here. Deriving the grace from the configured GitHub durations alone
+// would make it a function of values validated only for positivity: a valid
+// configuration can set RequestTimeout + Retry.Maximum below that bound, and
+// the Step would then be declared abandoned for finishing a write that was
+// going to return at its own deadline.
 func reconcileStepDrainGrace(cfg config.Config) time.Duration {
-	return cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration
+	return saturatingAddDuration(
+		saturatingAddDuration(cfg.GitHub.RequestTimeout.Duration, cfg.GitHub.Retry.Maximum.Duration),
+		controller.ObservedPersistTimeout,
+	)
 }
 
 // errReconcileStepAbandoned is returned by runControllerLoop when a

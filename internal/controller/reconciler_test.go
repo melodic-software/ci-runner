@@ -2524,8 +2524,8 @@ func TestPersistObservedDetachesFromCancellationButStaysBounded(t *testing.T) {
 	if !ok {
 		t.Fatal("observed write ran on a context with no deadline; a wedged state lock would block the cycle indefinitely")
 	}
-	if remaining := time.Until(deadline); remaining <= 0 || remaining > observedPersistTimeout {
-		t.Errorf("observed write deadline is %s away, want within (0, %s]", remaining, observedPersistTimeout)
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > ObservedPersistTimeout {
+		t.Errorf("observed write deadline is %s away, want within (0, %s]", remaining, ObservedPersistTimeout)
 	}
 }
 
