@@ -176,17 +176,54 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	return ExitOK
 }
 
+// listenerAcknowledgementConvergenceLegs counts the GitHub request paths a
+// capacity acknowledgement has to cross before this check can observe it: the
+// controller advertising the new capacity, and a later reconcile reading back
+// the pool state that acknowledges it.
+const listenerAcknowledgementConvergenceLegs = 2
+
+// listenerAcknowledgementGrace bounds how long a pool may sit with capacity
+// advertised but unacknowledged before the doctor calls the listener unhealthy.
+//
+// The acknowledgement is not a protocol signal -- the scale-set protocol never
+// acknowledges capacity back -- but this controller's own convergence check, so
+// the window has to cover the request path that convergence actually travels.
+// Each convergence leg is one full controller.RetryValue envelope: up to
+// Retry.MaxAttempts attempts, each capped at RequestTimeout, separated by
+// backoff waits sized at maxJitteredBackoff. So the bound is that complete
+// envelope per leg, derived from the configured retry policy rather than from
+// any observation of how long convergence has happened to take.
+//
+// It has to be the complete envelope, not a sample of it, because nothing else
+// in the doctor notices a poll that is still legitimately retrying: while a poll
+// is open, Reconciler.pollCheckpoint keeps writing observed state on the
+// reconcile cadence, so the heartbeat stays fresh for observedFreshnessLimit
+// while the pool transition timestamp this age measures stays deliberately
+// pinned. A window shorter than the retry policy therefore hard-faults a
+// listener whose configured retry sequence has not finished -- which is what
+// budgeting a single request with no retry allowance did, and what let benign
+// busy-fleet lag (2m9s, per the ci-runner-alignment audit's D4 finding) trip a
+// hard fault. Deriving from the policy contains that observation with wide
+// margin as a consequence, not as the calibration target.
+//
+// This is a bound on legitimate convergence, so it is unrelated to
+// observedFreshnessLimit's bound on heartbeat staleness and carries no
+// ordering against it: a transition legitimately spans several reconciles and
+// several retry envelopes, while pollCheckpoint refreshes the heartbeat every
+// reconcile interval. The cost of the wider window is detection latency, which
+// now scales with the configured retry policy. Detection itself is unchanged: a
+// wedged listener never acknowledges, so its lag grows monotonically past any
+// bounded window and still hard-faults.
 func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
-	const maximum = time.Duration(1<<63 - 1)
-	reconcile := cfg.Controller.ReconcileInterval.Duration
-	if reconcile > maximum/2 {
-		return maximum
-	}
-	extra := 2 * reconcile
-	if cfg.GitHub.RequestTimeout.Duration > maximum-extra {
-		return maximum
-	}
-	return cfg.GitHub.RequestTimeout.Duration + extra
+	return saturatingFreshnessDuration(
+		cfg.GitHub.RequestTimeout.Duration,
+		maxJitteredBackoff(cfg),
+		cfg.Controller.ReconcileInterval.Duration,
+		saturatingMulInt(
+			max(cfg.GitHub.Retry.MaxAttempts, 1),
+			listenerAcknowledgementConvergenceLegs,
+		),
+	)
 }
 
 func validPhase(phase model.Phase) bool {
@@ -204,28 +241,30 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 		cfg.GitHub.RequestTimeout.Duration,
 		cfg.GitHub.Retry.Maximum.Duration,
 		cfg.Controller.ReconcileInterval.Duration,
-		cfg.GitHub.Retry.MaxAttempts,
-		len(cfg.GitHub.Targets),
+		saturatingMulInt(
+			max(cfg.GitHub.Retry.MaxAttempts, 1),
+			max(len(cfg.GitHub.Targets), 1),
+		),
 	)
 }
 
-func saturatingFreshnessDuration(request, retryMaximum, reconcile time.Duration, attempts, targets int) time.Duration {
+// saturatingFreshnessDuration bounds retryUnits attempts of a retryable GitHub
+// request -- each costing request plus one retryBackoff wait -- plus the two
+// reconcile intervals a caller needs to observe the result, clamping to the
+// largest representable time.Duration instead of overflowing. Callers compose
+// retryUnits from their own attempt and repetition counts.
+func saturatingFreshnessDuration(request, retryBackoff, reconcile time.Duration, retryUnits int) time.Duration {
 	const maximum = time.Duration(1<<63 - 1)
-	attempts = max(attempts, 1)
-	targets = max(targets, 1)
+	retryUnits = max(retryUnits, 1)
 	perAttempt := request
-	if retryMaximum > maximum-perAttempt {
+	if retryBackoff > maximum-perAttempt {
 		return maximum
 	}
-	perAttempt += retryMaximum
-	if perAttempt > maximum/time.Duration(attempts) {
+	perAttempt += retryBackoff
+	if perAttempt > maximum/time.Duration(retryUnits) {
 		return maximum
 	}
-	result := perAttempt * time.Duration(attempts)
-	if result > maximum/time.Duration(targets) {
-		return maximum
-	}
-	result *= time.Duration(targets)
+	result := perAttempt * time.Duration(retryUnits)
 	if reconcile > maximum/2 || result > maximum-2*reconcile {
 		return maximum
 	}
