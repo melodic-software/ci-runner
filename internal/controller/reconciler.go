@@ -1247,20 +1247,31 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 	return available - reserved
 }
 
-// ObservedPersistTimeout bounds every detached observed-state write. Because
-// the write ignores cycle cancellation, this bound is also the longest a
-// cancelled Step can keep holding stepMu solely to finish persisting, so the
-// reconcile loop's post-cancellation drain grace budgets it as a term
-// (reconcileStepDrainGrace in internal/app) rather than assuming the
-// configured GitHub timeouts already exceed it -- configuration validation
-// requires those durations only to be positive, so a valid configuration can
-// set a grace far below this bound, and an unwinding Step that outlasts the
-// grace trips the abandoned-step escalation and exits the controller.
-//
-// It is deliberately longer than diagnosticLogWriteTimeout: this write must
-// first acquire the very state lock whose contention is the failure being
-// recorded, where a log write contends with nothing.
+// ObservedPersistTimeout bounds a single detached observed-state write. It is
+// deliberately longer than diagnosticLogWriteTimeout: this write must first
+// acquire the very state lock whose contention is the failure being recorded,
+// where a log write contends with nothing.
 const ObservedPersistTimeout = 5 * time.Second
+
+// StepDetachedPersistDrain bounds the total time one cancelled Step can spend
+// finishing detached observed-state writes while it still holds stepMu.
+// internal/app's reconcileStepDrainGrace budgets it, because these writes
+// ignore cycle cancellation by design and so keep running after the watchdog
+// cancels; a grace that did not cover them would declare the Step abandoned
+// for completing writes that were going to return at their own deadlines.
+//
+// Three such writes can run in series on one Step's unwind, and each takes the
+// state lock, so a wedged lock costs every one of them its full bound:
+//
+//   - step's pre-poll checkpoint, written when any pool is ready;
+//   - one cadence checkpoint -- watchPollCadence returns at its next ctx.Done()
+//     select, so at most one write survives cancellation, and step joins that
+//     goroutine on pollWatchDone before it continues, making the write serial
+//     with the two around it rather than concurrent;
+//   - step's closing observed-state write.
+//
+// A new detached persist call site therefore has to raise this count.
+const StepDetachedPersistDrain = 3 * ObservedPersistTimeout
 
 // persistObserved writes observed state on a context detached from cycle
 // cancellation, bounded by its own timeout.
