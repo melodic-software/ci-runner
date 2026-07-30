@@ -202,10 +202,25 @@ reconcile errors, lifecycle-event timestamps, and repeated gaps before alerting.
 Capacity acknowledgement has its own transition signal. While a listener is
 accepting a new resource-driven capacity, the pool transition timestamp remains
 stable instead of resetting on each heartbeat. `host doctor` treats that state
-as healthy for one configured listener request timeout plus two reconciliation
-intervals; a transition still pending after that bounded grace is unhealthy.
+as healthy for a bounded grace window, and a transition still pending after it
+is unhealthy — a non-advisory fault that degrades the exit code, because a
+listener that never acknowledges shows sustained, monotonically growing lag.
 This reuses the existing schema-version-1 pool `updatedAt` field and does not
 change the rollback-readable observed-state shape.
+
+The window budgets one full request-retry envelope
+(`github.requestTimeout` + `github.retry.maximum`) for each of the two request
+paths an acknowledgement crosses — the controller advertising capacity, and a
+later reconcile reading back the state that acknowledges it — plus two
+reconciliation intervals. The acknowledgement is not a protocol signal (the
+scale-set protocol never acknowledges capacity back) but this controller's own
+convergence check, so the window has to cover the request path convergence
+actually travels. Budgeting a single request with no retry allowance is what
+previously made benign busy-fleet lag trip a hard fault: under load those
+requests retry, and the window had no room for even one backoff. The sizing
+stays well inside the observed-state freshness limit above, whose full
+attempt-and-target budget would be too loose to preserve this check's
+defect-signal value.
 
 JIT registration, Docker start, validated job start, and finalization record
 bounded counters and event timestamps. Registration/start/finalization also
@@ -238,8 +253,8 @@ CPU, and both admission gates. Useful alerts include:
 
 - assigned capacity remaining above desired capacity for multiple reconciles;
 - advertised capacity at zero while enabled and neither gate is active;
-- unacknowledged capacity persisting beyond one listener request timeout plus
-  two reconciliation intervals;
+- unacknowledged capacity persisting beyond the acknowledgement grace window
+  described above;
 - repeated reconcile errors or worker finalization runtime errors;
 - sustained resource-gate activation;
 - recurring `memory-clamped-capacity` log lines while a `workerMemoryBudget`

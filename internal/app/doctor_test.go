@@ -261,6 +261,60 @@ func TestObservedFreshnessLimitUsesConfiguredRequestsRetriesAndTargets(t *testin
 	}
 }
 
+func TestListenerAcknowledgementGraceBudgetsARetryEnvelopePerConvergenceLeg(t *testing.T) {
+	t.Parallel()
+	cfg := doctorTestConfig()
+	got := listenerAcknowledgementGrace(cfg)
+	want := listenerAcknowledgementConvergenceLegs*(70*time.Second+time.Minute) + 2*5*time.Second
+	if got != want {
+		t.Fatalf("listener acknowledgement grace = %s, want %s", got, want)
+	}
+
+	// The window has to move with the retry budget, not just the request
+	// timeout: budgeting a request while ignoring its backoff is what made
+	// benign busy-fleet lag look like a fault.
+	widerRetry := doctorTestConfig()
+	widerRetry.GitHub.Retry.Maximum = config.Duration{Duration: 2 * time.Minute}
+	if wider := listenerAcknowledgementGrace(widerRetry); wider <= got {
+		t.Fatalf("grace with a larger retry maximum = %s, want more than %s", wider, got)
+	}
+
+	// It must still stay well inside the sibling freshness bound; matching that
+	// one would spend this check's defect-signal value.
+	if freshness := observedFreshnessLimit(cfg); got >= freshness {
+		t.Fatalf("grace = %s, want it to stay under the observed freshness limit %s", got, freshness)
+	}
+}
+
+// A wedged listener never acknowledges, so its lag grows without bound. Widening
+// the window delays that verdict; it must not remove it.
+func TestListenerAcknowledgementStaysAHardFaultForAWedgedListener(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	grace := listenerAcknowledgementGrace(doctorTestConfig())
+
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+	observed := healthyDoctorObserved(now, model.PhaseReady)
+	observed.Pools[0].CapacityAcknowledged = false
+	observed.Pools[0].UpdatedAt = now.Add(-10 * grace)
+	_ = store.SaveObserved(context.Background(), observed)
+
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseReady, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitDegraded {
+		t.Fatalf("doctor exit code = %d, want %d (sustained non-acknowledgement must stay a hard fault)\n%s", code, ExitDegraded, out.String())
+	}
+	if !strings.Contains(out.String(), "[FAIL] github-listener/organization") {
+		t.Fatalf("doctor output missing the listener failure:\n%s", out.String())
+	}
+}
+
 func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -271,7 +325,12 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		wantMarker string
 	}{
 		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
-		{name: "past-grace", transition: now.Add(-81 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
+		// The one benign busy-fleet acknowledgement lag on record (ci-runner
+		// alignment audit, D4). It exceeded the old window and degraded the exit
+		// code; containing it is the whole point of the widened derivation, so it
+		// is pinned as a case rather than left implied by the boundary below.
+		{name: "benign-busy-fleet-lag", transition: now.Add(-129 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "past-grace", transition: now.Add(-271 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

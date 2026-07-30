@@ -176,17 +176,44 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	return ExitOK
 }
 
+// listenerAcknowledgementConvergenceLegs budgets the two GitHub request paths a
+// capacity acknowledgement has to cross before this check can observe it: the
+// controller advertising the new capacity, and a later reconcile reading back
+// the pool state that acknowledges it. Each leg gets one full retry envelope,
+// because a busy fleet is exactly when those requests retry.
+const listenerAcknowledgementConvergenceLegs = 2
+
+// listenerAcknowledgementGrace bounds how long a pool may sit with capacity
+// advertised but unacknowledged before the doctor calls the listener unhealthy.
+//
+// The acknowledgement is not a protocol signal -- the scale-set protocol never
+// acknowledges capacity back -- but this controller's own convergence check, so
+// the window has to cover the request path that convergence actually travels.
+// It previously budgeted a single request timeout with no retry allowance at
+// all, while observedFreshnessLimit, computing a sibling bound over the same
+// request path, budgets the full retry envelope. That asymmetry is why benign
+// busy-fleet lag tripped a hard fault: under load those requests retry, and the
+// window had no room for even one backoff.
+//
+// Sizing sits deliberately between the two: one retry envelope per convergence
+// leg, rather than the freshness limit's full attempt budget across every
+// target, which would be far too loose to keep this check's defect-signal
+// value. A wedged listener never acknowledges, so its lag grows monotonically
+// past any bounded window and still hard-faults.
+//
+// Calibrated against the one benign busy-fleet observation on record (2m9s, per
+// the ci-runner-alignment audit's D4 finding, ~1.6x the old window), which this
+// contains with roughly 2x headroom. That is a single data point, not a
+// distribution: if a benign observation ever lands beyond this window, re-derive
+// from the distribution rather than widening the multiplier again.
 func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
-	const maximum = time.Duration(1<<63 - 1)
-	reconcile := cfg.Controller.ReconcileInterval.Duration
-	if reconcile > maximum/2 {
-		return maximum
-	}
-	extra := 2 * reconcile
-	if cfg.GitHub.RequestTimeout.Duration > maximum-extra {
-		return maximum
-	}
-	return cfg.GitHub.RequestTimeout.Duration + extra
+	return saturatingFreshnessDuration(
+		cfg.GitHub.RequestTimeout.Duration,
+		cfg.GitHub.Retry.Maximum.Duration,
+		cfg.Controller.ReconcileInterval.Duration,
+		listenerAcknowledgementConvergenceLegs,
+		1,
+	)
 }
 
 func validPhase(phase model.Phase) bool {
