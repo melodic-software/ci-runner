@@ -387,14 +387,10 @@ const reconcileStepJITBudgetFloorWorkers = 64
 // retryable operations per target, multiply by the per-attempt cap and the
 // attempt count to upper bound one full sweep.
 //
-// Each of those backoff waits is not itself capped at bare Retry.Maximum:
-// BackoffPolicy.delay (internal/controller/retry.go) applies jitter after
-// capping the base delay to Maximum, drawing uniformly from
-// [1-JitterRatio, 1+JitterRatio], so a single policy-compliant wait can reach
-// Maximum*(1+JitterRatio) — up to nearly 2x Maximum when JitterRatio is at its
-// validated ceiling of 1. Every retry-budget calculation below therefore uses
-// that jittered worst-case delay (maxJitteredBackoff), not bare Retry.Maximum,
-// so a legitimately jittered retry loop can never exceed this deadline.
+// Each of those backoff waits is not itself capped at bare Retry.Maximum, so
+// every retry-budget calculation below sizes them with maxJitteredBackoff (see
+// its doc comment) rather than Retry.Maximum, leaving a legitimately jittered
+// retry loop unable to exceed this deadline.
 //
 // Step's worker-start section also calls CreateJITConfig once per worker it
 // starts, each likewise run through RetryValue for up to Retry.MaxAttempts
@@ -492,9 +488,7 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	registrationCheckOps := reconcileStepRegistrationCheckOpsPerWorker * staticWorkerCap
 	totalOps := saturatingAddInt(stepOps, saturatingAddInt(jitOps, saturatingAddInt(retirementOps, registrationCheckOps)))
 	totalRetryUnits := saturatingMulInt(totalOps, attempts)
-	maxJitteredBackoff := cfg.GitHub.Retry.Maximum.Duration +
-		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
-	perAttemptBudget := cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff
+	perAttemptBudget := cfg.GitHub.RequestTimeout.Duration + maxJitteredBackoff(cfg)
 	retryBudget := saturatingScaleDuration(perAttemptBudget, totalRetryUnits)
 	githubBudget := saturatingAddDuration(retryBudget, retryBudget/2)
 	desktopBudget := saturatingAddDuration(
@@ -507,6 +501,20 @@ func reconcileStepTimeout(cfg config.Config, effectiveMaxConcurrentWorkers int) 
 	idleConfirmationWaits := saturatingMulInt(reconcileStepIdleConfirmationWaitsPerWorker+reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker, staticWorkerCap)
 	idleConfirmationBudget := saturatingScaleDuration(cfg.Drain.IdleConfirmationWindow.Duration, idleConfirmationWaits)
 	return saturatingAddDuration(saturatingAddDuration(githubBudget, desktopBudget), idleConfirmationBudget)
+}
+
+// maxJitteredBackoff is the longest single policy-compliant backoff wait a
+// GitHub retry loop can take. A wait is not capped at bare Retry.Maximum:
+// BackoffPolicy.delay (internal/controller/retry.go) applies jitter AFTER
+// capping the base delay to Maximum, drawing uniformly from
+// [1-JitterRatio, 1+JitterRatio], so one wait can reach
+// Maximum*(1+JitterRatio) — up to nearly 2x Maximum when JitterRatio is at its
+// validated ceiling of 1. Any bound that must not expire during a legitimate
+// retry sequence therefore has to size its waits from this value, never from
+// Retry.Maximum.
+func maxJitteredBackoff(cfg config.Config) time.Duration {
+	return cfg.GitHub.Retry.Maximum.Duration +
+		time.Duration(float64(cfg.GitHub.Retry.Maximum.Duration)*cfg.GitHub.Retry.JitterRatio)
 }
 
 // saturatingMulInt multiplies two non-negative ints, clamping to math.MaxInt

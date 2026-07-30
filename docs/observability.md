@@ -208,19 +208,33 @@ listener that never acknowledges shows sustained, monotonically growing lag.
 This reuses the existing schema-version-1 pool `updatedAt` field and does not
 change the rollback-readable observed-state shape.
 
-The window budgets one full request-retry envelope
-(`github.requestTimeout` + `github.retry.maximum`) for each of the two request
-paths an acknowledgement crosses — the controller advertising capacity, and a
-later reconcile reading back the state that acknowledges it — plus two
-reconciliation intervals. The acknowledgement is not a protocol signal (the
-scale-set protocol never acknowledges capacity back) but this controller's own
-convergence check, so the window has to cover the request path convergence
-actually travels. Budgeting a single request with no retry allowance is what
-previously made benign busy-fleet lag trip a hard fault: under load those
-requests retry, and the window had no room for even one backoff. The sizing
-stays well inside the observed-state freshness limit above, whose full
-attempt-and-target budget would be too loose to preserve this check's
-defect-signal value.
+The window is derived from the configured retry policy. An acknowledgement
+crosses two request paths — the controller advertising capacity, and a later
+reconcile reading back the state that acknowledges it — and each is a complete
+retry envelope: up to `github.retry.maxAttempts` attempts, each capped at
+`github.requestTimeout`, separated by backoff waits of
+`github.retry.maximum` × (1 + `github.retry.jitterRatio`), since jitter is
+applied after the backoff base is capped. The window budgets that full envelope
+per path, plus two reconciliation intervals.
+
+The acknowledgement is not a protocol signal (the scale-set protocol never
+acknowledges capacity back) but this controller's own convergence check, so the
+window has to cover the request path convergence actually travels — and it has
+to cover all of it, because nothing else in `host doctor` notices a poll that is
+still legitimately retrying. While a poll is open the controller keeps writing
+observed state on the reconciliation cadence, so the heartbeat stays fresh while
+the pool transition timestamp stays deliberately pinned. Budgeting less than the
+retry policy therefore hard-faults a listener whose configured retry sequence
+has not finished, which is what previously made benign busy-fleet lag trip a
+hard fault.
+
+The cost is detection latency, which now scales with the retry policy; raising
+`github.retry.maxAttempts` or `github.retry.maximum` widens this window too.
+Detection itself is unaffected: a wedged listener never acknowledges, so its lag
+grows past any bounded window. This bound is unrelated to the observed-state
+freshness limit above — one bounds pending convergence across several
+reconciles, the other bounds heartbeat staleness — so neither constrains the
+other and the grace is expected to be the larger.
 
 JIT registration, Docker start, validated job start, and finalization record
 bounded counters and event timestamps. Registration/start/finalization also

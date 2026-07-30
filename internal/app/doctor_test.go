@@ -261,28 +261,56 @@ func TestObservedFreshnessLimitUsesConfiguredRequestsRetriesAndTargets(t *testin
 	}
 }
 
-func TestListenerAcknowledgementGraceBudgetsARetryEnvelopePerConvergenceLeg(t *testing.T) {
+func TestListenerAcknowledgementGraceBudgetsAFullRetryEnvelopePerConvergenceLeg(t *testing.T) {
 	t.Parallel()
 	cfg := doctorTestConfig()
 	got := listenerAcknowledgementGrace(cfg)
-	want := listenerAcknowledgementConvergenceLegs*(70*time.Second+time.Minute) + 2*5*time.Second
+	want := listenerAcknowledgementConvergenceLegs*6*(70*time.Second+time.Minute) + 2*5*time.Second
 	if got != want {
 		t.Fatalf("listener acknowledgement grace = %s, want %s", got, want)
 	}
 
-	// The window has to move with the retry budget, not just the request
-	// timeout: budgeting a request while ignoring its backoff is what made
-	// benign busy-fleet lag look like a fault.
-	widerRetry := doctorTestConfig()
-	widerRetry.GitHub.Retry.Maximum = config.Duration{Duration: 2 * time.Minute}
-	if wider := listenerAcknowledgementGrace(widerRetry); wider <= got {
-		t.Fatalf("grace with a larger retry maximum = %s, want more than %s", wider, got)
+	// Every term of the retry policy has to move the window, because a poll that
+	// exhausts any of them is still legitimately retrying. Budgeting fewer
+	// attempts than are configured is what let a benign busy-fleet poll trip a
+	// hard fault.
+	for _, test := range []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{name: "more-attempts", mutate: func(c *config.Config) { c.GitHub.Retry.MaxAttempts = 12 }},
+		{name: "larger-backoff-maximum", mutate: func(c *config.Config) {
+			c.GitHub.Retry.Maximum = config.Duration{Duration: 2 * time.Minute}
+		}},
+		// Jitter is applied after the backoff base is capped at Maximum, so a
+		// policy-compliant wait can exceed bare Maximum.
+		{name: "positive-jitter", mutate: func(c *config.Config) { c.GitHub.Retry.JitterRatio = 0.2 }},
+		{name: "longer-request-timeout", mutate: func(c *config.Config) {
+			c.GitHub.RequestTimeout = config.Duration{Duration: 2 * time.Minute}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			wider := doctorTestConfig()
+			test.mutate(&wider)
+			if widened := listenerAcknowledgementGrace(wider); widened <= got {
+				t.Fatalf("grace = %s, want more than the baseline %s", widened, got)
+			}
+		})
 	}
+}
 
-	// It must still stay well inside the sibling freshness bound; matching that
-	// one would spend this check's defect-signal value.
-	if freshness := observedFreshnessLimit(cfg); got >= freshness {
-		t.Fatalf("grace = %s, want it to stay under the observed freshness limit %s", got, freshness)
+// The grace bounds one pending capacity transition; observedFreshnessLimit bounds
+// heartbeat staleness. A transition legitimately spans several reconciles and
+// several retry envelopes, while Reconciler.pollCheckpoint refreshes the
+// heartbeat every reconcile interval, so the grace is deliberately the larger of
+// the two and neither bound constrains the other.
+func TestListenerAcknowledgementGraceIsIndependentOfObservedFreshness(t *testing.T) {
+	t.Parallel()
+	cfg := doctorTestConfig()
+	grace := listenerAcknowledgementGrace(cfg)
+	if freshness := observedFreshnessLimit(cfg); grace <= freshness {
+		t.Fatalf("grace = %s, want more than the single-envelope freshness limit %s", grace, freshness)
 	}
 }
 
@@ -318,6 +346,7 @@ func TestListenerAcknowledgementStaysAHardFaultForAWedgedListener(t *testing.T) 
 func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	grace := listenerAcknowledgementGrace(doctorTestConfig())
 	for _, test := range []struct {
 		name       string
 		transition time.Time
@@ -328,9 +357,11 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		// The one benign busy-fleet acknowledgement lag on record (ci-runner
 		// alignment audit, D4). It exceeded the old window and degraded the exit
 		// code; containing it is the whole point of the widened derivation, so it
-		// is pinned as a case rather than left implied by the boundary below.
+		// is pinned as an absolute case rather than left implied by the boundary
+		// below.
 		{name: "benign-busy-fleet-lag", transition: now.Add(-129 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
-		{name: "past-grace", transition: now.Add(-271 * time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
+		{name: "at-grace", transition: now.Add(-grace), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
+		{name: "past-grace", transition: now.Add(-grace - time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
