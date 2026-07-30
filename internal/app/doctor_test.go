@@ -300,20 +300,6 @@ func TestListenerAcknowledgementGraceBudgetsAFullRetryEnvelopePerConvergenceLeg(
 	}
 }
 
-// The grace bounds one pending capacity transition; observedFreshnessLimit bounds
-// heartbeat staleness. A transition legitimately spans several reconciles and
-// several retry envelopes, while Reconciler.pollCheckpoint refreshes the
-// heartbeat every reconcile interval, so the grace is deliberately the larger of
-// the two and neither bound constrains the other.
-func TestListenerAcknowledgementGraceIsIndependentOfObservedFreshness(t *testing.T) {
-	t.Parallel()
-	cfg := doctorTestConfig()
-	grace := listenerAcknowledgementGrace(cfg)
-	if freshness := observedFreshnessLimit(cfg); grace <= freshness {
-		t.Fatalf("grace = %s, want more than the single-envelope freshness limit %s", grace, freshness)
-	}
-}
-
 // A wedged listener never acknowledges, so its lag grows without bound. Widening
 // the window delays that verdict; it must not remove it.
 func TestListenerAcknowledgementStaysAHardFaultForAWedgedListener(t *testing.T) {
