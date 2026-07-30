@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -60,10 +61,15 @@ func NewPlatformLocker(scope string) (Locker, error) {
 	return &WindowsMutex{name: name, sid: current.Uid, local: local}, nil
 }
 
+// Lock passes through two waits with different holder classes: first the
+// in-process token shared by every locker on this scope, then the named Win32
+// mutex shared with every other process on this host. Each stage times itself
+// and attributes its own failure so the wait that actually blocked is named.
 func (m *WindowsMutex) Lock(ctx context.Context) (func() error, error) {
+	tokenWaitStarted := time.Now()
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, lockWaitError(LockWaitInProcess, tokenWaitStarted, ctx.Err())
 	case <-m.local:
 	}
 	releaseLocal := true
@@ -122,11 +128,22 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 		result <- windowsMutexAcquisition{err: err}
 		return
 	}
+	// CreateMutexW returns a usable handle to the pre-existing object and sets
+	// ERROR_ALREADY_EXISTS whenever another process created the mutex first, and
+	// x/sys reports that as an error alongside the valid handle. Treating it as a
+	// failure defeats the entire point of a named mutex: every process but the
+	// first aborted here instead of entering the wait below, so nothing ever
+	// serialized across processes and the handle leaked. Opening the existing
+	// object ignores the security descriptor above and inherits the creator's --
+	// the same DACL, because the name is salted with the current user's SID.
 	handle, err := windows.CreateMutex(&attributes, false, name)
-	if err != nil {
+	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		result <- windowsMutexAcquisition{err: fmt.Errorf("CreateMutexW: %w", err)}
 		return
 	}
+	// Timed from here, after the handle exists, so the reported duration covers
+	// only the kernel wait and never the earlier in-process token wait.
+	mutexWaitStarted := time.Now()
 	for {
 		waitResult, waitErr := windows.WaitForSingleObject(handle, mutexPollMS)
 		switch waitResult {
@@ -148,7 +165,8 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 			return
 		case waitTimeout:
 			if err := ctx.Err(); err != nil {
-				result <- windowsMutexAcquisition{err: errors.Join(err, closeWindowsHandle(handle))}
+				attributed := lockWaitError(LockWaitWin32Mutex, mutexWaitStarted, err)
+				result <- windowsMutexAcquisition{err: errors.Join(attributed, closeWindowsHandle(handle))}
 				return
 			}
 		default:

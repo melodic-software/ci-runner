@@ -467,7 +467,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pollWatchDone chan pollCadenceResult
 	)
 	if containsReadyPool(pools) {
-		checkpointErr := r.deps.State.SaveObserved(ctx, checkpoint)
+		checkpointErr := r.persistObserved(ctx, checkpoint)
 		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
 		// separate per-request deadline would expire this cadence watcher during a
 		// normal multi-attempt poll retry sequence, so none is set here.
@@ -967,7 +967,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
 		Problems: problems,
 	}
-	if saveErr := r.deps.State.SaveObserved(ctx, observed); saveErr != nil {
+	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
 	return ReconcileResult{
@@ -1245,6 +1245,50 @@ func availableAfterMemoryReservation(available, reserved uint64) uint64 {
 		return 0
 	}
 	return available - reserved
+}
+
+// ObservedPersistTimeout bounds a single detached observed-state write. It is
+// deliberately longer than diagnosticLogWriteTimeout: this write must first
+// acquire the very state lock whose contention is the failure being recorded,
+// where a log write contends with nothing.
+const ObservedPersistTimeout = 5 * time.Second
+
+// StepDetachedPersistDrain bounds the total time one cancelled Step can spend
+// finishing detached observed-state writes while it still holds stepMu.
+// internal/app's reconcileStepDrainGrace budgets it, because these writes
+// ignore cycle cancellation by design and so keep running after the watchdog
+// cancels; a grace that did not cover them would declare the Step abandoned
+// for completing writes that were going to return at their own deadlines.
+//
+// Three such writes can run in series on one Step's unwind, and each takes the
+// state lock, so a wedged lock costs every one of them its full bound:
+//
+//   - step's pre-poll checkpoint, written when any pool is ready;
+//   - one cadence checkpoint -- watchPollCadence returns at its next ctx.Done()
+//     select, so at most one write survives cancellation, and step joins that
+//     goroutine on pollWatchDone before it continues, making the write serial
+//     with the two around it rather than concurrent;
+//   - step's closing observed-state write.
+//
+// A new detached persist call site therefore has to raise this count.
+const StepDetachedPersistDrain = 3 * ObservedPersistTimeout
+
+// persistObserved writes observed state on a context detached from cycle
+// cancellation, bounded by its own timeout.
+//
+// The cycle context is precisely the one a watchdog cancellation or a wedged
+// state lock has already cancelled, so persisting on it means the degraded
+// phase and the problem records explaining that failure never land:
+// observed.json silently keeps its pre-incident contents and doctor and
+// monitoring report a healthy fleet through the outage. Detaching costs
+// nothing in write safety -- statefs.Store.save stages a temporary file, syncs
+// it, replaces the target atomically and syncs the directory, all while
+// holding the same lock every other writer takes -- so a detached write can
+// neither land partially nor interleave with another writer.
+func (r *Reconciler) persistObserved(ctx context.Context, observed model.ObservedState) error {
+	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), ObservedPersistTimeout)
+	defer cancel()
+	return r.deps.State.SaveObserved(persistContext, observed)
 }
 
 const diagnosticLogWriteTimeout = 2 * time.Second

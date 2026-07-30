@@ -574,12 +574,27 @@ func saturatingAddDuration(left, right time.Duration) time.Duration {
 // start the next one. RetryValue checks ctx.Err() before every attempt and
 // every backoff wait is context-cancellable (see internal/controller/retry.go),
 // so a well-behaved goroutine returns almost immediately after cancellation.
-// The only legitimate remaining delay is one more in-flight adapter call,
-// bounded by RequestTimeout, or a backoff sleep it was about to enter, bounded
-// by Retry.Maximum. Reusing those same watchdog-mechanism constants keeps this
+// One legitimate remaining delay is one more in-flight adapter call, bounded by
+// RequestTimeout, or a backoff sleep it was about to enter, bounded by
+// Retry.Maximum. Reusing those same watchdog-mechanism constants keeps this
 // grace period proportionate without introducing a new tunable.
+//
+// The other is the Step's observed-state writes, which are deliberately
+// detached from cycle cancellation so the degraded phase and problem records
+// explaining an outage still land (see controller.persistObserved). Being
+// detached, they keep running after the watchdog cancels -- and they take the
+// state lock, exactly the resource whose contention they may be recording -- so
+// their aggregate per-Step bound is a term here. Deriving the grace from the
+// configured GitHub durations alone would make it a function of values
+// validated only for positivity: a valid configuration can set RequestTimeout +
+// Retry.Maximum below that aggregate, and the Step would then be declared
+// abandoned for finishing writes that were going to return at their own
+// deadlines.
 func reconcileStepDrainGrace(cfg config.Config) time.Duration {
-	return cfg.GitHub.RequestTimeout.Duration + cfg.GitHub.Retry.Maximum.Duration
+	return saturatingAddDuration(
+		saturatingAddDuration(cfg.GitHub.RequestTimeout.Duration, cfg.GitHub.Retry.Maximum.Duration),
+		controller.StepDetachedPersistDrain,
+	)
 }
 
 // errReconcileStepAbandoned is returned by runControllerLoop when a

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/controller"
 )
 
 func githubRetryConfig(requestTimeout, backoffMax time.Duration, maxAttempts, targets, maxConcurrentWorkers int) config.Config {
@@ -650,9 +651,51 @@ func TestSaturatingAddDurationClampsInsteadOfWrapping(t *testing.T) {
 func TestReconcileStepDrainGraceReusesWatchdogConstants(t *testing.T) {
 	t.Parallel()
 	cfg := githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1)
-	want := 70*time.Second + time.Minute
+	want := 70*time.Second + time.Minute + controller.StepDetachedPersistDrain
 	if got := reconcileStepDrainGrace(cfg); got != want {
-		t.Fatalf("reconcileStepDrainGrace = %s, want %s (RequestTimeout + Retry.Maximum)", got, want)
+		t.Fatalf("reconcileStepDrainGrace = %s, want %s (RequestTimeout + Retry.Maximum + per-Step detached persist drain)", got, want)
+	}
+}
+
+// TestReconcileStepDrainGraceClearsDetachedPersistDrain proves the drain grace
+// outlasts every detached observed-state write a cancelled Step can still be
+// finishing, for every configuration Validate accepts rather than only generous
+// ones. Config.Validate constrains github.requestTimeout and
+// github.retry.maximum only to be positive, so the configured terms alone can
+// total a single nanosecond; a grace derived from them alone expires while
+// detached persists are still running and reports errReconcileStepAbandoned,
+// exiting the controller over writes that were going to return at their own
+// deadlines. Budgeting only ONE such write is equally insufficient: three run in
+// series on a single Step's unwind (see controller.StepDetachedPersistDrain), so
+// the cases below straddle the single-write bound as well as the aggregate.
+func TestReconcileStepDrainGraceClearsDetachedPersistDrain(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		requestTimeout time.Duration
+		backoffMax     time.Duration
+	}{
+		{name: "validation floor", requestTimeout: time.Nanosecond, backoffMax: time.Nanosecond},
+		{name: "sub-second timeouts", requestTimeout: 100 * time.Millisecond, backoffMax: 10 * time.Millisecond},
+		{name: "configured terms below one write bound", requestTimeout: time.Second, backoffMax: time.Second},
+		{name: "configured terms between one write and the aggregate", requestTimeout: 4 * time.Second, backoffMax: 3 * time.Second},
+		{name: "production defaults", requestTimeout: 70 * time.Second, backoffMax: time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := githubRetryConfig(tc.requestTimeout, tc.backoffMax, 6, 1, 1)
+			if got := reconcileStepDrainGrace(cfg); got <= controller.StepDetachedPersistDrain {
+				t.Fatalf("reconcileStepDrainGrace = %s, want > per-Step detached persist drain %s (requestTimeout=%s, retry.maximum=%s)", got, controller.StepDetachedPersistDrain, tc.requestTimeout, tc.backoffMax)
+			}
+		})
+	}
+}
+
+func TestReconcileStepDrainGraceClampsInsteadOfWrapping(t *testing.T) {
+	t.Parallel()
+	cfg := githubRetryConfig(math.MaxInt64, time.Minute, 6, 1, 1)
+	if got := reconcileStepDrainGrace(cfg); got != math.MaxInt64 {
+		t.Fatalf("reconcileStepDrainGrace = %s, want math.MaxInt64: a grace that wraps negative makes every cancelled Step look abandoned", got)
 	}
 }
 
