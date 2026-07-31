@@ -37,6 +37,23 @@ const (
 	PhaseDegraded            Phase = "degraded"
 )
 
+// QuiesceReason names why the controller is holding capacity at zero and
+// draining. It is diagnostic output only: no value selects or changes a phase.
+type QuiesceReason string
+
+const (
+	// QuiesceReasonOperatorDisabled and QuiesceReasonGaming* are
+	// operator-requested drains, driven by the desired mode.
+	QuiesceReasonOperatorDisabled   QuiesceReason = "operator-disabled"
+	QuiesceReasonGamingActiveWork   QuiesceReason = "gaming-mode-active-work"
+	QuiesceReasonGamingHostTeardown QuiesceReason = "gaming-mode-host-teardown"
+	// QuiesceReasonExcessWorkers and QuiesceReasonAdvertisementBudgetExhausted
+	// are convergence-driven: the desired mode still admits work, but the plan
+	// cannot represent the current worker inventory as advertised capacity.
+	QuiesceReasonExcessWorkers                QuiesceReason = "excess-workers-not-advertisable"
+	QuiesceReasonAdvertisementBudgetExhausted QuiesceReason = "advertisement-budget-exhausted"
+)
+
 // DesiredState is written by the user-facing CLI and never overwritten by
 // provisioning. A nil capacity override means use the checked-in host limit.
 type DesiredState struct {
@@ -176,6 +193,7 @@ type ObservedState struct {
 	Phase          Phase             `json:"phase"`
 	HeartbeatAt    time.Time         `json:"heartbeatAt"`
 	DrainStartedAt *time.Time        `json:"drainStartedAt,omitempty"`
+	QuiesceReason  QuiesceReason     `json:"quiesceReason,omitempty"`
 	Version        string            `json:"version"`
 	Pools          []PoolObservation `json:"pools"`
 	Workers        []Worker          `json:"workers"`

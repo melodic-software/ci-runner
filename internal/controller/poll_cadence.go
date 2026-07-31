@@ -86,7 +86,8 @@ func (r *Reconciler) pollCheckpoint(
 	problems := append([]model.Problem(nil), plan.Problems...)
 	problems = append(problems, operationProblems...)
 	return model.ObservedState{
-		SchemaVersion: 1, Phase: phase, HeartbeatAt: now, DrainStartedAt: drainStartedAt, Version: r.version,
+		SchemaVersion: 1, Phase: phase, HeartbeatAt: now, DrainStartedAt: drainStartedAt,
+		QuiesceReason: plan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: plan.ResourceGate, PowerGate: plan.PowerGate,
 		Problems: problems,

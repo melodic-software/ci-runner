@@ -244,6 +244,34 @@ and `job.started` events without runner or job identities. `jobs.json` remains
 the durable exact-identity ledger for operator diagnostics and retains
 `jobStartedAt`, artifact start, completion, and finalization timestamps.
 
+## Why the controller is draining
+
+`observed.json` carries `quiesceReason` alongside `drainStartedAt` whenever the
+controller holds capacity at zero to drain, and omits the key entirely
+otherwise. Diagnosing a stuck `draining` phase previously required reading
+`plan.go`'s quiesce path, because observed state recorded only when the drain
+started, never why.
+
+The reason names the branch the plan actually took, not the intent behind it:
+an operator-disabled drain, a gaming-mode drain while work is active or while
+the host is being torn down, excess workers that cannot be represented as
+advertised burst capacity, or an exhausted host-wide advertisement budget. A
+mechanism name is deliberate — an operator setting `temporaryCapacityOverride`
+to zero converges through the same downscale branch as an automatic downscale,
+so a value implying "operator versus convergence" would misreport that case.
+
+The reason is also the condition phase selection reads, rather than a field
+written beside a separate boolean, so the reported reason cannot disagree with
+the decision that produced it. A degraded plan still reports the reason it
+computed: a controller that is both wedged and degraded is exactly when the
+reason is wanted.
+
+Unlike the pool `updatedAt` reuse described above, this change does add a
+top-level key. It rides on the forward-tolerance guarantee described in the
+next section: a controller rolled back to a release predating the field
+ignores it — the drain clock and the CLI surfaces are unaffected — and simply
+reports no reason.
+
 ## Observed-state rollback readability
 
 `observed.json` is written by the running controller and read back by whichever
