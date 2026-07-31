@@ -92,6 +92,116 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	}
 }
 
+// A controller reads observed.json files written by the release it replaced —
+// and, after a rollback, by the release that replaced it, because the
+// documented rollback order drains before restoring the prior pair. Unknown
+// keys must therefore be ignored, top-level and nested, so an additive field
+// in a newer release can never quarantine the file, force a capacity-zero
+// recovery pass, or restart the drain clock on the older binary.
+func TestObservedToleratesFieldsFromANewerRelease(t *testing.T) {
+	store, directory := newTestStore(t)
+	ctx := context.Background()
+	drainStarted := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
+	if err := store.SaveObserved(ctx, model.ObservedState{
+		SchemaVersion:  1,
+		Phase:          model.PhaseDraining,
+		HeartbeatAt:    drainStarted.Add(time.Minute),
+		DrainStartedAt: &drainStarted,
+		Pools:          []model.PoolObservation{{ID: "pool-a", UpdatedAt: drainStarted}},
+	}); err != nil {
+		t.Fatalf("SaveObserved: %v", err)
+	}
+
+	path := filepath.Join(directory, "observed.json")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read observed.json: %v", err)
+	}
+	withFutureKeys := string(contents)
+	for _, injection := range []struct{ after, key string }{
+		{`"schemaVersion": 1,`, `"aTopLevelKeyThisReaderDoesNotKnow": {"shape": ["compound"]},`},
+		{`"id": "pool-a",`, `"aPoolKeyThisReaderDoesNotKnow": 7,`},
+	} {
+		next := strings.Replace(withFutureKeys, injection.after, injection.after+injection.key, 1)
+		if next == withFutureKeys {
+			t.Fatalf("could not inject %s; the observed.json layout changed", injection.key)
+		}
+		withFutureKeys = next
+	}
+	if err := os.WriteFile(path, []byte(withFutureKeys), 0o600); err != nil {
+		t.Fatalf("write observed.json: %v", err)
+	}
+
+	loaded, err := store.LoadObserved(ctx)
+	if err != nil {
+		t.Fatalf("LoadObserved rejected a file carrying keys from a newer release: %v", err)
+	}
+	if loaded.Phase != model.PhaseDraining {
+		t.Fatalf("phase = %q, want %q", loaded.Phase, model.PhaseDraining)
+	}
+	if loaded.DrainStartedAt == nil || !loaded.DrainStartedAt.Equal(drainStarted) {
+		t.Fatalf("drainStartedAt = %v, want %v; the drain clock must survive unknown keys", loaded.DrainStartedAt, drainStarted)
+	}
+	if len(loaded.Pools) != 1 || loaded.Pools[0].ID != "pool-a" {
+		t.Fatalf("pools = %#v, want the persisted pool-a entry", loaded.Pools)
+	}
+}
+
+// Forward tolerance is scoped to unknown keys within schemaVersion 1. A
+// schemaVersion this release does not support stays rejected — bumping it is
+// the deliberate signal that an older release must not trust the file — and
+// the single-JSON-value trailer check still catches concatenated writes.
+func TestObservedStillRejectsIncompatibleFiles(t *testing.T) {
+	tests := []struct {
+		name      string
+		corrupt   func(contents string) string
+		wantInErr string
+	}{
+		{
+			name: "schema version bump",
+			corrupt: func(contents string) string {
+				return strings.Replace(contents, `"schemaVersion": 1,`, `"schemaVersion": 2,`, 1)
+			},
+			wantInErr: "unsupported schemaVersion 2",
+		},
+		{
+			name:      "trailing JSON value",
+			corrupt:   func(contents string) string { return contents + "{}\n" },
+			wantInErr: "multiple JSON values",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, directory := newTestStore(t)
+			ctx := context.Background()
+			if err := store.SaveObserved(ctx, model.ObservedState{
+				SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC),
+			}); err != nil {
+				t.Fatalf("SaveObserved: %v", err)
+			}
+			path := filepath.Join(directory, "observed.json")
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read observed.json: %v", err)
+			}
+			corrupted := test.corrupt(string(contents))
+			if corrupted == string(contents) {
+				t.Fatal("corruption had no effect; the observed.json layout changed")
+			}
+			if err := os.WriteFile(path, []byte(corrupted), 0o600); err != nil {
+				t.Fatalf("write observed.json: %v", err)
+			}
+			_, err = store.LoadObserved(ctx)
+			if err == nil {
+				t.Fatal("LoadObserved accepted an incompatible file")
+			}
+			if !strings.Contains(err.Error(), test.wantInErr) {
+				t.Fatalf("LoadObserved error = %v, want it to contain %q", err, test.wantInErr)
+			}
+		})
+	}
+}
+
 func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)

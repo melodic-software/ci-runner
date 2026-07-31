@@ -42,6 +42,22 @@ type AccessController interface {
 func ReplaceFileAtomic(source, target string) error { return atomicReplace(source, target) }
 func SyncDirectory(path string) error               { return syncDirectory(path) }
 
+// unknownFieldPolicy selects how load treats JSON keys the destination struct
+// does not declare. Operator-authored desired.json stays strict so a typo
+// fails loudly. Controller-authored observed.json tolerates unknown keys:
+// after a rollback the older release reads a file the newer one wrote, and a
+// strict reader would turn every additive field into a quarantine, a forced
+// capacity-zero recovery pass, and a restarted drain clock. schemaVersion is
+// the deliberate compatibility gate instead — additive fields keep version 1;
+// a shape an older release genuinely cannot read bumps the version and is
+// rejected by validation, where quarantining is the intended outcome.
+type unknownFieldPolicy int
+
+const (
+	rejectUnknownFields unknownFieldPolicy = iota
+	ignoreUnknownFields
+)
+
 type Store struct {
 	directory string
 	locker    Locker
@@ -63,7 +79,7 @@ func New(directory string, locker Locker, acl AccessController) (*Store, error) 
 
 func (s *Store) LoadDesired(ctx context.Context) (model.DesiredState, error) {
 	var value model.DesiredState
-	if err := s.load(ctx, desiredFilename, &value); err != nil {
+	if err := s.load(ctx, desiredFilename, &value, rejectUnknownFields); err != nil {
 		return model.DesiredState{}, err
 	}
 	if err := validateDesired(value); err != nil {
@@ -81,7 +97,7 @@ func (s *Store) SaveDesired(ctx context.Context, value model.DesiredState) error
 
 func (s *Store) LoadObserved(ctx context.Context) (model.ObservedState, error) {
 	var value model.ObservedState
-	if err := s.load(ctx, observedFilename, &value); err != nil {
+	if err := s.load(ctx, observedFilename, &value, ignoreUnknownFields); err != nil {
 		return model.ObservedState{}, err
 	}
 	if err := validateObserved(value); err != nil {
@@ -99,7 +115,7 @@ func (s *Store) SaveObserved(ctx context.Context, value model.ObservedState) err
 
 func (s *Store) LoadRestartReceipt(ctx context.Context) (model.RestartReceipt, error) {
 	var value model.RestartReceipt
-	if err := s.load(ctx, restartFilename, &value); err != nil {
+	if err := s.load(ctx, restartFilename, &value, rejectUnknownFields); err != nil {
 		return model.RestartReceipt{}, err
 	}
 	if err := validateRestartReceipt(value); err != nil {
@@ -160,7 +176,7 @@ func (s *Store) QuarantineObserved(ctx context.Context) (resultErr error) {
 	return nil
 }
 
-func (s *Store) load(ctx context.Context, name string, destination any) (resultErr error) {
+func (s *Store) load(ctx context.Context, name string, destination any, unknown unknownFieldPolicy) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -195,7 +211,9 @@ func (s *Store) load(ctx context.Context, name string, destination any) (resultE
 		return fmt.Errorf("%s exceeds the %d-byte safety limit", name, maximumStateSize)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
+	if unknown == rejectUnknownFields {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("decode %s: %w", name, err)
 	}
