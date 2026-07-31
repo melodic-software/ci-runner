@@ -244,6 +244,27 @@ and `job.started` events without runner or job identities. `jobs.json` remains
 the durable exact-identity ledger for operator diagnostics and retains
 `jobStartedAt`, artifact start, completion, and finalization timestamps.
 
+## Observed-state rollback readability
+
+`observed.json` is written by the running controller and read back by whichever
+release runs next — after a rollback, that is an older release reading a file
+the newer one wrote, and the documented rollback order drains before restoring
+the prior pair, so the file on disk at that moment carries whatever the newer
+release added. The observed-state reader therefore ignores JSON keys it does
+not know, top-level and nested, within `schemaVersion` 1: an additive field in
+a newer release degrades to being invisible on the older binary instead of
+quarantining the file, forcing a capacity-zero recovery pass, and restarting
+the drain clock. `TestObservedToleratesFieldsFromANewerRelease` pins the
+guarantee, which holds for rollbacks to any release carrying it.
+
+`schemaVersion` is the deliberate compatibility gate that tolerance does not
+weaken. A shape an older release genuinely cannot be trusted to read bumps the
+version; an unsupported version is rejected and quarantined, which is the
+intended outcome. The trailer check equally still rejects a file carrying more
+than one JSON value, and operator-authored `desired.json` keeps strict
+decoding so a typo in hand-edited intent fails loudly rather than silently
+dropping a field.
+
 ## Cancellation and runner shutdown noise
 
 The stock one-job GitHub runner cancels its broker long-poll after a terminal
