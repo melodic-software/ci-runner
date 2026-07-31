@@ -5,3 +5,6 @@
 # Generated release and scheduled-monitor evidence.
 dist/
 dependency-drift.json
+
+# Claude Code worktrees (per-checkout; PR worktree workflow)
+.claude/worktrees/

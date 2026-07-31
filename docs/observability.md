@@ -202,10 +202,39 @@ reconcile errors, lifecycle-event timestamps, and repeated gaps before alerting.
 Capacity acknowledgement has its own transition signal. While a listener is
 accepting a new resource-driven capacity, the pool transition timestamp remains
 stable instead of resetting on each heartbeat. `host doctor` treats that state
-as healthy for one configured listener request timeout plus two reconciliation
-intervals; a transition still pending after that bounded grace is unhealthy.
+as healthy for a bounded grace window, and a transition still pending after it
+is unhealthy — a non-advisory fault that degrades the exit code, because a
+listener that never acknowledges shows sustained, monotonically growing lag.
 This reuses the existing schema-version-1 pool `updatedAt` field and does not
 change the rollback-readable observed-state shape.
+
+The window is derived from the configured retry policy. An acknowledgement
+crosses two request paths — the controller advertising capacity, and a later
+reconcile reading back the state that acknowledges it — and each is a complete
+retry envelope: up to `github.retry.maxAttempts` attempts, each capped at
+`github.requestTimeout`, separated by backoff waits of
+`github.retry.maximum` × (1 + `github.retry.jitterRatio`), since jitter is
+applied after the backoff base is capped. The window budgets that full envelope
+per path, plus two reconciliation intervals.
+
+The acknowledgement is not a protocol signal (the scale-set protocol never
+acknowledges capacity back) but this controller's own convergence check, so the
+window has to cover the request path convergence actually travels — and it has
+to cover all of it, because nothing else in `host doctor` notices a poll that is
+still legitimately retrying. While a poll is open the controller keeps writing
+observed state on the reconciliation cadence, so the heartbeat stays fresh while
+the pool transition timestamp stays deliberately pinned. Budgeting less than the
+retry policy therefore hard-faults a listener whose configured retry sequence
+has not finished, which is what previously made benign busy-fleet lag trip a
+hard fault.
+
+The cost is detection latency, which now scales with the retry policy; raising
+`github.retry.maxAttempts` or `github.retry.maximum` widens this window too.
+Detection itself is unaffected: a wedged listener never acknowledges, so its lag
+grows past any bounded window. This bound is unrelated to the observed-state
+freshness limit above — one bounds pending convergence across several
+reconciles, the other bounds heartbeat staleness — so neither constrains the
+other and the grace is expected to be the larger.
 
 JIT registration, Docker start, validated job start, and finalization record
 bounded counters and event timestamps. Registration/start/finalization also
@@ -237,21 +266,32 @@ the decision that produced it. A degraded plan still reports the reason it
 computed: a controller that is both wedged and degraded is exactly when the
 reason is wanted.
 
-### Rollback cost of this field
-
 Unlike the pool `updatedAt` reuse described above, this change does add a
-top-level key, and the observed-state reader sets `DisallowUnknownFields`. A
-controller rolled back to a release predating this field cannot decode an
-`observed.json` that carries it: the reconciler quarantines the file and takes
-one forced capacity-zero recovery pass, and the CLI status and doctor surfaces
-that share the loader fail or report zero values until the file is rewritten.
-Quarantine also discards `drainStartedAt`, so the drain clock restarts.
+top-level key. It rides on the forward-tolerance guarantee described in the
+next section: a controller rolled back to a release predating the field
+ignores it — the drain clock and the CLI surfaces are unaffected — and simply
+reports no reason.
 
-The exposure is bounded but not hypothetical — the documented rollback order
-drains before restoring the prior pair, which is precisely when the key is
-present. `TestObservedRejectsATopLevelKeyItDoesNotKnow` pins the mechanism so
-the cost stays a checked property; making observed-state decoding
-forward-tolerant is what would retire it.
+## Observed-state rollback readability
+
+`observed.json` is written by the running controller and read back by whichever
+release runs next — after a rollback, that is an older release reading a file
+the newer one wrote, and the documented rollback order drains before restoring
+the prior pair, so the file on disk at that moment carries whatever the newer
+release added. The observed-state reader therefore ignores JSON keys it does
+not know, top-level and nested, within `schemaVersion` 1: an additive field in
+a newer release degrades to being invisible on the older binary instead of
+quarantining the file, forcing a capacity-zero recovery pass, and restarting
+the drain clock. `TestObservedToleratesFieldsFromANewerRelease` pins the
+guarantee, which holds for rollbacks to any release carrying it.
+
+`schemaVersion` is the deliberate compatibility gate that tolerance does not
+weaken. A shape an older release genuinely cannot be trusted to read bumps the
+version; an unsupported version is rejected and quarantined, which is the
+intended outcome. The trailer check equally still rejects a file carrying more
+than one JSON value, and operator-authored `desired.json` keeps strict
+decoding so a typo in hand-edited intent fails loudly rather than silently
+dropping a field.
 
 ## Cancellation and runner shutdown noise
 
@@ -276,8 +316,8 @@ CPU, and both admission gates. Useful alerts include:
 
 - assigned capacity remaining above desired capacity for multiple reconciles;
 - advertised capacity at zero while enabled and neither gate is active;
-- unacknowledged capacity persisting beyond one listener request timeout plus
-  two reconciliation intervals;
+- unacknowledged capacity persisting beyond the acknowledgement grace window
+  described above;
 - repeated reconcile errors or worker finalization runtime errors;
 - sustained resource-gate activation;
 - recurring `memory-clamped-capacity` log lines while a `workerMemoryBudget`

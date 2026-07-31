@@ -2510,3 +2510,127 @@ func assertProblemCode(t *testing.T, problems []model.Problem, code string) {
 	}
 	t.Fatalf("problem %q not found in %#v", code, problems)
 }
+
+// TestStepPersistsObservedProblemsWhenTheCycleIsCancelled reproduces the outage
+// shape behind this fix: a cycle records a blocking observation problem, and the
+// cycle context is then cancelled while the state write is in flight. The
+// degraded phase and the problem record must still land, because observed.json
+// is the only thing doctor and monitoring read -- a state file silently frozen
+// at its pre-incident "ready" contents is what let that outage run unnoticed.
+func TestStepPersistsObservedProblemsWhenTheCycleIsCancelled(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.runtime.listErr = errors.New("managed worker inventory unavailable")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	probe := &cancellingStateStore{StateStore: harness.store, cancelCycle: cancel}
+	harness.controller.deps.State = probe
+
+	if _, err := harness.controller.Step(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("step error = %v, want context.Canceled", err)
+	}
+
+	attempted, attached := probe.observedSaves()
+	if attempted == 0 {
+		t.Fatal("no observed-state write was attempted")
+	}
+	if attached > 0 {
+		t.Errorf("%d of %d observed-state writes ran on the cancelled cycle context, want 0", attached, attempted)
+	}
+	stored, err := harness.store.LoadObserved(context.Background())
+	if err != nil {
+		t.Fatalf("load persisted observed state: %v", err)
+	}
+	if stored.Phase != model.PhaseDegraded {
+		t.Errorf("persisted phase = %q, want %q", stored.Phase, model.PhaseDegraded)
+	}
+	assertProblemCode(t, stored.Problems, "worker-inventory-error")
+}
+
+// TestPersistObservedDetachesFromCancellationButStaysBounded pins both halves
+// of the contract every observed-state write depends on. Detaching alone would
+// hand a wedged state lock an unbounded write that holds an unwinding Step past
+// the reconcile loop's drain grace; bounding alone would still lose the record
+// the moment the cycle is cancelled.
+func TestPersistObservedDetachesFromCancellationButStaysBounded(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	deadlines := &deadlineRecordingStateStore{StateStore: harness.store}
+	harness.controller.deps.State = deadlines
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	observed := model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseDegraded, HeartbeatAt: harness.now,
+		Problems: []model.Problem{{Code: "worker-inventory-error", Message: "managed-worker inventory failed", Retryable: true, At: harness.now}},
+	}
+	if err := harness.controller.persistObserved(ctx, observed); err != nil {
+		t.Fatalf("persist observed on a cancelled cycle context: %v", err)
+	}
+	stored, err := harness.store.LoadObserved(context.Background())
+	if err != nil {
+		t.Fatalf("load persisted observed state: %v", err)
+	}
+	if stored.Phase != model.PhaseDegraded {
+		t.Errorf("persisted phase = %q, want %q", stored.Phase, model.PhaseDegraded)
+	}
+
+	deadline, ok := deadlines.lastDeadline()
+	if !ok {
+		t.Fatal("observed write ran on a context with no deadline; a wedged state lock would block the cycle indefinitely")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > ObservedPersistTimeout {
+		t.Errorf("observed write deadline is %s away, want within (0, %s]", remaining, ObservedPersistTimeout)
+	}
+}
+
+type deadlineRecordingStateStore struct {
+	StateStore
+
+	mu       sync.Mutex
+	deadline time.Time
+	hasValue bool
+}
+
+func (s *deadlineRecordingStateStore) SaveObserved(ctx context.Context, observed model.ObservedState) error {
+	deadline, ok := ctx.Deadline()
+	s.mu.Lock()
+	s.deadline, s.hasValue = deadline, ok
+	s.mu.Unlock()
+	return s.StateStore.SaveObserved(ctx, observed)
+}
+
+func (s *deadlineRecordingStateStore) lastDeadline() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deadline, s.hasValue
+}
+
+// cancellingStateStore cancels the reconcile cycle from inside the observed
+// write and reports whether that write was still running on the cycle context
+// when it happened.
+type cancellingStateStore struct {
+	StateStore
+	cancelCycle context.CancelFunc
+
+	mu        sync.Mutex
+	attempted int
+	attached  int
+}
+
+func (s *cancellingStateStore) SaveObserved(ctx context.Context, observed model.ObservedState) error {
+	s.cancelCycle()
+	s.mu.Lock()
+	s.attempted++
+	if ctx.Err() != nil {
+		s.attached++
+	}
+	s.mu.Unlock()
+	return s.StateStore.SaveObserved(ctx, observed)
+}
+
+func (s *cancellingStateStore) observedSaves() (attempted, attached int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempted, s.attached
+}

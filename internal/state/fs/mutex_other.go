@@ -5,6 +5,7 @@ package statefs
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 var (
@@ -27,9 +28,10 @@ func NewPlatformLocker(scope string) (Locker, error) {
 }
 
 func (l processLocker) Lock(ctx context.Context) (func() error, error) {
+	tokenWaitStarted := time.Now()
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, lockWaitError(LockWaitInProcess, tokenWaitStarted, ctx.Err())
 	case <-l.semaphore:
 		var once sync.Once
 		return func() error {
