@@ -120,8 +120,8 @@
     },
     {
       "repository": "docker/login-action",
-      "version": "4.4.0",
-      "commit": "af1e73f918a031802d376d3c8bbc3fe56130a9b0"
+      "version": "4.6.0",
+      "commit": "dbcb813823bdd20940b903addbd779551569679f"
     },
     {
       "repository": "docker/setup-buildx-action",
@@ -130,8 +130,8 @@
     },
     {
       "repository": "zizmorcore/zizmor-action",
-      "version": "0.6.0",
-      "commit": "6599ee8b7a49aef6a770f63d261d214911a7ce02"
+      "version": "0.6.1",
+      "commit": "6fc4b006235f201fdab3722e17240ab420d580e5"
     }
   ],
   "repositoryPins": [
