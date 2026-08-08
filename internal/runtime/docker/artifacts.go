@@ -386,9 +386,17 @@ func (s *FileArtifactSink) reconcileStaleOpen(ctx context.Context, adopted map[s
 func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struct{}, now time.Time) error {
 	catalog, err := s.jobs.Load(ctx)
 	if errors.Is(err, jobindex.ErrNotFound) {
-		return nil
+		// An absent catalog is authoritative: no record references anything, so
+		// every artifact is an orphan and the age sweep is the whole of cleanup.
+		// Returning early here instead left the only lane that can reclaim
+		// unreferenced bytes disabled for exactly the state that strands the
+		// most of them. A live worker's artifacts are still protected, by the
+		// same mtime floor that protects them on every other pass.
+		return s.sweepOrphans(nil, now)
 	}
 	if err != nil {
+		// A load that failed for any other reason proves nothing about what is
+		// referenced, so no deletion is safe.
 		return err
 	}
 	type candidate struct {
@@ -444,6 +452,15 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			cleanupErrors = append(cleanupErrors, removeErr)
 			continue
 		}
+		// The bytes are gone whether or not the record can be tombstoned, so the
+		// running total must drop either way. Skipping the decrement on an
+		// Upsert failure made every later candidate in the pass look over cap
+		// and deleted artifacts that were within it.
+		if candidate.size <= total {
+			total -= candidate.size
+		} else {
+			total = 0
+		}
 		tombstone := now
 		if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
 			PoolID: candidate.record.PoolID, RunnerName: candidate.record.RunnerName,
@@ -452,21 +469,24 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			cleanupErrors = append(cleanupErrors, err)
 			continue
 		}
-		if candidate.size <= total {
-			total -= candidate.size
-		} else {
-			total = 0
-		}
 	}
 	cutoff := now.Add(-s.policy.Retention)
-	cleanupErrors = append(cleanupErrors,
-		cleanupOrphans(s.logDirectory, referenced, cutoff),
-		cleanupOrphans(s.diagnosticDirectory, referenced, cutoff),
-	)
+	cleanupErrors = append(cleanupErrors, s.sweepOrphans(referenced, now))
 	if _, err := s.jobs.PruneTombstones(ctx, cutoff); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("compact expired artifact tombstones: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
+}
+
+// sweepOrphans removes unreferenced artifacts past the retention cutoff from
+// both roots. A nil referenced set means nothing is referenced, not that the
+// sweep should be skipped.
+func (s *FileArtifactSink) sweepOrphans(referenced map[string]struct{}, now time.Time) error {
+	cutoff := now.Add(-s.policy.Retention)
+	return errors.Join(
+		cleanupOrphans(s.logDirectory, referenced, cutoff),
+		cleanupOrphans(s.diagnosticDirectory, referenced, cutoff),
+	)
 }
 
 type truncatingWriteCloser struct {
