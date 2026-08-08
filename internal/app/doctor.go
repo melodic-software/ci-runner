@@ -10,6 +10,7 @@ import (
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
+	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
 )
@@ -112,23 +113,43 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	if a.dependencies.Gaming == nil {
 		checks = append(checks, DoctorCheck{Name: "host-inventory", Healthy: false, Detail: "host inventory dependency is unavailable"})
 	} else {
-		probeContext, cancelProbe := a.localProbeContext(ctx)
-		inventory := a.dependencies.Gaming.Inventory(probeContext)
-		cancelProbe()
+		// Gaming probes carry their own per-probe deadlines, so the command
+		// context is passed through: an aggregate budget here would re-create
+		// the starvation the per-probe deadlines exist to remove.
+		gamingMode := desiredValid && desired.Mode == model.ModeGaming
+		inventory := a.dependencies.Gaming.Inventory(ctx)
 		dockerReachable = inventory.DockerReachable
-		checks = append(checks, DoctorCheck{Name: "docker-desktop-cli", Healthy: inventory.DesktopStatus != "unknown", Detail: string(inventory.DesktopStatus)})
+		// A stopped Docker Desktop is the state gaming mode is built to produce,
+		// so surfacing it is right but failing on it is not.
+		checks = append(checks, DoctorCheck{
+			Name:     "docker-desktop-cli",
+			Healthy:  inventory.DesktopStatus != "unknown",
+			Advisory: gamingMode,
+			Detail:   string(inventory.DesktopStatus),
+		})
 		for index, problem := range inventory.Problems {
-			checks = append(checks, DoctorCheck{Name: fmt.Sprintf("host-inventory/%d", index+1), Healthy: false, Detail: problem})
+			checks = append(checks, DoctorCheck{Name: fmt.Sprintf("host-inventory/%d", index+1), Healthy: false, Advisory: gamingMode, Detail: problem})
 		}
-		if desiredValid && desired.Mode == model.ModeGaming {
-			probeContext, cancelProbe := a.localProbeContext(ctx)
-			verification, err := a.dependencies.Gaming.Verify(probeContext)
-			cancelProbe()
-			detail := fmt.Sprintf("desktopStopped=%t dockerUnreachable=%t noRunningWSL=%t", verification.DesktopStopped, verification.DockerUnreachable, verification.NoRunningWSL)
+		if gamingMode {
+			verification, err := a.dependencies.Gaming.Verify(ctx)
+			detail := fmt.Sprintf("desktopStopped=%s dockerUnreachable=%s noRunningWSL=%s",
+				postconditionState(verification.DesktopStopped, verification.DesktopUnverified),
+				postconditionState(verification.DockerUnreachable, verification.DockerUnverified),
+				postconditionState(verification.NoRunningWSL, verification.WSLUnverified))
 			if err != nil {
 				detail += ": " + err.Error()
 			}
-			checks = append(checks, DoctorCheck{Name: "gaming-postconditions", Healthy: err == nil && verification.DesktopStopped && verification.DockerUnreachable && verification.NoRunningWSL, Detail: detail})
+			// An unverified postcondition is a gap in the observation, not
+			// evidence that gaming mode failed, so it surfaces as WARN. An
+			// observed violation still fails: only checks the probes could not
+			// answer are advisory.
+			unverified := verification.DesktopUnverified || verification.DockerUnverified || verification.WSLUnverified
+			checks = append(checks, DoctorCheck{
+				Name:     "gaming-postconditions",
+				Healthy:  err == nil && verification.DesktopStopped && verification.DockerUnreachable && verification.NoRunningWSL,
+				Advisory: unverified && !observedGamingViolation(verification),
+				Detail:   detail,
+			})
 		}
 	}
 
@@ -269,4 +290,26 @@ func saturatingFreshnessDuration(request, retryBackoff, reconcile time.Duration,
 		return maximum
 	}
 	return result + 2*reconcile
+}
+
+// observedGamingViolation reports whether any postcondition was actually
+// checked and found unsatisfied, as opposed to merely unverified.
+func observedGamingViolation(verification host.GamingVerification) bool {
+	return (!verification.DesktopUnverified && !verification.DesktopStopped) ||
+		(!verification.DockerUnverified && !verification.DockerUnreachable) ||
+		(!verification.WSLUnverified && !verification.NoRunningWSL)
+}
+
+// postconditionState renders three states where a bare bool renders two. An
+// unchecked postcondition and a failed one are both `false`, and an operator
+// reading `desktopStopped=false` cannot otherwise tell "still running" from
+// "the probe never answered".
+func postconditionState(satisfied, unverified bool) string {
+	if unverified {
+		return "unverified"
+	}
+	if satisfied {
+		return "true"
+	}
+	return "false"
 }

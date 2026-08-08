@@ -112,6 +112,11 @@ type Controller struct {
 	ShutdownPollInterval Duration `yaml:"shutdownPollInterval"`
 	LocalProbeTimeout    Duration `yaml:"localProbeTimeout"`
 	StartupTimeout       Duration `yaml:"startupTimeout"`
+	// DesktopProbeTimeout bounds `docker desktop status` alone. That command has
+	// no timeout flag and costs upwards of 16s while Docker Desktop is stopped,
+	// which is far beyond what the other local probes need; one budget sized for
+	// it would slow every probe. Optional — zero falls back to LocalProbeTimeout.
+	DesktopProbeTimeout Duration `yaml:"desktopProbeTimeout"`
 }
 
 type Release struct {
@@ -526,6 +531,9 @@ func (c Config) Validate() error {
 	}
 	if c.Controller.ReconcileInterval.Duration <= 0 || c.Controller.ShutdownPollInterval.Duration <= 0 || c.Controller.LocalProbeTimeout.Duration <= 0 || c.Controller.StartupTimeout.Duration <= 0 {
 		add(errors.New("controller: reconcileInterval, shutdownPollInterval, localProbeTimeout, and startupTimeout must be positive"))
+	}
+	if c.Controller.DesktopProbeTimeout.Duration < 0 {
+		add(errors.New("controller.desktopProbeTimeout: must not be negative"))
 	}
 	add(validateSafeAbsolutePath("release.compatibilityManifest", c.Release.CompatibilityManifest, false))
 	if len(c.GitHub.Targets) == 0 {

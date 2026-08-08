@@ -30,10 +30,17 @@ type GamingInventory struct {
 	Problems             []string      `json:"problems,omitempty"`
 }
 
+// GamingVerification carries three postconditions and, for each, whether its
+// probe actually ran. A false postcondition alone is ambiguous: it reads as
+// "observed still running" when it may only mean "could not check", and an
+// operator acting on the difference needs it stated rather than inferred.
 type GamingVerification struct {
 	DesktopStopped       bool     `json:"desktopStopped"`
+	DesktopUnverified    bool     `json:"desktopUnverified,omitempty"`
 	DockerUnreachable    bool     `json:"dockerUnreachable"`
+	DockerUnverified     bool     `json:"dockerUnverified,omitempty"`
 	NoRunningWSL         bool     `json:"noRunningWsl"`
+	WSLUnverified        bool     `json:"wslUnverified,omitempty"`
 	RunningDistributions []string `json:"runningDistributions,omitempty"`
 }
 
