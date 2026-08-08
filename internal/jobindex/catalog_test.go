@@ -193,7 +193,7 @@ func TestActiveJobSurvivesRestartAndCompletionClearsIt(t *testing.T) {
 	}
 }
 
-func TestActiveJobFailsClosedOnTombstoneConflict(t *testing.T) {
+func TestActiveJobIgnoresATombstonedRecordRatherThanFailing(t *testing.T) {
 	t.Parallel()
 	store := newFileStoreForTest(t, t.TempDir())
 	now := time.Unix(360, 0).UTC()
@@ -205,8 +205,56 @@ func TestActiveJobFailsClosedOnTombstoneConflict(t *testing.T) {
 	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "runner", TombstonedAt: &tombstone}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ActiveJob(context.Background(), "org", "runner"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("active tombstone conflict = %v", err)
+	jobID, active, err := store.ActiveJob(context.Background(), "org", "runner")
+	if err != nil {
+		t.Fatalf("a tombstoned record must not fail the caller, got %v", err)
+	}
+	if active || jobID != "" {
+		t.Fatalf("dead bookkeeping must not shadow its key, got jobID=%q active=%t", jobID, active)
+	}
+}
+
+// A record can be tombstoned while it still looks active: FinalizedAt and
+// CompletedAt have independent producers, and retention tombstones on
+// FinalizedAt alone. Reaching the caller, that state aborted every worker
+// enrichment pass for the key.
+func TestActiveJobIgnoresATombstonedRecordWhoseCompletionNeverArrived(t *testing.T) {
+	t.Parallel()
+	store := newFileStoreForTest(t, t.TempDir())
+	now := time.Unix(360, 0).UTC()
+	store.now = func() time.Time { return now }
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "runner", JobID: "job-1", JobStartedAt: now, FinalizedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := now.Add(time.Minute)
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "runner", TombstonedAt: &tombstone}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ActiveJob(context.Background(), "org", "runner"); err != nil {
+		t.Fatalf("a lost completion event must not become a hard error, got %v", err)
+	}
+}
+
+// The tombstone skip must not swallow a live record that shares nothing but the
+// pool, or a genuinely active job would read as idle.
+func TestActiveJobStillReportsALiveRecordAlongsideATombstonedSibling(t *testing.T) {
+	t.Parallel()
+	store := newFileStoreForTest(t, t.TempDir())
+	now := time.Unix(360, 0).UTC()
+	store.now = func() time.Time { return now }
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "dead", JobID: "job-1", JobStartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := now.Add(time.Minute)
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "dead", TombstonedAt: &tombstone}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "live", JobID: "job-2", JobStartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	jobID, active, err := store.ActiveJob(context.Background(), "org", "live")
+	if err != nil || !active || jobID != "job-2" {
+		t.Fatalf("live record = (%q, %t, %v), want (job-2, true, nil)", jobID, active, err)
 	}
 }
 
