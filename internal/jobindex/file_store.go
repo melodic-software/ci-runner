@@ -134,14 +134,15 @@ func (s *FileStore) ActiveJob(ctx context.Context, poolID, runnerName string) (s
 		return "", false, err
 	}
 	for _, record := range catalog.Records {
-		if record.PoolID != poolID || record.RunnerName != runnerName {
+		// A tombstoned record is dead bookkeeping and must not shadow its key,
+		// matching FindByJobID and FindByRunner. It can legitimately still look
+		// active: FinalizedAt and CompletedAt have independent producers, so a
+		// lost completion event leaves JobID and JobStartedAt set with
+		// CompletedAt zero, and retention tombstones it on FinalizedAt alone.
+		if record.PoolID != poolID || record.RunnerName != runnerName || record.TombstonedAt != nil {
 			continue
 		}
-		active := record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero()
-		if active && record.TombstonedAt != nil {
-			return "", false, fmt.Errorf("%w: active job %q is tombstoned", ErrConflict, record.JobID)
-		}
-		return record.JobID, active, nil
+		return record.JobID, record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero(), nil
 	}
 	return "", false, nil
 }
