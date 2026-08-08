@@ -409,7 +409,10 @@ only), so this is a new file with no in-package precedent.
   receiving an error, and that `AdoptAndCleanup` still proceeds to cleanup in that case.
 - `go test ./internal/jobindex ./internal/runtime/docker` exits 0.
 
-**Rollback:** revert. No on-disk format change if the drop record rides existing fields.
+**Rollback:** revert, **and remove the drop journal** — it is a new on-disk file beside the state
+file, so a bare revert strands it. This supersedes revision 2's "no on-disk format change if the drop
+record rides existing fields", which described a sink this phase no longer uses; the resolution above
+already says as much and the two lines contradicted each other.
 
 ### Phase 2.3: Make the cap honest without making live files evictable [TODO]
 

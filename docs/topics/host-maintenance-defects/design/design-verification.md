@@ -7,9 +7,18 @@ document's rationale as evidence.
 **This file overrides `design.md` wherever they conflict.** Precedence for Stage 2 is now:
 `design-verification.md` > `design.md` > `PLAN-REVIEW.md` > `VERIFY.md` > the EXPLORE/RESEARCH sidecars.
 
-Baseline: both reviewers independently confirmed `internal/runtime/docker` and `internal/jobindex`
-are untouched by `055c196` (last commit touching them is `8df1100`), so their findings hold against
-the current branch.
+**Baseline, and it has since moved.** Both reviewers worked against `8df1100`, the then-current state
+of `internal/runtime/docker` and `internal/jobindex`, and independently confirmed `055c196` had not
+touched either package. Every line citation below is against that baseline.
+
+Two of their findings were then fixed, in `c64f516` (`ActiveJob`'s missing tombstone filter, F7) and
+`b86a0ae` (the orphan sweep's `ErrNotFound` early return and the misplaced `total` decrement, F8 and
+the first pre-existing defect). Those commits changed the two packages this file cites, so **line
+numbers below have drifted and the three fixed findings are closed** — they are retained because the
+reasoning still explains why the current code is shaped as it is.
+
+Everything else stands unverified against the moved baseline. Re-verify a finding's citation before
+acting on it.
 
 ## The headline, and it is not a detail
 
@@ -141,7 +150,7 @@ Refuted or unaddressed:
   reusing it doubles the state directory's worst case, with no analogue of `jobs.json`'s asymmetric
   load tolerance (`maximumJobStateLoad = 4 * maximumJobState`).
 
-### F7 — D5's root cause was misidentified, and its blast radius overstated
+### F7 — D5's root cause was misidentified, and its blast radius overstated — FIXED in `c64f516`
 
 **The actual root cause: `ActiveJob` is the only `Record` reader that does not filter tombstoned
 records.** `FindByJobID` (`file_store.go:102`) and `FindByRunner` (`:118`) both carry
@@ -176,7 +185,7 @@ before it reappears.
 So: live-fleet defect, yes — but gated on inventory incompleteness plus cap pressure, the same
 precondition as class 2, not reachable on the lost-completion fact alone.
 
-### F8 — D2 survives mechanically; its "costs no leak" conclusion does not
+### F8 — D2 survives mechanically; its "costs no leak" conclusion does not — catalog-absent half FIXED in `b86a0ae`
 
 Confirmed exhaustively: all three temp sites are in swept directories, there is no fourth
 `os.CreateTemp` in either root (the other two are in the state directory), `ReplaceFileAtomic` creates
@@ -200,7 +209,7 @@ D2's stated residual checks out: `cleanupOrphans:676` skips only on `ModTime().A
 
 Neither is introduced by Stage 2; both are in the loop it modifies.
 
-- **Failed tombstone `Upsert` after successful file removal skips the `total` decrement**
+- **FIXED in `b86a0ae`.** **Failed tombstone `Upsert` after successful file removal skips the `total` decrement**
   (`artifacts.go:451-454` continues after `:438-442` already removed the files), over-deleting
   subsequent candidates in the same pass.
 - `saturatingAdd` saturation would turn the candidate loop into delete-everything, but needs ~2^64
@@ -211,10 +220,10 @@ Neither is introduced by Stage 2; both are in the loop it modifies.
 1. **Phase 2.3 must define what a protected-but-counted byte does to the cap** before D1, D2, or D3
    is implemented. F1 and F2 are the same defect seen from three directions, and no ordering fixes
    it — it is an accounting question, not a sequencing one.
-2. **`ActiveJob`'s missing tombstone filter is the cheapest real fix in Stage 2** and is independent
-   of everything else. It is a one-line change matching two sibling readers. Do it first.
-3. **`cleanup`'s `ErrNotFound` early return gates the entire orphan lane** and would gate the new cap
-   lane. Fix before adding anything inside `cleanup`.
+2. ~~**`ActiveJob`'s missing tombstone filter is the cheapest real fix in Stage 2**~~ — **done**,
+   `c64f516`.
+3. ~~**`cleanup`'s `ErrNotFound` early return gates the entire orphan lane**~~ — **done**, `b86a0ae`,
+   which also moved the `total` decrement to where the files are actually removed.
 4. **D4 needs redesign, not just a bound.** The atomicity gap and the failure policy are unresolved,
    and the two-signature-change plus retry-loop accumulation is real work `design.md` does not
    describe.
