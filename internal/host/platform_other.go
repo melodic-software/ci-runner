@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var errWindowsHostRequired = errors.New("host operations for Docker Desktop and WSL require Windows")
@@ -23,4 +24,4 @@ func (unsupportedGamingHost) Verify(context.Context) (GamingVerification, error)
 	return GamingVerification{}, errWindowsHostRequired
 }
 
-func NewPlatformGamingHost() GamingHost { return unsupportedGamingHost{} }
+func NewPlatformGamingHost(time.Duration) GamingHost { return unsupportedGamingHost{} }

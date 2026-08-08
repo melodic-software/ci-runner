@@ -2,7 +2,10 @@
 
 package host
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type WSLCLI struct {
 	Runner         CommandRunner
@@ -38,10 +41,11 @@ func (w WSLCLI) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func NewPlatformGamingHost() GamingHost {
+func NewPlatformGamingHost(probeTimeout time.Duration) GamingHost {
 	return GamingManager{
-		Desktop: DockerDesktopCLI{},
-		Docker:  DockerEngineInspector{},
-		WSL:     WSLCLI{},
+		Desktop:      DockerDesktopCLI{},
+		Docker:       DockerEngineInspector{},
+		WSL:          WSLCLI{},
+		ProbeTimeout: probeTimeout,
 	}
 }
