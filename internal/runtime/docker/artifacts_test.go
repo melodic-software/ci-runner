@@ -424,6 +424,85 @@ func TestCleanupDerivesAndRemovesResourceSidecarWithoutIndexField(t *testing.T) 
 	}
 }
 
+// An absent catalog is the state that strands the most orphans, so it is the
+// worst state in which to skip the only lane that can reclaim them.
+func TestCleanupSweepsOrphansWhenTheCatalogIsAbsent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	orphan := filepath.Join(root, "logs", "stranded.log")
+	if err := os.WriteFile(orphan, []byte("stranded"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sink.CleanupNow(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an orphan must be swept with no catalog present, stat error = %v", err)
+	}
+}
+
+// The mtime floor is the only thing protecting a live worker's in-flight bytes
+// in the orphan lane, and it must still apply when no catalog is present.
+func TestCleanupWithoutACatalogStillHonorsTheRetentionFloor(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	recent := filepath.Join(root, "logs", ".ci-runner-log-live.tmp")
+	if err := os.WriteFile(recent, []byte("in flight"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sink.CleanupNow(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(recent); err != nil {
+		t.Fatalf("a file inside the retention window must survive, stat error = %v", err)
+	}
+}
+
+// A load that failed for any reason other than absence proves nothing about
+// what is referenced, so no deletion is safe.
+func TestCleanupDeletesNothingWhenTheCatalogCannotBeRead(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	sink := newArtifactSinkForTest(t, root, failingJobStore{}, defaultArtifactPolicy())
+	orphan := filepath.Join(root, "logs", "unknown.log")
+	if err := os.WriteFile(orphan, []byte("unknown"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sink.CleanupNow(context.Background(), nil); err == nil {
+		t.Fatal("an unreadable catalog must surface as an error")
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("nothing may be deleted on an unreadable catalog, stat error = %v", err)
+	}
+}
+
+type failingJobStore struct{ jobindex.Store }
+
+func (failingJobStore) Load(context.Context) (jobindex.Catalog, error) {
+	return jobindex.Catalog{}, errors.New("jobs.json exceeds the load safety limit")
+}
+
+func (failingJobStore) Upsert(context.Context, jobindex.Patch) (jobindex.Record, error) {
+	return jobindex.Record{}, nil
+}
+
 func newArtifactSinkForTest(t *testing.T, root string, store jobindex.Store, policy ArtifactPolicy) *FileArtifactSink {
 	t.Helper()
 	sink, err := NewFileArtifactSink(filepath.Join(root, "logs"), filepath.Join(root, "diag"), store, testJobACL{}, policy)
