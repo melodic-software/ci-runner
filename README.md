@@ -406,7 +406,8 @@ Releases produce an immutable pair:
 Dependencies and Actions are exact pins. Daily official-source drift evidence
 opens an issue within 24 hours and hard-fails after 14 days; updates remain
 reviewed and are never auto-merged. Deployment uses a versioned install
-directory plus `current` junction and retains the latest three known-good pairs.
+directory plus `current` junction; how many known-good pairs are retained is a
+floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
 
 Rollback order is: set routing `hosted-only`, drain without killing work,
 restore the prior immutable pair, restore the prior reusable-workflow SHA if
