@@ -24,4 +24,4 @@ func (unsupportedGamingHost) Verify(context.Context) (GamingVerification, error)
 	return GamingVerification{}, errWindowsHostRequired
 }
 
-func NewPlatformGamingHost(time.Duration) GamingHost { return unsupportedGamingHost{} }
+func NewPlatformGamingHost(_, _ time.Duration) GamingHost { return unsupportedGamingHost{} }

@@ -81,7 +81,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	application, err := New(Dependencies{
 		Config:    cfg,
 		Store:     store,
-		Gaming:    host.NewPlatformGamingHost(cfg.Controller.LocalProbeTimeout.Duration),
+		Gaming:    host.NewPlatformGamingHost(cfg.Controller.LocalProbeTimeout.Duration, cfg.Controller.DesktopProbeTimeout.Duration),
 		Secrets:   secretImporter,
 		ForceStop: ControlForceStopper{Client: controlClient},
 		Logs: &FileLogs{

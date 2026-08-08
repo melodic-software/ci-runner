@@ -22,27 +22,45 @@ var ErrProbeTimedOut = errors.New("host probe did not complete within its deadli
 // costs upwards of 16s while Docker Desktop is stopped, which is the state
 // gaming mode exists to create, so one aggregate deadline expires inside it and
 // every later probe then fails on the spent context without ever running.
+//
+// DesktopProbeTimeout is separate because dividing one budget evenly still
+// cannot fit that probe. `docker desktop status` has no timeout flag of its own
+// (its start/stop siblings do), so the budget is the only control, and a probe
+// that always expires reports DesktopStatusUnknown rather than the stopped
+// state it was asked about. Zero falls back to ProbeTimeout.
 type GamingManager struct {
-	Desktop      DesktopProcess
-	Docker       DockerInspector
-	WSL          WSLManager
-	ProbeTimeout time.Duration
+	Desktop             DesktopProcess
+	Docker              DockerInspector
+	WSL                 WSLManager
+	ProbeTimeout        time.Duration
+	DesktopProbeTimeout time.Duration
 }
 
 // probe derives one probe's deadline from the caller's context. The caller's
 // own deadline still bounds the whole, because a derived context expires no
 // later than its parent.
 func (m GamingManager) probe(ctx context.Context) (context.Context, context.CancelFunc) {
-	if m.ProbeTimeout <= 0 {
+	return budgeted(ctx, m.ProbeTimeout)
+}
+
+func (m GamingManager) desktopProbe(ctx context.Context) (context.Context, context.CancelFunc) {
+	if m.DesktopProbeTimeout > 0 {
+		return budgeted(ctx, m.DesktopProbeTimeout)
+	}
+	return m.probe(ctx)
+}
+
+func budgeted(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeoutCause(ctx, m.ProbeTimeout, ErrProbeTimedOut)
+	return context.WithTimeoutCause(ctx, budget, ErrProbeTimedOut)
 }
 
 func (m GamingManager) Inventory(ctx context.Context) GamingInventory {
 	var inventory GamingInventory
 
-	statusContext, cancelStatus := m.probe(ctx)
+	statusContext, cancelStatus := m.desktopProbe(ctx)
 	status, err := m.Desktop.Status(statusContext)
 	cancelStatus()
 	if err != nil {
@@ -107,12 +125,14 @@ func (m GamingManager) Verify(ctx context.Context) (GamingVerification, error) {
 	var verification GamingVerification
 	var failures []error
 
-	statusContext, cancelStatus := m.probe(ctx)
+	statusContext, cancelStatus := m.desktopProbe(ctx)
 	status, err := m.Desktop.Status(statusContext)
-	statusTimedOut := errors.Is(context.Cause(statusContext), ErrProbeTimedOut)
 	cancelStatus()
 	if err != nil {
-		verification.DesktopUnverified = statusTimedOut
+		// Every probe error leaves the postcondition unobserved, not observed
+		// false: a launch, parse, or permission failure says as little about the
+		// desktop's state as a timeout does.
+		verification.DesktopUnverified = true
 		failures = append(failures, fmt.Errorf("query Docker Desktop status: %w", err))
 	} else {
 		verification.DesktopStopped = status == DesktopStatusStopped
@@ -123,10 +143,9 @@ func (m GamingManager) Verify(ctx context.Context) (GamingVerification, error) {
 
 	engineContext, cancelEngine := m.probe(ctx)
 	reachable, err := m.Docker.EngineReachable(engineContext)
-	engineTimedOut := errors.Is(context.Cause(engineContext), ErrProbeTimedOut)
 	cancelEngine()
 	if err != nil {
-		verification.DockerUnverified = engineTimedOut
+		verification.DockerUnverified = true
 		failures = append(failures, fmt.Errorf("query Docker engine status: %w", err))
 	} else {
 		verification.DockerUnreachable = !reachable
@@ -137,10 +156,9 @@ func (m GamingManager) Verify(ctx context.Context) (GamingVerification, error) {
 
 	wslContext, cancelWSL := m.probe(ctx)
 	distributions, err := m.WSL.Running(wslContext)
-	wslTimedOut := errors.Is(context.Cause(wslContext), ErrProbeTimedOut)
 	cancelWSL()
 	if err != nil {
-		verification.WSLUnverified = wslTimedOut
+		verification.WSLUnverified = true
 		failures = append(failures, fmt.Errorf("WSL inventory: %w", err))
 	} else {
 		verification.RunningDistributions = distributions

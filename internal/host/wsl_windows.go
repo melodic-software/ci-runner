@@ -41,11 +41,12 @@ func (w WSLCLI) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func NewPlatformGamingHost(probeTimeout time.Duration) GamingHost {
+func NewPlatformGamingHost(probeTimeout, desktopProbeTimeout time.Duration) GamingHost {
 	return GamingManager{
-		Desktop:      DockerDesktopCLI{},
-		Docker:       DockerEngineInspector{},
-		WSL:          WSLCLI{},
-		ProbeTimeout: probeTimeout,
+		Desktop:             DockerDesktopCLI{},
+		Docker:              DockerEngineInspector{},
+		WSL:                 WSLCLI{},
+		ProbeTimeout:        probeTimeout,
+		DesktopProbeTimeout: desktopProbeTimeout,
 	}
 }

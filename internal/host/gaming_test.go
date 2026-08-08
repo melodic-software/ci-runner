@@ -21,6 +21,38 @@ func (d *blockingDesktop) Status(ctx context.Context) (DesktopStatus, error) {
 func (d *blockingDesktop) Start(context.Context) error { return nil }
 func (d *blockingDesktop) Stop(context.Context) error  { return nil }
 
+// failingDesktop models a probe that fails for its own reasons — executable
+// resolution, launch, or output parsing — rather than by exhausting its budget.
+type failingDesktop struct{ err error }
+
+func (d failingDesktop) Status(context.Context) (DesktopStatus, error) {
+	return DesktopStatusUnknown, d.err
+}
+
+func (d failingDesktop) Start(context.Context) error { return nil }
+func (d failingDesktop) Stop(context.Context) error  { return nil }
+
+// slowDesktop answers, but only after a delay that exceeds the sibling probes'
+// budget — the real `docker desktop status` shape while Desktop is stopped.
+type slowDesktop struct {
+	delay  time.Duration
+	status DesktopStatus
+}
+
+func (d *slowDesktop) Status(ctx context.Context) (DesktopStatus, error) {
+	timer := time.NewTimer(d.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return DesktopStatusUnknown, ctx.Err()
+	case <-timer.C:
+		return d.status, nil
+	}
+}
+
+func (d *slowDesktop) Start(context.Context) error { return nil }
+func (d *slowDesktop) Stop(context.Context) error  { return nil }
+
 type answeringDesktop struct{ status DesktopStatus }
 
 func (d answeringDesktop) Status(context.Context) (DesktopStatus, error) { return d.status, nil }
@@ -123,6 +155,44 @@ func TestVerifyReportsATimedOutPostconditionAsUnverifiedRatherThanUnsatisfied(t 
 	}
 	if verification.DockerUnverified || verification.WSLUnverified {
 		t.Fatalf("probes that answered must not be marked unverified, got %#v", verification)
+	}
+}
+
+func TestVerifyMarksAPostconditionUnverifiedWhenTheProbeFailsWithoutTimingOut(t *testing.T) {
+	manager := GamingManager{
+		Desktop:      failingDesktop{err: errors.New("resolve docker.exe")},
+		Docker:       &recordingDocker{reachable: false},
+		WSL:          &recordingWSL{},
+		ProbeTimeout: time.Second,
+	}
+
+	verification, err := manager.Verify(context.Background())
+
+	if err == nil {
+		t.Fatal("a probe that returned an error must not verify clean")
+	}
+	if !verification.DesktopUnverified {
+		t.Fatalf("a probe that answered with an error observed nothing, so it is unverified, got %#v", verification)
+	}
+}
+
+func TestTheDesktopProbeUsesItsOwnBudgetWhileSiblingsKeepTheShorterOne(t *testing.T) {
+	desktop := &slowDesktop{delay: 60 * time.Millisecond, status: DesktopStatusStopped}
+	manager := GamingManager{
+		Desktop:             desktop,
+		Docker:              &recordingDocker{reachable: false},
+		WSL:                 &recordingWSL{},
+		ProbeTimeout:        20 * time.Millisecond,
+		DesktopProbeTimeout: time.Second,
+	}
+
+	inventory := manager.Inventory(context.Background())
+
+	if inventory.DesktopStatus != DesktopStatusStopped {
+		t.Fatalf("the desktop probe must outlive the sibling budget and report its real status, got %#v", inventory.DesktopStatus)
+	}
+	if len(inventory.Problems) != 0 {
+		t.Fatalf("no probe should have failed, got %#v", inventory.Problems)
 	}
 }
 

@@ -158,6 +158,85 @@ func TestDoctorAdvisoryPendingRebootWarnsWithoutDegradingExitCode(t *testing.T) 
 	}
 }
 
+// verifyingGamingHost answers Verify, which fakeGamingHost deliberately refuses
+// to do. Doctor is the one caller that legitimately verifies, so the gaming
+// branch needs a host that can report a postcondition result.
+type verifyingGamingHost struct {
+	inventory    host.GamingInventory
+	verification host.GamingVerification
+	verifyErr    error
+}
+
+func (f verifyingGamingHost) Inventory(context.Context) host.GamingInventory { return f.inventory }
+func (verifyingGamingHost) StopAll(context.Context) error {
+	return errors.New("CLI must not stop host directly")
+}
+
+func (f verifyingGamingHost) Verify(context.Context) (host.GamingVerification, error) {
+	return f.verification, f.verifyErr
+}
+
+func TestDoctorExitsZeroInGamingModeWhenTheDesktopProbeCouldNotAnswer(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeGaming, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseGaming))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseGaming, Version: "1.2.3"}}
+	application.dependencies.Gaming = verifyingGamingHost{
+		inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusUnknown, Problems: []string{"Docker Desktop status: probe did not complete"}},
+		verification: host.GamingVerification{
+			DesktopUnverified: true,
+			DockerUnreachable: true,
+			NoRunningWSL:      true,
+		},
+		verifyErr: errors.New("query Docker Desktop status: probe did not complete"),
+	}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
+		t.Fatalf("an unverifiable postcondition degraded the gaming-mode exit code to %d; output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "[WARN] gaming-postconditions") {
+		t.Fatalf("an unverified postcondition must surface as WARN:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "desktopStopped=unverified") {
+		t.Fatalf("an unchecked postcondition must not render as an observed failure:\n%s", out.String())
+	}
+}
+
+func TestDoctorStillFailsInGamingModeWhenAPostconditionIsObservedViolated(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeGaming, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseGaming))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseGaming, Version: "1.2.3"}}
+	application.dependencies.Gaming = verifyingGamingHost{
+		inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusUnknown},
+		verification: host.GamingVerification{
+			DesktopUnverified:    true,
+			DockerUnreachable:    true,
+			RunningDistributions: []string{"Ubuntu"},
+		},
+		verifyErr: errors.New("WSL distributions are still running: [Ubuntu]"),
+	}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitDegraded {
+		t.Fatalf("an observed postcondition violation must degrade the exit code, got %d; output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "[FAIL] gaming-postconditions") {
+		t.Fatalf("an observed violation must surface as FAIL, not WARN:\n%s", out.String())
+	}
+}
+
 func TestDoctorJSONPreservesAdvisoryClassification(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
