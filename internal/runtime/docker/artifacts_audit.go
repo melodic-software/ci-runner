@@ -56,13 +56,13 @@ type TombstonedAdoptedContainer struct {
 
 // ArtifactAuditReport is the read-only disk-vs-catalog audit result.
 type ArtifactAuditReport struct {
-	RetentionCutoff    time.Time                  `json:"retentionCutoff"`
-	CatalogAvailable   bool                       `json:"catalogAvailable"`
-	CatalogError       string                     `json:"catalogError,omitempty"`
-	InventoryAvailable bool                       `json:"inventoryAvailable"`
-	InventoryError     string                     `json:"inventoryError,omitempty"`
-	Directories        []ArtifactAuditDirectory   `json:"directories"`
-	ReferencedMissing  []ArtifactAuditFile        `json:"referencedMissing"`
+	RetentionCutoff    time.Time                    `json:"retentionCutoff"`
+	CatalogAvailable   bool                         `json:"catalogAvailable"`
+	CatalogError       string                       `json:"catalogError,omitempty"`
+	InventoryAvailable bool                         `json:"inventoryAvailable"`
+	InventoryError     string                       `json:"inventoryError,omitempty"`
+	Directories        []ArtifactAuditDirectory     `json:"directories"`
+	ReferencedMissing  []ArtifactAuditFile          `json:"referencedMissing"`
 	TombstonedAdopted  []TombstonedAdoptedContainer `json:"tombstonedAdopted,omitempty"`
 }
 
