@@ -21,6 +21,18 @@ type recordingACL struct {
 
 type unlockErrorLocker struct{ err error }
 
+type lockFailureLocker struct{ err error }
+
+func (l lockFailureLocker) Lock(ctx context.Context) (func() error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if l.err == nil {
+		l.err = errors.New("state lock unavailable")
+	}
+	return nil, l.err
+}
+
 func (l unlockErrorLocker) Lock(ctx context.Context) (func() error, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -249,8 +261,65 @@ func TestObservedStillRejectsIncompatibleFiles(t *testing.T) {
 			if !strings.Contains(err.Error(), test.wantInErr) {
 				t.Fatalf("LoadObserved error = %v, want it to contain %q", err, test.wantInErr)
 			}
+			if !errors.Is(err, state.ErrCorruptObserved) {
+				t.Fatalf("LoadObserved error = %v, want state.ErrCorruptObserved", err)
+			}
 		})
 	}
+}
+
+func TestLoadObservedTransientFailuresAreNotCorrupt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
+	valid := model.ObservedState{SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now}
+
+	t.Run("lock failure", func(t *testing.T) {
+		t.Parallel()
+		directory := filepath.Join(t.TempDir(), "state")
+		lockErr := errors.New("sharing violation")
+		store, err := New(directory, lockFailureLocker{err: lockErr}, &recordingACL{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		contents := []byte(`{"schemaVersion":1,"phase":"ready","heartbeatAt":"2026-07-30T01:02:03Z"}` + "\n")
+		if err := os.WriteFile(filepath.Join(directory, observedFilename), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.LoadObserved(context.Background())
+		if err == nil {
+			t.Fatal("LoadObserved succeeded despite lock failure")
+		}
+		if errors.Is(err, state.ErrCorruptObserved) {
+			t.Fatalf("lock failure was classified as corruption: %v", err)
+		}
+		if !strings.Contains(err.Error(), "lock state") {
+			t.Fatalf("LoadObserved error = %v, want lock failure", err)
+		}
+	})
+
+	t.Run("open failure on valid file", func(t *testing.T) {
+		t.Parallel()
+		store, directory := newTestStore(t)
+		if err := store.SaveObserved(context.Background(), valid); err != nil {
+			t.Fatalf("SaveObserved: %v", err)
+		}
+		path := filepath.Join(directory, observedFilename)
+		if err := os.Chmod(path, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+		_, err := store.LoadObserved(context.Background())
+		if err == nil {
+			t.Fatal("LoadObserved succeeded despite open failure")
+		}
+		if errors.Is(err, state.ErrCorruptObserved) {
+			t.Fatalf("open failure was classified as corruption: %v", err)
+		}
+	})
 }
 
 func TestStoreRejectsInvalidRestartReceipts(t *testing.T) {

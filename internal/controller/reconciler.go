@@ -282,22 +282,29 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	recoveryOnly := false
 	var observedLoadErr error
+	observedTransientLoadErr := false
 	if err != nil && !errors.Is(err, statepkg.ErrNotFound) {
-		quarantiner, ok := r.deps.State.(interface{ QuarantineObserved(context.Context) error })
-		if !ok {
-			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err)
+		if errors.Is(err, statepkg.ErrCorruptObserved) {
+			quarantiner, ok := r.deps.State.(interface{ QuarantineObserved(context.Context) error })
+			if !ok {
+				return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err)
+			}
+			if quarantineErr := quarantiner.QuarantineObserved(ctx); quarantineErr != nil {
+				return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
+			}
+			// Preserve the corrupt source until SaveObserved atomically replaces it,
+			// then reconstruct the exact configured scale set solely to advertise
+			// zero. No worker or Desktop lifecycle mutation is allowed in this pass.
+			observedLoadErr = err
+			previous = model.ObservedState{}
+			recoveryOnly = true
+			desired.Mode = model.ModeDisabled
+			desired.TemporaryCapacityOverride = nil
+		} else {
+			observedLoadErr = fmt.Errorf("load observed state: %w", err)
+			observedTransientLoadErr = true
+			previous = model.ObservedState{}
 		}
-		if quarantineErr := quarantiner.QuarantineObserved(ctx); quarantineErr != nil {
-			return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
-		}
-		// Preserve the corrupt source until SaveObserved atomically replaces it,
-		// then reconstruct the exact configured scale set solely to advertise
-		// zero. No worker or Desktop lifecycle mutation is allowed in this pass.
-		observedLoadErr = err
-		previous = model.ObservedState{}
-		recoveryOnly = true
-		desired.Mode = model.ModeDisabled
-		desired.TemporaryCapacityOverride = nil
 	}
 
 	var operationErrors []error
@@ -318,10 +325,14 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		record("desired-state-error", "desired state could not be read; capacity is held at zero", "", true, desiredLoadErr)
 	}
 	if observedLoadErr != nil {
-		record("observed-state-recovered", "corrupt observed state was quarantined; exact configured listeners are held at zero and lifecycle mutations are suspended", "", false, observedLoadErr)
+		if observedTransientLoadErr {
+			record("observed-state-error", "observed state could not be read; new work is blocked", "", true, observedLoadErr)
+		} else {
+			record("observed-state-recovered", "corrupt observed state was quarantined; exact configured listeners are held at zero and lifecycle mutations are suspended", "", false, observedLoadErr)
+		}
 	}
 
-	observationFailed := false
+	observationFailed := observedTransientLoadErr
 	power, powerErr := r.deps.Power.Snapshot(ctx)
 	if powerErr != nil {
 		observationFailed = true

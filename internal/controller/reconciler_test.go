@@ -1496,6 +1496,28 @@ func TestCorruptObservedStateQuarantinesAndAdvertisesZeroWithoutLifecycleMutatio
 	}
 }
 
+func TestTransientObservedLoadDoesNotQuarantineOrDisableFleet(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	badStore := &transientObservedStore{Store: harness.store}
+	harness.controller.deps.State = badStore
+	result, err := harness.controller.Step(context.Background())
+	if err == nil {
+		t.Fatal("expected transient observed load to surface as a retryable step error")
+	}
+	if badStore.quarantined {
+		t.Fatal("transient observed load quarantined a valid checkpoint")
+	}
+	desired, err := harness.store.LoadDesired(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desired.Mode != model.ModeEnabled {
+		t.Fatalf("desired mode = %q, want enabled preserved across transient observed read", desired.Mode)
+	}
+	assertProblemCode(t, result.Observed.Problems, "observed-state-error")
+}
+
 func TestMissingDesiredStateDefaultsDisabled(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeDisabled)
@@ -2434,10 +2456,24 @@ type corruptObservedStore struct {
 }
 
 func (*corruptObservedStore) LoadObserved(context.Context) (model.ObservedState, error) {
-	return model.ObservedState{}, errors.New("corrupt JSON")
+	return model.ObservedState{}, fmt.Errorf("%w: decode observed.json: invalid character", statepkg.ErrCorruptObserved)
 }
 
 func (s *corruptObservedStore) QuarantineObserved(context.Context) error {
+	s.quarantined = true
+	return nil
+}
+
+type transientObservedStore struct {
+	statepkg.Store
+	quarantined bool
+}
+
+func (*transientObservedStore) LoadObserved(context.Context) (model.ObservedState, error) {
+	return model.ObservedState{}, fmt.Errorf("lock state: %w", errors.New("sharing violation"))
+}
+
+func (s *transientObservedStore) QuarantineObserved(context.Context) error {
 	s.quarantined = true
 	return nil
 }

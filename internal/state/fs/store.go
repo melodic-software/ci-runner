@@ -28,6 +28,10 @@ const (
 
 var restartRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+// errLoadContent marks decode and size-limit failures from load(). Lock, open,
+// read, close, and unlock failures are returned without this marker.
+var errLoadContent = errors.New("state load content")
+
 type Locker interface {
 	Lock(context.Context) (func() error, error)
 }
@@ -98,12 +102,22 @@ func (s *Store) SaveDesired(ctx context.Context, value model.DesiredState) error
 func (s *Store) LoadObserved(ctx context.Context) (model.ObservedState, error) {
 	var value model.ObservedState
 	if err := s.load(ctx, observedFilename, &value, ignoreUnknownFields); err != nil {
-		return model.ObservedState{}, err
+		return model.ObservedState{}, classifyObservedLoadErr(err)
 	}
 	if err := validateObserved(value); err != nil {
-		return model.ObservedState{}, fmt.Errorf("invalid observed state: %w", err)
+		return model.ObservedState{}, fmt.Errorf("%w: invalid observed state: %w", state.ErrCorruptObserved, err)
 	}
 	return value, nil
+}
+
+func classifyObservedLoadErr(err error) error {
+	if err == nil || errors.Is(err, state.ErrNotFound) {
+		return err
+	}
+	if errors.Is(err, errLoadContent) {
+		return fmt.Errorf("%w: %w", state.ErrCorruptObserved, err)
+	}
+	return err
 }
 
 func (s *Store) SaveObserved(ctx context.Context, value model.ObservedState) error {
@@ -208,21 +222,21 @@ func (s *Store) load(ctx context.Context, name string, destination any, unknown 
 		return fmt.Errorf("read %s: %w", name, err)
 	}
 	if len(contents) > maximumStateSize {
-		return fmt.Errorf("%s exceeds the %d-byte safety limit", name, maximumStateSize)
+		return fmt.Errorf("%w: %s exceeds the %d-byte safety limit", errLoadContent, name, maximumStateSize)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	if unknown == rejectUnknownFields {
 		decoder.DisallowUnknownFields()
 	}
 	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("decode %s: %w", name, err)
+		return fmt.Errorf("%w: decode %s: %w", errLoadContent, name, err)
 	}
 	var trailer any
 	if err := decoder.Decode(&trailer); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return fmt.Errorf("decode %s: multiple JSON values are not allowed", name)
+			return fmt.Errorf("%w: decode %s: multiple JSON values are not allowed", errLoadContent, name)
 		}
-		return fmt.Errorf("decode %s trailer: %w", name, err)
+		return fmt.Errorf("%w: decode %s trailer: %w", errLoadContent, name, err)
 	}
 	return nil
 }

@@ -10,7 +10,14 @@ import (
 	"github.com/melodic-software/ci-runner/internal/model"
 )
 
-var ErrNotFound = errors.New("state not found")
+var (
+	ErrNotFound = errors.New("state not found")
+	// ErrCorruptObserved marks observed.json bytes that failed decode or
+	// validation. Transient lock, open, read, and close failures are returned
+	// without this sentinel so callers can retry without quarantining a valid
+	// file.
+	ErrCorruptObserved = errors.New("observed state is corrupt")
+)
 
 type Store interface {
 	LoadDesired(context.Context) (model.DesiredState, error)
