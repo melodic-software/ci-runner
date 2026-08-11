@@ -307,12 +307,13 @@ func TestLoadObservedTransientFailuresAreNotCorrupt(t *testing.T) {
 			t.Fatalf("SaveObserved: %v", err)
 		}
 		path := filepath.Join(directory, observedFilename)
-		if err := os.Chmod(path, 0o000); err != nil {
-			t.Fatal(err)
+		release, err := blockObservedOpen(path)
+		if err != nil {
+			t.Fatalf("block observed open: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		defer release()
 
-		_, err := store.LoadObserved(context.Background())
+		_, err = store.LoadObserved(context.Background())
 		if err == nil {
 			t.Fatal("LoadObserved succeeded despite open failure")
 		}
