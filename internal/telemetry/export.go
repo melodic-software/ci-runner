@@ -32,8 +32,10 @@ const (
 type Options struct {
 	HostID  string
 	Version string
-	OnError func(error)
-	Export  *ExportConfig
+	// OnExportNotice receives coalesced OTLP export failures and recovery
+	// signals instead of one callback per export cycle.
+	OnExportNotice func(ExportNotice)
+	Export         *ExportConfig
 }
 
 // ExportConfig is the reviewed host configuration for OTLP export. When it is
@@ -85,9 +87,7 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 	provider := &Provider{recorder: Noop()}
-	if options.OnError == nil {
-		options.OnError = func(error) {}
-	}
+	exportSink := newExportDegradedSink(options.OnExportNotice, defaultExportDegradedSummaryInterval)
 	if options.HostID == "" || options.Version == "" {
 		return provider, []error{errors.New("telemetry service identity requires host ID and version")}
 	}
@@ -117,7 +117,7 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 		return provider, problems
 	}
 
-	otel.SetErrorHandler(otel.ErrorHandlerFunc(options.OnError))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(exportSink.handle))
 	identity := resource.NewSchemaless(
 		semconv.ServiceName("ci-runner-controller"),
 		semconv.ServiceNamespace("melodic-software"),
@@ -137,6 +137,7 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 		} else if exporter, exporterErr := newTraceExporter(ctx, protocol, endpoint); exporterErr != nil {
 			problems = append(problems, fmt.Errorf("initialize OTLP trace exporter: %w", exporterErr))
 		} else {
+			exporter = &instrumentedTraceExporter{inner: exporter, sink: exportSink}
 			traces := sdktrace.NewTracerProvider(sdktrace.WithResource(identity), sdktrace.WithBatcher(exporter))
 			tracerProvider = traces
 			provider.shutdown = append(provider.shutdown, traces.Shutdown)
@@ -159,6 +160,7 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 		} else if exporter, exporterErr := newMetricExporter(ctx, protocol, endpoint); exporterErr != nil {
 			problems = append(problems, fmt.Errorf("initialize OTLP metric exporter: %w", exporterErr))
 		} else {
+			exporter = &instrumentedMetricExporter{inner: exporter, sink: exportSink}
 			reader := metric.NewPeriodicReader(exporter, metric.WithInterval(interval), metric.WithTimeout(timeout))
 			metrics := metric.NewMeterProvider(metric.WithResource(identity), metric.WithReader(reader))
 			meterProvider = metrics
@@ -173,6 +175,35 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 		return provider, problems
 	}
 	provider.recorder = recorder
+	if provider.enabled {
+		probeEndpoint := endpoint
+		probeProtocol := traceProtocol
+		if probeProtocol == "" {
+			probeProtocol = metricProtocol
+		}
+		if options.Export == nil {
+			if traceEnabled {
+				if protocol, protocolErr := signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"); protocolErr == nil {
+					probeProtocol = protocol
+				}
+			} else if metricEnabled {
+				if protocol, protocolErr := signalProtocol(os.LookupEnv, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"); protocolErr == nil {
+					probeProtocol = protocol
+				}
+			}
+			if probeEndpoint == "" {
+				for _, variable := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"} {
+					if raw, present := os.LookupEnv(variable); present && strings.TrimSpace(raw) != "" {
+						probeEndpoint = strings.TrimSpace(raw)
+						break
+					}
+				}
+			}
+		}
+		if probeErr := probeEndpointReachable(probeEndpoint, probeProtocol); probeErr != nil {
+			exportSink.markUnreachable(fmt.Errorf("OTLP endpoint probe failed: %w", probeErr))
+		}
+	}
 	return provider, problems
 }
 
