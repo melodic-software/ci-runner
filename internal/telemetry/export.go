@@ -87,7 +87,6 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 	provider := &Provider{recorder: Noop()}
-	exportSink := newExportDegradedSink(options.OnExportNotice, defaultExportDegradedSummaryInterval)
 	if options.HostID == "" || options.Version == "" {
 		return provider, []error{errors.New("telemetry service identity requires host ID and version")}
 	}
@@ -116,6 +115,8 @@ func NewFromEnv(ctx context.Context, options Options) (*Provider, []error) {
 	if !traceEnabled && !metricEnabled {
 		return provider, problems
 	}
+
+	exportSink := newExportDegradedSink(options.OnExportNotice, defaultExportDegradedSummaryInterval, traceEnabled, metricEnabled)
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(exportSink.handle))
 	identity := resource.NewSchemaless(

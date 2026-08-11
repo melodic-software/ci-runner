@@ -34,10 +34,18 @@ type ExportNotice struct {
 	Suppressed uint64
 }
 
+type exportSignal int
+
+const (
+	exportSignalTraces exportSignal = iota
+	exportSignalMetrics
+)
+
 type exportDegradedSink struct {
 	notify          func(ExportNotice)
 	mu              sync.Mutex
-	degraded        bool
+	enabled         map[exportSignal]struct{}
+	degraded        map[exportSignal]struct{}
 	suppressed      uint64
 	lastErr         error
 	lastSummaryAt   time.Time
@@ -45,15 +53,24 @@ type exportDegradedSink struct {
 	now             func() time.Time
 }
 
-func newExportDegradedSink(notify func(ExportNotice), summaryInterval time.Duration) *exportDegradedSink {
+func newExportDegradedSink(notify func(ExportNotice), summaryInterval time.Duration, tracesEnabled, metricsEnabled bool) *exportDegradedSink {
 	if notify == nil {
 		notify = func(ExportNotice) {}
 	}
 	if summaryInterval <= 0 {
 		summaryInterval = defaultExportDegradedSummaryInterval
 	}
+	enabled := make(map[exportSignal]struct{})
+	if tracesEnabled {
+		enabled[exportSignalTraces] = struct{}{}
+	}
+	if metricsEnabled {
+		enabled[exportSignalMetrics] = struct{}{}
+	}
 	return &exportDegradedSink{
 		notify:          notify,
+		enabled:         enabled,
+		degraded:        make(map[exportSignal]struct{}),
 		summaryInterval: summaryInterval,
 		now:             time.Now,
 	}
@@ -71,12 +88,30 @@ func (s *exportDegradedSink) handle(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.degraded {
-		s.degraded = true
+	signals := exportErrorSignals(err, s.enabled)
+	if len(signals) == 0 {
+		return
+	}
+
+	wasDegraded := len(s.degraded) > 0
+	newlyDegraded := false
+	for _, signal := range signals {
+		if _, already := s.degraded[signal]; already {
+			continue
+		}
+		s.degraded[signal] = struct{}{}
+		newlyDegraded = true
+	}
+
+	if !wasDegraded && newlyDegraded {
 		s.lastErr = err
 		s.suppressed = 0
 		s.lastSummaryAt = s.now()
 		s.notify(ExportNotice{Kind: ExportNoticeUnreachable, Err: err})
+		return
+	}
+
+	if !wasDegraded {
 		return
 	}
 
@@ -89,13 +124,19 @@ func (s *exportDegradedSink) handle(err error) {
 	}
 }
 
-func (s *exportDegradedSink) recordSuccess() {
+func (s *exportDegradedSink) recordSuccess(signal exportSignal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.degraded {
+	if _, enabled := s.enabled[signal]; !enabled {
 		return
 	}
-	s.degraded = false
+	if _, degraded := s.degraded[signal]; !degraded {
+		return
+	}
+	delete(s.degraded, signal)
+	if len(s.degraded) > 0 {
+		return
+	}
 	s.suppressed = 0
 	s.lastErr = nil
 	s.notify(ExportNotice{Kind: ExportNoticeRestored})
@@ -107,10 +148,12 @@ func (s *exportDegradedSink) markUnreachable(err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.degraded {
+	if len(s.degraded) > 0 {
 		return
 	}
-	s.degraded = true
+	for signal := range s.enabled {
+		s.degraded[signal] = struct{}{}
+	}
 	s.lastErr = err
 	s.suppressed = 0
 	s.lastSummaryAt = s.now()
@@ -128,6 +171,25 @@ func (s *exportDegradedSink) emitSummaryLocked() {
 	})
 	s.suppressed = 0
 	s.lastSummaryAt = s.now()
+}
+
+func exportErrorSignals(err error, enabled map[exportSignal]struct{}) []exportSignal {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "traces export:"):
+		if _, ok := enabled[exportSignalTraces]; ok {
+			return []exportSignal{exportSignalTraces}
+		}
+	case strings.Contains(message, "metrics export:"):
+		if _, ok := enabled[exportSignalMetrics]; ok {
+			return []exportSignal{exportSignalMetrics}
+		}
+	}
+	signals := make([]exportSignal, 0, len(enabled))
+	for signal := range enabled {
+		signals = append(signals, signal)
+	}
+	return signals
 }
 
 func isExportError(err error) bool {
@@ -161,7 +223,8 @@ func endpointHostPort(endpoint, protocol string) (string, string, error) {
 			return "127.0.0.1", "4318", nil
 		}
 	}
-	if !strings.Contains(endpoint, "://") {
+	explicitScheme := strings.Contains(endpoint, "://")
+	if !explicitScheme {
 		endpoint = "http://" + endpoint
 	}
 	parsed, err := url.Parse(endpoint)
@@ -174,14 +237,27 @@ func endpointHostPort(endpoint, protocol string) (string, string, error) {
 	}
 	port := parsed.Port()
 	if port == "" {
-		switch protocol {
-		case "grpc":
-			port = "4317"
-		default:
-			port = "4318"
+		if explicitScheme {
+			switch parsed.Scheme {
+			case "https":
+				port = "443"
+			case "http":
+				port = "80"
+			default:
+				port = defaultOTLPPort(protocol)
+			}
+		} else {
+			port = defaultOTLPPort(protocol)
 		}
 	}
 	return host, port, nil
+}
+
+func defaultOTLPPort(protocol string) string {
+	if protocol == "grpc" {
+		return "4317"
+	}
+	return "4318"
 }
 
 type instrumentedTraceExporter struct {
@@ -192,7 +268,7 @@ type instrumentedTraceExporter struct {
 func (e *instrumentedTraceExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := e.inner.ExportSpans(ctx, spans)
 	if err == nil {
-		e.sink.recordSuccess()
+		e.sink.recordSuccess(exportSignalTraces)
 	}
 	return err
 }
@@ -217,7 +293,7 @@ func (e *instrumentedMetricExporter) Aggregation(kind metric.InstrumentKind) met
 func (e *instrumentedMetricExporter) Export(ctx context.Context, metrics *metricdata.ResourceMetrics) error {
 	err := e.inner.Export(ctx, metrics)
 	if err == nil {
-		e.sink.recordSuccess()
+		e.sink.recordSuccess(exportSignalMetrics)
 	}
 	return err
 }
