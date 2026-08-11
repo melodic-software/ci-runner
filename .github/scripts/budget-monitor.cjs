@@ -92,11 +92,17 @@ async function summarizeUsage(usageItems, { includedMinutes, github }) {
   const actionsItems = usageItems.filter(isActionsMinuteItem);
   const eligibleItems = actionsItems.filter(item => isStandardHostedSku(item) && hasRequiredFields(item));
 
-  const actionsNonMinute = usageItems.filter(
-    item => String(item.product ?? '').toLowerCase() === ACTIONS_PRODUCT && !isActionsMinuteItem(item),
+  // Fail loud only when a standard hosted runner SKU reports a non-minute unit —
+  // that is a vocabulary change for the rows this monitor counts. Legitimate
+  // non-minute Actions products (storage, etc.) are excluded and must not block
+  // a zero-consumption month before any runner-minute row exists.
+  const runnerSkusWithUnexpectedUnit = usageItems.filter(
+    item => String(item.product ?? '').toLowerCase() === ACTIONS_PRODUCT
+      && isStandardHostedSku(item)
+      && !isActionsMinuteItem(item),
   );
-  if (actionsNonMinute.length > 0 && actionsItems.length === 0) {
-    throw new Error('Actions usage was reported but no item carried a minute unit type; the usage-report vocabulary changed.');
+  if (runnerSkusWithUnexpectedUnit.length > 0) {
+    throw new Error('A standard hosted Actions runner SKU was reported without a minute unit type; the usage-report vocabulary changed.');
   }
 
   const visibilityCache = new Map();
@@ -180,8 +186,8 @@ function poolIncidentMarker(org) {
   return `<!-- ci-runner:actions-budget-monitor:incident:${org}:pool -->`;
 }
 
-function tierMarker(threshold) {
-  return `<!-- ci-runner:actions-budget-monitor:tier:${threshold} -->`;
+function tierMarker(month, threshold) {
+  return `<!-- ci-runner:actions-budget-monitor:tier:${month}:${threshold} -->`;
 }
 
 function renderSkuMarkdownTable(perSku, { maxRows = MAX_SKU_TABLE_ROWS } = {}) {
@@ -236,6 +242,27 @@ async function closeIncident({ github, homeOwner, homeRepo, core, existing, reco
   core.info(`Closed incident #${existing.number}.`);
 }
 
+function reportedThresholdsForMonth(body, month, breachedThresholds) {
+  return breachedThresholds.filter(threshold => (body ?? '').includes(tierMarker(month, threshold)));
+}
+
+function buildPoolIncidentBody({ budget, nowIso, reportedThresholds, marker }) {
+  const highestThreshold = Math.max(...budget.breachedThresholds);
+  const tierMarkers = reportedThresholds.map(threshold => tierMarker(budget.month, threshold)).join('');
+  const bodyWithoutMarker = [
+    tierMarkers,
+    '',
+    `Actions included-minute consumption alert for \`${budget.org}\`: ${highestThreshold}% of the included allowance reached.`,
+    '',
+    `Billing month ${budget.month}: ${budget.consumedMinutes} of ${budget.includedMinutes} included minute(s) consumed (${budget.percentUsed}%). Last confirmed ${nowIso}.`,
+    '',
+    renderSkuMarkdownTable(budget.perSku),
+    '',
+    poolRecoverySummary.trim(),
+  ].join('\n');
+  return boundBodyLength(bodyWithoutMarker, marker);
+}
+
 async function upsertPoolIncident({ github, core, homeOwner, homeRepo, issueAuthorLogin, budget, nowIso }) {
   const marker = poolIncidentMarker(budget.org);
   const existing = await findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin });
@@ -257,25 +284,14 @@ async function upsertPoolIncident({ github, core, homeOwner, homeRepo, issueAuth
   }
 
   const highestThreshold = Math.max(...budget.breachedThresholds);
-  const tierMarkers = budget.breachedThresholds.map(tierMarker).join('');
-  const escalatedThresholds = existing
-    ? budget.breachedThresholds.filter(threshold => !(existing.body ?? '').includes(tierMarker(threshold)))
-    : [];
-
-  const bodyWithoutMarker = [
-    tierMarkers,
-    '',
-    `Actions included-minute consumption alert for \`${budget.org}\`: ${highestThreshold}% of the included allowance reached.`,
-    '',
-    `Billing month ${budget.month}: ${budget.consumedMinutes} of ${budget.includedMinutes} included minute(s) consumed (${budget.percentUsed}%). Last confirmed ${nowIso}.`,
-    '',
-    renderSkuMarkdownTable(budget.perSku),
-    '',
-    poolRecoverySummary.trim(),
-  ].join('\n');
-  const body = boundBodyLength(bodyWithoutMarker, marker);
 
   if (!existing) {
+    const body = buildPoolIncidentBody({
+      budget,
+      nowIso,
+      reportedThresholds: budget.breachedThresholds,
+      marker,
+    });
     const created = await github.rest.issues.create({
       owner: homeOwner,
       repo: homeRepo,
@@ -287,15 +303,44 @@ async function upsertPoolIncident({ github, core, homeOwner, homeRepo, issueAuth
     return;
   }
 
-  await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body });
-  if (escalatedThresholds.length > 0) {
-    await github.rest.issues.createComment({
-      owner: homeOwner,
-      repo: homeRepo,
-      issue_number: existing.number,
-      body: `Escalated to ${highestThreshold}% of the included allowance: ${budget.consumedMinutes} of ${budget.includedMinutes} minute(s) consumed in ${budget.month} as of ${nowIso}.`,
+  const reportedThresholds = reportedThresholdsForMonth(existing.body, budget.month, budget.breachedThresholds);
+  const escalatedThresholds = budget.breachedThresholds.filter(threshold => !reportedThresholds.includes(threshold));
+
+  if (escalatedThresholds.length === 0) {
+    const body = buildPoolIncidentBody({
+      budget,
+      nowIso,
+      reportedThresholds: budget.breachedThresholds,
+      marker,
     });
+    await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body });
+    core.info(`Updated pool incident #${existing.number} for ${budget.org}.`);
+    return;
   }
+
+  // Retry-safe escalation: refresh the body and notify before persisting tier
+  // markers for thresholds whose comment has not yet succeeded. If the comment
+  // fails, the next run still sees the threshold as unreported for this month.
+  const bodyBeforeEscalation = buildPoolIncidentBody({
+    budget,
+    nowIso,
+    reportedThresholds,
+    marker,
+  });
+  await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body: bodyBeforeEscalation });
+  await github.rest.issues.createComment({
+    owner: homeOwner,
+    repo: homeRepo,
+    issue_number: existing.number,
+    body: `Escalated to ${highestThreshold}% of the included allowance: ${budget.consumedMinutes} of ${budget.includedMinutes} minute(s) consumed in ${budget.month} as of ${nowIso}.`,
+  });
+  const bodyAfterEscalation = buildPoolIncidentBody({
+    budget,
+    nowIso,
+    reportedThresholds: budget.breachedThresholds,
+    marker,
+  });
+  await github.rest.issues.update({ owner: homeOwner, repo: homeRepo, issue_number: existing.number, body: bodyAfterEscalation });
   core.info(`Updated pool incident #${existing.number} for ${budget.org}.`);
 }
 
@@ -340,6 +385,8 @@ module.exports = {
   resolveRepositoryVisibility,
   run,
   summarizeUsage,
+  buildPoolIncidentBody,
+  reportedThresholdsForMonth,
   tierMarker,
   upsertIncident,
 };

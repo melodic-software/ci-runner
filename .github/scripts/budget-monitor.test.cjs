@@ -16,6 +16,7 @@ const {
   poolIncidentTitle,
   poolRecoverySummary,
   renderSkuMarkdownTable,
+  reportedThresholdsForMonth,
   resolveRepositoryVisibility,
   run,
   STANDARD_HOSTED_SKUS,
@@ -69,6 +70,7 @@ function fakeGitHub({
   existingIssues = [],
   repoVisibility = {},
   repoLookupFailure = {},
+  commentFailure = false,
 } = {}) {
   const calls = [];
   const listForRepo = Symbol('listForRepo');
@@ -90,7 +92,10 @@ function fakeGitHub({
         listForRepo,
         async create(parameters) { calls.push(['create', parameters]); return { data: { number: 101 } }; },
         async update(parameters) { calls.push(['update', parameters]); },
-        async createComment(parameters) { calls.push(['createComment', parameters]); },
+        async createComment(parameters) {
+          calls.push(['createComment', parameters]);
+          if (commentFailure) throw new Error('comment failed');
+        },
       },
     },
     async request(route, parameters) {
@@ -209,11 +214,19 @@ test('summarizeUsage drops rows missing required fields', async () => {
   assert.equal(summary.consumedMinutes, 100);
 });
 
-test('summarizeUsage refuses to report a quiet zero when Actions usage carries an unrecognized unit', async () => {
+test('summarizeUsage refuses to report a quiet zero when a runner SKU carries an unrecognized unit', async () => {
   await assert.rejects(
-    () => summarizeUsage([usageItem({ unitType: 'compute-credits' })], { includedMinutes: 3000, github: fakeGitHub() }),
-    /usage-report vocabulary changed/,
+    () => summarizeUsage([usageItem({ sku: 'Actions Linux', unitType: 'compute-credits' })], { includedMinutes: 3000, github: fakeGitHub() }),
+    /standard hosted Actions runner SKU was reported without a minute unit type/,
   );
+});
+
+test('summarizeUsage tolerates legitimate non-minute Actions products such as storage', async () => {
+  const summary = await summarizeUsage([
+    usageItem({ sku: 'Actions Storage', unitType: 'GigabyteHours', quantity: 12 }),
+  ], { includedMinutes: 3000, github: fakeGitHub() });
+  assert.equal(summary.consumedMinutes, 0);
+  assert.deepEqual(summary.breachedThresholds, []);
 });
 
 test('summarizeUsage tolerates the documented field names under any value casing', async () => {
@@ -414,7 +427,18 @@ test('recovery guidance names free capacity for the pool', () => {
   assert.match(poolRecoverySummary, /new billing month resets the allowance/);
 });
 
-test('upsertIncident opens a pool incident carrying the breached tier markers', async () => {
+test('tierMarker scopes escalation state to the billing month', () => {
+  assert.equal(tierMarker('2026-07', 50), '<!-- ci-runner:actions-budget-monitor:tier:2026-07:50 -->');
+  assert.notEqual(tierMarker('2026-07', 50), tierMarker('2026-08', 50));
+});
+
+test('reportedThresholdsForMonth ignores prior-month markers on a still-open incident', () => {
+  const julyBody = `${tierMarker('2026-07', 50)}${tierMarker('2026-07', 80)}`;
+  assert.deepEqual(reportedThresholdsForMonth(julyBody, '2026-08', [50, 80]), []);
+  assert.deepEqual(reportedThresholdsForMonth(julyBody, '2026-07', [50, 80]), [50, 80]);
+});
+
+test('upsertIncident opens a pool incident carrying month-scoped tier markers', async () => {
   const github = fakeGitHub();
   const core = fakeCore();
   await upsertIncident({
@@ -428,8 +452,8 @@ test('upsertIncident opens a pool incident carrying the breached tier markers', 
   const [, parameters] = created;
   assert.equal(parameters.title, poolIncidentTitle('melodic-software'));
   assert.deepEqual(parameters.labels, ['automated']);
-  assert.ok(parameters.body.includes(tierMarker(50)));
-  assert.ok(!parameters.body.includes(tierMarker(80)));
+  assert.ok(parameters.body.includes(tierMarker('2026-07', 50)));
+  assert.ok(!parameters.body.includes(tierMarker('2026-07', 80)));
   assert.ok(parameters.body.endsWith(poolIncidentMarker('melodic-software')));
   assert.match(parameters.body, /1500 of 3000 included minute\(s\) consumed \(50%\)/);
 });
@@ -437,7 +461,7 @@ test('upsertIncident opens a pool incident carrying the breached tier markers', 
 test('upsertIncident silently updates a pool incident that is still at the same tier', async () => {
   const marker = poolIncidentMarker('melodic-software');
   const github = fakeGitHub({
-    existingIssues: [ownIssue({ number: 55, body: `${tierMarker(50)}\nstale ${marker}` })],
+    existingIssues: [ownIssue({ number: 55, body: `${tierMarker('2026-07', 50)}\nstale ${marker}` })],
   });
   const core = fakeCore();
   await upsertIncident({
@@ -454,7 +478,7 @@ test('upsertIncident silently updates a pool incident that is still at the same 
 test('upsertIncident comments once when the pool incident escalates to a higher tier', async () => {
   const marker = poolIncidentMarker('melodic-software');
   const github = fakeGitHub({
-    existingIssues: [ownIssue({ number: 55, body: `${tierMarker(50)}\nstale ${marker}` })],
+    existingIssues: [ownIssue({ number: 55, body: `${tierMarker('2026-07', 50)}\nstale ${marker}` })],
   });
   const core = fakeCore();
   await upsertIncident({
@@ -467,17 +491,73 @@ test('upsertIncident comments once when the pool incident escalates to a higher 
     now: Date.parse('2026-07-24T10:00:00Z'),
   });
 
-  const updated = github.calls.find(([action]) => action === 'update');
-  assert.ok(updated[1].body.includes(tierMarker(80)));
+  const updates = github.calls.filter(([action]) => action === 'update');
+  assert.equal(updates.length, 2, 'escalation refreshes the body, comments, then persists month-scoped markers');
+  assert.ok(!updates[0][1].body.includes(tierMarker('2026-07', 80)), 'new tier marker must not precede the comment');
+  assert.ok(updates[1][1].body.includes(tierMarker('2026-07', 80)), 'new tier marker is persisted only after the comment');
   const comments = github.calls.filter(([action]) => action === 'createComment');
   assert.equal(comments.length, 1);
   assert.match(comments[0][1].body, /Escalated to 80%/);
 });
 
+test('upsertIncident retries escalation when the comment fails before markers are persisted', async () => {
+  const marker = poolIncidentMarker('melodic-software');
+  const github = fakeGitHub({
+    existingIssues: [ownIssue({ number: 55, body: `${tierMarker('2026-07', 50)}\nstale ${marker}` })],
+    commentFailure: true,
+  });
+  const core = fakeCore();
+  await assert.rejects(
+    upsertIncident({
+      github,
+      core,
+      env: {
+        ...baseUpsertEnv,
+        BUDGET_JSON: JSON.stringify(budgetFixture({ consumedMinutes: 2460, percentUsed: 82, breachedThresholds: [50, 80] })),
+      },
+      now: Date.parse('2026-07-24T10:00:00Z'),
+    }),
+    /comment failed/,
+  );
+
+  const updates = github.calls.filter(([action]) => action === 'update');
+  assert.equal(updates.length, 1);
+  assert.ok(!updates[0][1].body.includes(tierMarker('2026-07', 80)), 'failed escalation must not persist the new tier marker');
+});
+
+test('upsertIncident emits a new-month escalation when prior-month markers remain on an open incident', async () => {
+  const marker = poolIncidentMarker('melodic-software');
+  const github = fakeGitHub({
+    existingIssues: [ownIssue({ number: 55, body: `${tierMarker('2026-07', 50)}${tierMarker('2026-07', 80)}\nstale ${marker}` })],
+  });
+  const core = fakeCore();
+  await upsertIncident({
+    github,
+    core,
+    env: {
+      ...baseUpsertEnv,
+      BUDGET_JSON: JSON.stringify(budgetFixture({
+        month: '2026-08',
+        consumedMinutes: 2500,
+        percentUsed: 83.3,
+        breachedThresholds: [50, 80],
+      })),
+    },
+    now: Date.parse('2026-08-02T10:00:00Z'),
+  });
+
+  const comments = github.calls.filter(([action]) => action === 'createComment');
+  assert.equal(comments.length, 1, 'August thresholds must not be treated as already reported by July markers');
+  assert.match(comments[0][1].body, /Escalated to 80%/);
+  const finalUpdate = github.calls.filter(([action]) => action === 'update').at(-1);
+  assert.ok(finalUpdate[1].body.includes(tierMarker('2026-08', 80)));
+  assert.ok(!finalUpdate[1].body.includes(tierMarker('2026-07', 80)), 'prior-month markers must not satisfy the new month');
+});
+
 test('upsertIncident closes the pool incident when a new billing month resets consumption', async () => {
   const marker = poolIncidentMarker('melodic-software');
   const github = fakeGitHub({
-    existingIssues: [ownIssue({ number: 55, body: `${tierMarker(50)}${tierMarker(80)}\nstale ${marker}` })],
+    existingIssues: [ownIssue({ number: 55, body: `${tierMarker('2026-07', 50)}${tierMarker('2026-07', 80)}\nstale ${marker}` })],
   });
   const core = fakeCore();
   await upsertIncident({

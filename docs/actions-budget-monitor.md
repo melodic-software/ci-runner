@@ -35,7 +35,7 @@ A repeat detection at the same threshold silently updates the incident body, as
 in the queue monitor. Crossing from 50% to 80% instead adds a comment: an edited
 body notifies nobody, so an escalation would otherwise be invisible. Which
 thresholds an open incident has already reported is recorded in its body as
-`<!-- ci-runner:actions-budget-monitor:tier:<percent> -->` markers, so the
+`<!-- ci-runner:actions-budget-monitor:tier:<month>:<percent> -->` markers, so the
 comment fires exactly once per threshold.
 
 A new billing month resets consumption, which closes the incident through the
