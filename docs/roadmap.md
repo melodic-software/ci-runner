@@ -70,7 +70,7 @@ default, alongside JSON Lines and archived runner diagnostics. Configuration,
 redaction, failure isolation, lifecycle behavior, and collector guidance are
 documented in [Observability](observability.md).
 
-- [OpenTelemetry protocol specification](https://opentelemetry.io/docs/specs/otlp/)
+- [OpenTelemetry protocol specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md)
 
 ## Independent monitor and cost evidence
 

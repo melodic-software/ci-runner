@@ -331,5 +331,5 @@ not an alert.
 
 Authoritative configuration references:
 
-- [OpenTelemetry OTLP exporter configuration](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/)
-- [OpenTelemetry Go exporters](https://opentelemetry.io/docs/languages/go/exporters/)
+- [OpenTelemetry OTLP exporter configuration](https://github.com/open-telemetry/opentelemetry.io/blob/main/content/en/docs/languages/sdk-configuration/otlp-exporter.md)
+- [OpenTelemetry Go exporters](https://github.com/open-telemetry/opentelemetry-go/tree/main/exporters)
