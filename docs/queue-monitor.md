@@ -16,6 +16,7 @@ alerting. Configure these values through IaC:
 | `CI_RUNNER_OBSERVER_CLIENT_ID` | variable | Observer GitHub App client ID |
 | `CI_RUNNER_OBSERVER_PRIVATE_KEY` | secret | Observer App private key |
 | `CI_RUNNER_MONITOR_TARGETS_JSON` | variable | Installation-target JSON array |
+| `CI_RUNNER_HEARTBEAT_URL` | secret | healthchecks.io ping URL (optional; see [Dead-man's-switch heartbeat](#dead-mans-switch-heartbeat)) |
 
 `CI_RUNNER_OBSERVER_CLIENT_ID` deliberately uses the GitHub App client ID.
 `actions/create-github-app-token` deprecates its numeric `app-id` input; the
