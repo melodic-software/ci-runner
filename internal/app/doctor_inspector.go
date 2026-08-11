@@ -220,7 +220,7 @@ func (i *LocalDoctorInspector) verifyACLTree(root string) (int, error) {
 			return fmt.Errorf("unsupported filesystem entry in private runtime tree: %s (%s)", path, entry.Type())
 		}
 		if err := i.ACL.Verify(path); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			if errors.Is(err, fs.ErrNotExist) && path != root {
 				return nil
 			}
 			return fmt.Errorf("verify %s: %w", path, err)

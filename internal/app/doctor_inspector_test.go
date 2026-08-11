@@ -179,6 +179,43 @@ func TestVerifyACLTreeFailsOnMissingRoot(t *testing.T) {
 	}
 }
 
+func TestVerifyACLTreeFailsWhenRootVanishesAfterWalkBegins(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == root {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{ACL: verifier}
+
+	_, err := inspector.verifyACLTree(root)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("verifyACLTree() err = %v, want fs.ErrNotExist when root vanishes before ACL probe", err)
+	}
+}
+
+func TestLocalDoctorInspectorACLStateCheckFailsWhenRootVanishesDuringProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == root {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{
+		Config: config.Config{Paths: config.Paths{State: root}},
+		ACL:    verifier,
+	}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "acl/state")
+	if check.Healthy {
+		t.Fatalf("acl/state check = %#v, want unhealthy when root vanishes before ACL probe", check)
+	}
+}
+
 func TestVerifyACLTreeIgnoresVanishedChildDuringWalk(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
