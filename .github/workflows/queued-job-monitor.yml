@@ -93,3 +93,24 @@ jobs:
           script: |
             const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/queue-monitor.cjs`);
             await monitor.upsertIncident({ github, core });
+
+  heartbeat:
+    name: Ping dead-man's-switch
+    runs-on: ubuntu-24.04
+    needs: monitor
+    timeout-minutes: 5
+    steps:
+      - name: Ping healthchecks.io
+        env:
+          CI_RUNNER_HEARTBEAT_URL: ${{ secrets.CI_RUNNER_HEARTBEAT_URL }}
+        run: |
+          if [ -z "${CI_RUNNER_HEARTBEAT_URL}" ]; then
+            echo "::notice::CI_RUNNER_HEARTBEAT_URL is not configured; heartbeat is inert until armed."
+            exit 0
+          fi
+          if curl --fail --silent --show-error --max-time 10 --retry 5 --retry-connrefused \
+            "${CI_RUNNER_HEARTBEAT_URL}"; then
+            echo "Heartbeat ping succeeded."
+          else
+            echo "::warning::Dead-man's-switch heartbeat ping failed after retries; the monitor may be stale or the check URL may be misconfigured."
+          fi

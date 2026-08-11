@@ -137,6 +137,31 @@ and [automatic schedule disabling](https://docs.github.com/en/actions/how-tos/ma
 Accordingly, the five-minute queue threshold applies when a monitor invocation
 runs; no elapsed-time SLO is claimed while GitHub's scheduler is delayed or the
 workflow is disabled. The production rollout checklist must verify that this
-workflow is enabled and has a recent successful run. A future independent
-control-plane check that alerts on a disabled/stale monitor is an explicit
-roadmap item; it must not depend on this same schedule.
+workflow is enabled and has a recent successful run.
+
+## Dead-man's-switch heartbeat
+
+An off-GitHub dead-man's switch closes the silent-failure gap left by GitHub's
+scheduler: schedule drops, the public-repository 60-day inactivity auto-disable,
+workflow or repository disablement, and GitHub outages all stop pings without
+emitting an error inside this repository. The monitor's `heartbeat` job pings
+[healthchecks.io](https://healthchecks.io/) (Hobbyist/free tier) after every
+successful monitor run — when all matrix targets complete green — and the
+service alerts on **absence** of the ping.
+
+Operator setup (outside this repository):
+
+1. Create a check on healthchecks.io and configure **email** as the alert
+   channel.
+2. Set the check **Period** to about one hour and **Grace Time** to about
+   thirty minutes. The workflow schedule fires roughly every fifteen minutes,
+   so several pings land inside each period; the grace window absorbs GitHub
+   scheduler delay without false positives.
+3. Add the check's ping URL as repository secret `CI_RUNNER_HEARTBEAT_URL`.
+
+Until that secret is present the heartbeat job emits a workflow notice and exits
+green (fail-soft / inert). When armed, it `curl`s the URL from the environment
+(the URL is never logged). Transient ping failures after retries produce a
+workflow warning annotation but do **not** fail the run — a missed ping must
+not mask a genuine monitor execution error, and healthchecks.io's absence alert
+is the authoritative signal for a stale monitor.
