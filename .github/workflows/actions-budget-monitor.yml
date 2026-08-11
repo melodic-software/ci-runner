@@ -1,0 +1,69 @@
+name: Actions Budget Monitor
+
+on:
+  schedule:
+    # Daily, not the queue monitor's quarter-hourly cadence: included-minute
+    # consumption is a month-scale signal, and this workflow's own minutes come
+    # out of the pool it watches.
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actions-budget-monitor
+  cancel-in-progress: false
+
+env:
+  ISSUE_AUTHOR_LOGIN: github-actions[bot]
+
+jobs:
+  disarmed-notice:
+    name: Skip when disarmed
+    if: vars.CI_RUNNER_BUDGET_MONITOR_ARMED != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Warn that the monitor is disarmed
+        run: |
+          echo "::warning::Actions budget monitor is disarmed (CI_RUNNER_BUDGET_MONITOR_ARMED != true); skipping measurement and incident upsert."
+
+  monitor:
+    name: Alert on Actions included-minute consumption
+    if: vars.CI_RUNNER_BUDGET_MONITOR_ARMED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout monitor implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Measure included-minute consumption
+        id: measure
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BILLING_ORG: ${{ github.repository_owner }}
+          INCLUDED_MINUTES: '3000'
+          BILLING_TOKEN_PRESENT: ${{ secrets.CI_RUNNER_BILLING_OBSERVER_TOKEN != '' }}
+          BUDGET_MONITOR_ARMED: 'true'
+        with:
+          github-token: ${{ secrets.CI_RUNNER_BILLING_OBSERVER_TOKEN }}
+          script: |
+            const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/budget-monitor.cjs`);
+            await monitor.run({ github, core });
+
+      - name: Upsert budget incident
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BUDGET_JSON: ${{ steps.measure.outputs.budget }}
+          BUDGET_MONITOR_ARMED: 'true'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const monitor = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/budget-monitor.cjs`);
+            await monitor.upsertIncident({ github, core });

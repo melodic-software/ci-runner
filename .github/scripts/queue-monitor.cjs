@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  boundBodyLength,
+  escapeMarkdownTableCell,
+  findOpenIncident,
+  MAX_BODY_LENGTH,
+} = require('./incident-issue.cjs');
+
 const nonterminalRunStatuses = Object.freeze([
   'queued',
   'in_progress',
@@ -16,19 +23,6 @@ Follow the [audited CI routing-control procedure](https://github.com/melodic-sof
 // managed jobs; capping the rendered table keeps the incident body bounded
 // regardless of how many jobs are stuck.
 const MAX_STUCK_TABLE_ROWS = 50;
-
-// GitHub's issue/comment write endpoints reject a body over 65536
-// characters (observed API error "Body is too long (maximum is 65536
-// characters)"; not a value GitHub's docs state as a formal field limit,
-// but consistently reproduced — see
-// https://github.com/orgs/community/discussions/41331). The row cap above
-// already keeps ordinary bodies far under this, but this is the
-// defense-in-depth backstop: without it, a body that somehow still
-// exceeded the limit would throw on issues.create/update — genuinely
-// failing the run, which is correct, but truncating first keeps the
-// monitor's own alert delivery itself from being what breaks it. Stays
-// well under the observed limit for safety margin.
-const MAX_BODY_LENGTH = 60000;
 
 function splitList(value) {
   return (value || '')
@@ -150,22 +144,6 @@ function incidentMarker(targetOwner) {
   return `<!-- ci-runner:queued-job-monitor:incident:${targetOwner} -->`;
 }
 
-// Neutralizes '<' and '>' (not just '|') because this cell content is
-// untrusted: it comes from monitored-repo job/workflow names, not this
-// workflow's own source. Left unescaped, a crafted job name could inject a
-// literal '<!-- ... -->' sequence into a bot-authored incident body —
-// including another owner's incident marker, which findOpenIncident matches
-// as a raw substring — causing a cross-owner issue collision. HTML-entity
-// encoding renders as the literal characters (GitHub's Markdown renders
-// '&lt;'/'&gt;' back to '<'/'>' visually) while never forming a real '<!--'
-// or '-->' sequence in the raw body text this workflow's own code searches.
-function escapeMarkdownTableCell(value) {
-  return String(value)
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\|/g, '\\|');
-}
-
 function renderStuckMarkdownTable(stuck, { maxRows = MAX_STUCK_TABLE_ROWS, runUrl } = {}) {
   const header = '| Repository | Workflow | Job | Minutes | Labels | Link |\n| --- | --- | --- | --- | --- | --- |';
   const shown = stuck.slice(0, maxRows);
@@ -177,60 +155,6 @@ function renderStuckMarkdownTable(stuck, { maxRows = MAX_STUCK_TABLE_ROWS, runUr
     lines.push('', `_...and ${remaining} more managed job(s)${runLink}._`);
   }
   return lines.join('\n');
-}
-
-// Truncates the assembled body (everything except the trailing marker) if it
-// would still exceed MAX_BODY_LENGTH after the row cap — the marker must
-// never be truncated away, since findOpenIncident's future upserts and
-// closes depend on it surviving intact.
-function boundBodyLength(bodyWithoutMarker, marker, maxLength = MAX_BODY_LENGTH) {
-  const separator = '\n\n';
-  const budget = maxLength - marker.length - separator.length;
-  if (bodyWithoutMarker.length <= budget) {
-    return `${bodyWithoutMarker}${separator}${marker}`;
-  }
-  const notice = '\n\n_...truncated to stay under GitHub\'s issue body limit._';
-  const truncated = bodyWithoutMarker.slice(0, Math.max(0, budget - notice.length)) + notice;
-  return `${truncated}${separator}${marker}`;
-}
-
-function isOwnIncidentAuthor(issue, issueAuthorLogin) {
-  return issue.user?.login === issueAuthorLogin && issue.user?.type === 'Bot';
-}
-
-// The marker and title strings are public (embedded verbatim in this
-// workflow's source, in a public repository), so matching on them alone
-// would let anyone with issue-creation permission here craft a decoy this
-// automation adopts, silently updates, or closes as recovered — suppressing
-// a real alert. Restricting candidates to issues opened by this workflow's
-// own token identity closes that: an attacker's issue is never a candidate,
-// no matter what text it carries. Mirrors the hardening in ci-workflows#213
-// (standards-sync-stuck-automerge-alert.yml). Ambiguity (more than one
-// candidate carrying the marker) fails closed rather than guessing.
-//
-// Matching stays marker-only (not marker + title), matching the fleet
-// precedent's deliberate "a marker survives a retitle" property. A crafted
-// job name in a monitored repo could in principle try to inject a foreign
-// marker into a bot-authored body; escapeMarkdownTableCell neutralizes that
-// at the source (see its own comment) instead of layering a title guard here
-// that would trade retitle-survival for redundant protection.
-async function findOpenIncident({ github, homeOwner, homeRepo, marker, issueAuthorLogin }) {
-  // Every incident issue this workflow creates carries the 'automated' label
-  // (see upsertIncident's create call); filtering server-side keeps this
-  // ~15-minutes-while-open scan from paginating every open issue in the repo.
-  const openIssues = await github.paginate(github.rest.issues.listForRepo, {
-    owner: homeOwner,
-    repo: homeRepo,
-    state: 'open',
-    labels: 'automated',
-    per_page: 100,
-  });
-  const candidates = openIssues.filter(issue => !issue.pull_request && isOwnIncidentAuthor(issue, issueAuthorLogin));
-  const matches = candidates.filter(issue => (issue.body ?? '').includes(marker));
-  if (matches.length > 1) {
-    throw new Error(`Found ${matches.length} open incident issues carrying marker '${marker}'; reconcile manually.`);
-  }
-  return matches[0] || null;
 }
 
 // Marker-deduped issue-per-incident alert channel (the fleet's established
@@ -332,12 +256,9 @@ async function upsertIncident({ github, core, env = process.env, now = Date.now(
 }
 
 module.exports = {
-  boundBodyLength,
-  findOpenIncident,
   incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
-  MAX_BODY_LENGTH,
   MAX_STUCK_TABLE_ROWS,
   nonterminalRunStatuses,
   renderStuckMarkdownTable,
