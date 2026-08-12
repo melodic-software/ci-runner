@@ -95,7 +95,12 @@ is the monitor breaking, not a queue alert.
 Each alert links directly to the affected jobs and carries this recovery
 instruction:
 
-> Follow the audited CI routing-control procedure to make the affected
+> Confirm the managed runner host is running a release that includes the latest
+> capacity and reconciliation fixes (at least `v0.1.21` / current `main` tip)
+> before changing routing. An unrebuilt host on an older controller will keep
+> queuing work against dead capacity even when `main` already carries the fix.
+>
+> Then follow the audited CI routing-control procedure to make the affected
 > repository's effective `CI_RUNNER_POLICY` value `hosted-only` and verify the
 > readback. Cancel the affected run, choose **Re-run all jobs** to guarantee
 > that the selector executes again, and confirm that it selects hosted capacity.
