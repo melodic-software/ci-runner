@@ -312,7 +312,7 @@ func (s *FileArtifactSink) AdoptAndCleanup(ctx context.Context, adopted []Artifa
 	if !due {
 		return nil
 	}
-	if err := s.cleanup(ctx, adoptedIDs, now); err != nil {
+	if err := s.cleanup(ctx, adopted, now); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -333,7 +333,7 @@ func (s *FileArtifactSink) CleanupNow(ctx context.Context, adopted []ArtifactMet
 	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
 		return err
 	}
-	if err := s.cleanup(ctx, adoptedIDs, now); err != nil {
+	if err := s.cleanup(ctx, adopted, now); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -383,30 +383,31 @@ func (s *FileArtifactSink) reconcileStaleOpen(ctx context.Context, adopted map[s
 	return nil
 }
 
-func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struct{}, now time.Time) error {
+type artifactCleanupCandidate struct {
+	record       jobindex.Record
+	resourcePath string
+	size         uint64
+}
+
+func (s *FileArtifactSink) cleanup(ctx context.Context, adopted []ArtifactMetadata, now time.Time) error {
+	adoptedIDs := make(map[string]struct{}, len(adopted))
+	for _, metadata := range adopted {
+		adoptedIDs[metadata.ContainerID] = struct{}{}
+	}
+
 	catalog, err := s.jobs.Load(ctx)
 	if errors.Is(err, jobindex.ErrNotFound) {
-		// An absent catalog is authoritative: no record references anything, so
-		// every artifact is an orphan and the age sweep is the whole of cleanup.
-		// Returning early here instead left the only lane that can reclaim
-		// unreferenced bytes disabled for exactly the state that strands the
-		// most of them. A live worker's artifacts are still protected, by the
-		// same mtime floor that protects them on every other pass.
-		return s.sweepOrphans(nil, now)
+		referenced := buildReferencedFromInventory(s.logDirectory, s.diagnosticDirectory, adopted)
+		return s.runArtifactSweeps(ctx, referenced, nil, now)
 	}
 	if err != nil {
-		// A load that failed for any other reason proves nothing about what is
-		// referenced, so no deletion is safe.
 		return err
 	}
-	type candidate struct {
-		record       jobindex.Record
-		resourcePath string
-		size         uint64
-	}
-	var candidates []candidate
-	var total uint64
-	referenced := make(map[string]struct{}, len(catalog.Records)*2)
+
+	referenced, _ := buildReferencedFromCatalog(s.logDirectory, s.diagnosticDirectory, catalog)
+	mergeReferenced(referenced, buildReferencedFromInventory(s.logDirectory, s.diagnosticDirectory, adopted))
+
+	var candidates []artifactCleanupCandidate
 	var cleanupErrors []error
 	for _, record := range catalog.Records {
 		if record.TombstonedAt != nil {
@@ -420,27 +421,49 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("validate artifact paths for %s/%s: %w", record.PoolID, record.RunnerName, err))
 			continue
 		}
-		for _, path := range []string{record.LogPath, record.DiagnosticPath, resourcePath} {
-			if path != "" {
-				referenced[canonicalPath(path)] = struct{}{}
-			}
-		}
 		size := saturatingAdd(saturatingAdd(logSize, diagnosticSize), resourceSize)
-		total = saturatingAdd(total, size)
-		_, isAdopted := adopted[record.ContainerID]
+		_, isAdopted := adoptedIDs[record.ContainerID]
 		if !record.Open && !isAdopted && !record.FinalizedAt.IsZero() {
-			candidates = append(candidates, candidate{record: record, resourcePath: resourcePath, size: size})
+			candidates = append(candidates, artifactCleanupCandidate{record: record, resourcePath: resourcePath, size: size})
 		}
 	}
-	slices.SortFunc(candidates, func(a, b candidate) int {
+	slices.SortFunc(candidates, func(a, b artifactCleanupCandidate) int {
 		if !a.record.FinalizedAt.Equal(b.record.FinalizedAt) {
 			return a.record.FinalizedAt.Compare(b.record.FinalizedAt)
 		}
 		return a.record.UpdatedAt.Compare(b.record.UpdatedAt)
 	})
+
+	cleanupErrors = append(cleanupErrors, s.runArtifactSweeps(ctx, referenced, candidates, now))
+	if _, err := s.jobs.PruneTombstones(ctx, now.Add(-s.policy.Retention)); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("compact expired artifact tombstones: %w", err))
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func (s *FileArtifactSink) runArtifactSweeps(ctx context.Context, referenced map[string]struct{}, candidates []artifactCleanupCandidate, now time.Time) error {
+	candidatePaths := candidateArtifactPaths(candidates)
+	var cleanupErrors []error
+
+	total, err := artifactDiskTotal(s.logDirectory, s.diagnosticDirectory)
+	if err != nil {
+		return err
+	}
+	removalFailures := make(map[string]struct{})
+	cleanupErrors = append(cleanupErrors, s.sweepCapUnreferenced(referenced, removalFailures, &total))
+	total, err = artifactDiskTotal(s.logDirectory, s.diagnosticDirectory)
+	if err != nil {
+		return err
+	}
+
 	for _, candidate := range candidates {
+		protected, err := protectedCountedBytes(s.logDirectory, s.diagnosticDirectory, referenced, candidatePaths, removalFailures)
+		if err != nil {
+			return err
+		}
 		expired := now.Sub(candidate.record.FinalizedAt) >= s.policy.Retention
-		if !expired && total <= s.policy.TotalCapBytes {
+		capPressure := capDeletionPressure(total, protected, s.policy.TotalCapBytes)
+		if !expired && !capPressure {
 			continue
 		}
 		removeErr := errors.Join(
@@ -452,14 +475,9 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			cleanupErrors = append(cleanupErrors, removeErr)
 			continue
 		}
-		// The bytes are gone whether or not the record can be tombstoned, so the
-		// running total must drop either way. Skipping the decrement on an
-		// Upsert failure made every later candidate in the pass look over cap
-		// and deleted artifacts that were within it.
-		if candidate.size <= total {
-			total -= candidate.size
-		} else {
-			total = 0
+		total, err = artifactDiskTotal(s.logDirectory, s.diagnosticDirectory)
+		if err != nil {
+			return err
 		}
 		tombstone := now
 		if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
@@ -470,12 +488,169 @@ func (s *FileArtifactSink) cleanup(ctx context.Context, adopted map[string]struc
 			continue
 		}
 	}
-	cutoff := now.Add(-s.policy.Retention)
+
 	cleanupErrors = append(cleanupErrors, s.sweepOrphans(referenced, now))
-	if _, err := s.jobs.PruneTombstones(ctx, cutoff); err != nil {
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("compact expired artifact tombstones: %w", err))
+	return errors.Join(cleanupErrors...)
+}
+
+func candidateArtifactPaths(candidates []artifactCleanupCandidate) map[string]struct{} {
+	paths := make(map[string]struct{}, len(candidates)*3)
+	for _, candidate := range candidates {
+		for _, path := range []string{candidate.record.LogPath, candidate.record.DiagnosticPath, candidate.resourcePath} {
+			if path != "" {
+				paths[canonicalPath(path)] = struct{}{}
+			}
+		}
+	}
+	return paths
+}
+
+func capDeletionPressure(total, protected, cap uint64) bool {
+	if total <= cap {
+		return false
+	}
+	return saturatingSub(total, protected) > cap
+}
+
+func artifactDiskTotal(logDirectory, diagnosticDirectory string) (uint64, error) {
+	var total uint64
+	for _, root := range []string{logDirectory, diagnosticDirectory} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return 0, fmt.Errorf("scan artifact directory %q: %w", root, err)
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return 0, err
+			}
+			if info.Size() < 0 {
+				return 0, fmt.Errorf("artifact %q has a negative size", filepath.Join(root, entry.Name()))
+			}
+			total = saturatingAdd(total, uint64(info.Size()))
+		}
+	}
+	return total, nil
+}
+
+func protectedCountedBytes(
+	logDirectory, diagnosticDirectory string,
+	referenced map[string]struct{},
+	candidatePaths map[string]struct{},
+	removalFailures map[string]struct{},
+) (uint64, error) {
+	var protected uint64
+	for _, root := range []string{logDirectory, diagnosticDirectory} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return 0, fmt.Errorf("scan artifact directory %q: %w", root, err)
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return 0, err
+			}
+			if info.Size() < 0 {
+				return 0, fmt.Errorf("artifact %q has a negative size", filepath.Join(root, entry.Name()))
+			}
+			path := filepath.Join(root, entry.Name())
+			canonical := canonicalPath(path)
+			if isInFlightTemporary(entry.Name()) {
+				protected = saturatingAdd(protected, uint64(info.Size()))
+				continue
+			}
+			if _, failed := removalFailures[canonical]; failed {
+				protected = saturatingAdd(protected, uint64(info.Size()))
+				continue
+			}
+			if _, known := referenced[canonical]; !known {
+				continue
+			}
+			if _, evictable := candidatePaths[canonical]; evictable {
+				continue
+			}
+			protected = saturatingAdd(protected, uint64(info.Size()))
+		}
+	}
+	return protected, nil
+}
+
+type capUnreferencedEntry struct {
+	path    string
+	size    uint64
+	modTime time.Time
+}
+
+func (s *FileArtifactSink) sweepCapUnreferenced(referenced map[string]struct{}, removalFailures map[string]struct{}, total *uint64) error {
+	if *total <= s.policy.TotalCapBytes {
+		return nil
+	}
+	var entries []capUnreferencedEntry
+	for _, root := range []string{s.logDirectory, s.diagnosticDirectory} {
+		dirEntries, err := os.ReadDir(root)
+		if err != nil {
+			return fmt.Errorf("scan artifact directory %q: %w", root, err)
+		}
+		for _, entry := range dirEntries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			if isInFlightTemporary(entry.Name()) {
+				continue
+			}
+			path := filepath.Join(root, entry.Name())
+			if _, known := referenced[canonicalPath(path)]; known {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Size() < 0 {
+				return fmt.Errorf("artifact %q has a negative size", path)
+			}
+			entries = append(entries, capUnreferencedEntry{
+				path: path, size: uint64(info.Size()), modTime: info.ModTime(),
+			})
+		}
+	}
+	slices.SortFunc(entries, func(a, b capUnreferencedEntry) int {
+		if !a.modTime.Equal(b.modTime) {
+			return a.modTime.Compare(b.modTime)
+		}
+		return strings.Compare(a.path, b.path)
+	})
+
+	var cleanupErrors []error
+	for _, entry := range entries {
+		if *total <= s.policy.TotalCapBytes {
+			break
+		}
+		if err := os.Remove(entry.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove unreferenced artifact %q: %w", entry.path, err))
+			removalFailures[canonicalPath(entry.path)] = struct{}{}
+			continue
+		}
+		if entry.size <= *total {
+			*total -= entry.size
+		} else {
+			*total = 0
+		}
 	}
 	return errors.Join(cleanupErrors...)
+}
+
+func saturatingSub(left, right uint64) uint64 {
+	if left <= right {
+		return 0
+	}
+	return left - right
 }
 
 // sweepOrphans removes unreferenced artifacts past the retention cutoff from
