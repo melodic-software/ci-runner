@@ -6,10 +6,12 @@ const test = require('node:test');
 const {
   boundBodyLength,
   findOpenIncident,
+  MAX_BODY_LENGTH,
+} = require('./incident-issue.cjs');
+const {
   incidentMarker,
   incidentTitle,
   inspectQueuedJobs,
-  MAX_BODY_LENGTH,
   MAX_STUCK_TABLE_ROWS,
   nonterminalRunStatuses,
   renderStuckMarkdownTable,
