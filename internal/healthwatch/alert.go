@@ -38,7 +38,7 @@ func (a WebhookAlerter) Send(ctx context.Context, result Result) error {
 	}
 	var builder strings.Builder
 	builder.WriteString("ci-runner external health watch detected ")
-	builder.WriteString(fmt.Sprintf("%d issue(s) at %s:\n", len(result.Findings), result.CheckedAt.Format(time.RFC3339)))
+	fmt.Fprintf(&builder, "%d issue(s) at %s:\n", len(result.Findings), result.CheckedAt.Format(time.RFC3339))
 	for _, finding := range result.Findings {
 		builder.WriteString("- ")
 		builder.WriteString(finding.Code)
@@ -83,8 +83,6 @@ func alertFingerprint(result Result) string {
 	var builder strings.Builder
 	for _, finding := range result.Findings {
 		builder.WriteString(finding.Code)
-		builder.WriteByte('|')
-		builder.WriteString(finding.Message)
 		builder.WriteByte('\n')
 	}
 	return builder.String()

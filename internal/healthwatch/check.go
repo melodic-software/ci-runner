@@ -101,19 +101,19 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		result.Findings = append(result.Findings, c.checkHeartbeat(now, observed)...)
 	}
 
-	running, err := c.deps.Inventory.RunningByPool(ctx, c.deps.Config.Host.ID)
-	if err != nil {
-		return Result{}, fmt.Errorf("inventory running workers: %w", err)
-	}
-	if observedErr == nil {
-		divergenceFindings, sidecarUpdate, err := c.checkWorkerDivergence(ctx, now, observed, running)
+	running, inventoryErr := c.deps.Inventory.RunningByPool(ctx, c.deps.Config.Host.ID)
+	if inventoryErr != nil {
+		result.Healthy = false
+		result.Findings = append(result.Findings, Finding{
+			Code:    "inventory-unavailable",
+			Message: fmt.Sprintf("worker inventory unavailable: %v", inventoryErr),
+		})
+	} else if observedErr == nil {
+		divergenceFindings, err := c.checkWorkerDivergence(ctx, now, observed, running)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Findings = append(result.Findings, divergenceFindings...)
-		if sidecarUpdate {
-			// Sidecar persistence errors are non-fatal to the check itself.
-		}
 	}
 
 	jobsFindings, err := c.checkJobsFileSize(ctx)
@@ -153,20 +153,19 @@ func (c *Checker) checkHeartbeat(now time.Time, observed model.ObservedState) []
 	}}
 }
 
-func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, observed model.ObservedState, running map[string]int) ([]Finding, bool, error) {
+func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, observed model.ObservedState, running map[string]int) ([]Finding, error) {
 	if !expectsRunningWorkers(observed) {
 		sidecar, err := c.deps.Sidecar.Load(ctx)
 		if err != nil {
-			return nil, false, fmt.Errorf("load health watch sidecar: %w", err)
+			return nil, fmt.Errorf("load health watch sidecar: %w", err)
 		}
 		if sidecar.WorkerDivergenceSince != nil {
 			sidecar.WorkerDivergenceSince = nil
 			if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
-				return nil, false, fmt.Errorf("clear health watch sidecar: %w", err)
+				return nil, fmt.Errorf("clear health watch sidecar: %w", err)
 			}
-			return nil, true, nil
 		}
-		return nil, false, nil
+		return nil, nil
 	}
 
 	diverged := false
@@ -181,29 +180,24 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 
 	sidecar, err := c.deps.Sidecar.Load(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("load health watch sidecar: %w", err)
+		return nil, fmt.Errorf("load health watch sidecar: %w", err)
 	}
-	updated := false
 	if !diverged {
 		if sidecar.WorkerDivergenceSince != nil {
 			sidecar.WorkerDivergenceSince = nil
-			updated = true
-		}
-		if updated {
 			if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
-				return nil, false, fmt.Errorf("clear health watch sidecar: %w", err)
+				return nil, fmt.Errorf("clear health watch sidecar: %w", err)
 			}
 		}
-		return nil, updated, nil
+		return nil, nil
 	}
 
 	if sidecar.WorkerDivergenceSince == nil {
 		started := now
 		sidecar.WorkerDivergenceSince = &started
-		updated = true
 	}
 	if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
-		return nil, false, fmt.Errorf("save health watch sidecar: %w", err)
+		return nil, fmt.Errorf("save health watch sidecar: %w", err)
 	}
 
 	grace := c.deps.Config.HealthWatchdog.WorkerDivergenceGrace.Duration
@@ -216,9 +210,9 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 				sidecar.WorkerDivergenceSince.Format(time.RFC3339),
 				grace,
 			),
-		}}, updated, nil
+		}}, nil
 	}
-	return nil, updated, nil
+	return nil, nil
 }
 
 func (c *Checker) checkJobsFileSize(ctx context.Context) ([]Finding, error) {

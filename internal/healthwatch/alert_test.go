@@ -47,6 +47,19 @@ func TestWebhookAlerterPostsSlackCompatiblePayload(t *testing.T) {
 	}
 }
 
+func TestAlertFingerprintIgnoresVolatileMessageText(t *testing.T) {
+	t.Parallel()
+	first := Result{Healthy: false, Findings: []Finding{{
+		Code: "stale-heartbeat", Message: "age=30s",
+	}}}
+	second := Result{Healthy: false, Findings: []Finding{{
+		Code: "stale-heartbeat", Message: "age=45s",
+	}}}
+	if alertFingerprint(first) != alertFingerprint(second) {
+		t.Fatalf("fingerprints differ for same finding code with different messages")
+	}
+}
+
 func TestShouldSendAlertHonorsCooldown(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)

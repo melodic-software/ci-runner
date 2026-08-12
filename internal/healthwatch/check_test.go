@@ -41,7 +41,7 @@ func (f fakeJobsFile) Size(context.Context) (int64, error) {
 }
 
 type memorySidecar struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	contents Sidecar
 }
 
@@ -176,6 +176,36 @@ func TestCheckFlagsJobsSizeWarning(t *testing.T) {
 	}
 	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "jobs-size-warning" {
 		t.Fatalf("result = %#v, want jobs size warning", result)
+	}
+}
+
+func TestCheckPreservesFindingsWhenInventoryFails(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseReady,
+		HeartbeatAt:   now.Add(-30 * time.Second),
+	})
+	checker := testChecker(t, store, fakeInventory{err: errors.New("docker unavailable")}, fakeJobsFile{}, &memorySidecar{}, now)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Healthy || len(result.Findings) < 2 {
+		t.Fatalf("result = %#v, want stale heartbeat plus inventory finding", result)
+	}
+	codes := map[string]struct{}{}
+	for _, finding := range result.Findings {
+		codes[finding.Code] = struct{}{}
+	}
+	if _, ok := codes["stale-heartbeat"]; !ok {
+		t.Fatalf("findings = %#v, want stale-heartbeat", result.Findings)
+	}
+	if _, ok := codes["inventory-unavailable"]; !ok {
+		t.Fatalf("findings = %#v, want inventory-unavailable", result.Findings)
 	}
 }
 

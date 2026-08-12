@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,13 +21,17 @@ func InstallHealthWatchTask(ctx context.Context, tasks ScheduledTaskCLI, executa
 	if configPath == "" {
 		return errors.New("host configuration path is required")
 	}
-	executable, err := resolveExecutable(executablePath, func() (string, error) {
-		return trustedSystemExecutable("schtasks.exe")
-	})
+	schtasks, err := trustedSystemExecutable("schtasks.exe")
 	if err != nil {
 		return err
 	}
-	runnerExecutable, err := currentExecutablePath(executablePath)
+	runnerExecutable, err := resolveExecutable(executablePath, func() (string, error) {
+		path, execErr := os.Executable()
+		if execErr != nil {
+			return "", fmt.Errorf("resolve ci-runner executable: %w", execErr)
+		}
+		return filepath.Clean(path), nil
+	})
 	if err != nil {
 		return err
 	}
@@ -49,15 +54,8 @@ func InstallHealthWatchTask(ctx context.Context, tasks ScheduledTaskCLI, executa
 		"/RU", "BUILTIN\\Users",
 		"/RL", "LIMITED",
 	}
-	if _, err := resolvedCommandRunner(tasks.Runner).Run(ctx, executable, args...); err != nil {
+	if _, err := resolvedCommandRunner(tasks.Runner).Run(ctx, schtasks, args...); err != nil {
 		return fmt.Errorf("create scheduled task %q: %w", HealthWatchTaskName, err)
 	}
 	return nil
-}
-
-func currentExecutablePath(override string) (string, error) {
-	if strings.TrimSpace(override) != "" {
-		return filepath.Clean(override), nil
-	}
-	return "", errors.New("ci-runner executable path is required on Windows")
 }
