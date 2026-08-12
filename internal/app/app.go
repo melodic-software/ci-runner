@@ -149,6 +149,8 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 		return a.forceStop(ctx, args[1:])
 	case "controller":
 		return a.controllerCommand(ctx, args[1:])
+	case "health-watch":
+		return a.healthWatch(ctx, args[1:])
 	default:
 		writef(a.errOut, "unknown host command %q\n", args[0])
 		return ExitUsage
@@ -596,8 +598,10 @@ func (a *Application) usage() {
   ci-runner host doctor [--json] [--include-elevated]
   ci-runner host logs [--follow|--job ID|--cleanup|--audit|--purge [--confirm] [--json]]
   ci-runner host force-stop
-	ci-runner host controller restart
+  ci-runner host controller restart
 	ci-runner host controller stop-for-update
+  ci-runner host health-watch check [--json] [--no-alert]
+  ci-runner host health-watch install-task --config PATH [--executable PATH]
   ci-runner secret import --file PATH
   ci-runner [--config PATH] config validate [--json]`)
 }

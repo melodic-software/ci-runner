@@ -1919,6 +1919,13 @@ func validControllerConfig() config.Config {
 		},
 		DockerDesktop: config.DockerDesktop{StartTimeout: config.Duration{Duration: 2 * time.Minute}, StopTimeout: config.Duration{Duration: 2 * time.Minute}},
 		WorkerImage:   config.WorkerImage{PullTimeout: config.Duration{Duration: 20 * time.Minute}},
+		HealthWatchdog: config.HealthWatchdog{
+			CheckInterval:            config.Duration{Duration: time.Minute},
+			HeartbeatStaleMultiplier: 3,
+			WorkerDivergenceGrace:    config.Duration{Duration: 5 * time.Minute},
+			JobsSizeWarningPercent:   90,
+			AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
+		},
 		Logs: config.Logs{
 			Docker:                    config.DockerLogs{Driver: "local", MaxSize: config.ByteSize(10 << 20), MaxFiles: 3},
 			Controller:                config.LogClass{MaxFileSize: config.ByteSize(10 << 20), Retention: config.Duration{Duration: 14 * 24 * time.Hour}, TotalCap: config.ByteSize(512 << 20)},
