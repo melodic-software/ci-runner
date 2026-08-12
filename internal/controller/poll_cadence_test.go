@@ -705,15 +705,31 @@ func (m *mutableResources) setError(err error) {
 	m.err = err
 }
 
-func seededIdleWorkers(count int) []model.Worker {
-	workers := make([]model.Worker, count)
-	for index := range workers {
-		workers[index] = model.Worker{
-			ID: fmt.Sprintf("seed-%d", index), Name: fmt.Sprintf("runner-seed-%d", index),
-			PoolID: "org", RunnerID: int64(1000 + index), State: model.WorkerIdle,
-		}
+func TestMemoryFundingSlotsHonorsStaticBudget(t *testing.T) {
+	t.Parallel()
+	cfg := validControllerConfig()
+	cfg.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+	resources := model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 20 << 30, CPUUtilizationPercent: 10}
+	workers := []model.Worker{
+		{ID: "a", PoolID: "org", State: model.WorkerIdle, MemoryLimitBytes: 8 << 30},
+		{ID: "b", PoolID: "org", State: model.WorkerIdle, MemoryLimitBytes: 8 << 30},
+		{ID: "c", PoolID: "org", State: model.WorkerIdle, MemoryLimitBytes: 8 << 30},
 	}
-	return workers
+	advertised := map[string]int{"org": 3}
+	if advertisedCapacityExceedsMemoryFunding(advertised, resources, workers, cfg, 40<<30) {
+		t.Fatal("budget-funded warm workers were treated as exceeding memory funding")
+	}
+	if got := memoryAffordableAdvertisedCapacity(advertised, resources, workers, cfg, 40<<30)["org"]; got != 3 {
+		t.Fatalf("budget-affordable capacity = %d, want 3", got)
+	}
+	// Without the budget, 20 GiB available against a 16 GiB floor funds zero 8 GiB slots.
+	cfg.Resources.WorkerMemoryBudget = 0
+	if !advertisedCapacityExceedsMemoryFunding(advertised, resources, workers, cfg, 0) {
+		t.Fatal("host-headroom mode did not withdraw unfundable advertised capacity")
+	}
+	if got := memoryAffordableAdvertisedCapacity(advertised, resources, workers, cfg, 0)["org"]; got != 0 {
+		t.Fatalf("host-affordable capacity = %d, want 0", got)
+	}
 }
 
 type assignmentOnCancelScaleSet struct {

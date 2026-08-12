@@ -2,10 +2,13 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
 )
 
@@ -132,4 +135,67 @@ func TestRecoveryOnlySkipsPrePollStarts(t *testing.T) {
 	if len(result.Plan.Start) != 0 {
 		t.Fatalf("recovery-only plan still advertises starts: %#v", result.Plan.Start)
 	}
+}
+
+func TestPrePollRefreshFailureAdvertisesZeroCapacity(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	refreshErr := errors.New("pre-poll Docker inventory failed")
+	// Bootstrap inventory + two freshStartAllowed lists around the warm start,
+	// then the dedicated pre-poll refresh.
+	harness.runtime.listErr = refreshErr
+	harness.runtime.listErrAt = 4
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := harness.controller.Step(ctx)
+		done <- err
+	}()
+	waitForSignal(t, blocking.entered, "zero-capacity listener poll did not begin")
+	if got := harness.runtime.startCount(); got != 1 {
+		t.Fatalf("pre-poll warm start = %d, want 1 before the failed refresh", got)
+	}
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[0]" {
+		t.Fatalf("poll capacity after pre-poll refresh failure = %v, want [0]", got)
+	}
+	cancel()
+	<-done
+}
+
+func TestBudgetFundedCapacitySurvivesHostHeadroomDipDuringCadence(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		harness.controller.config.Controller.ReconcileInterval.Duration = 50 * time.Millisecond
+		harness.controller.config.GitHub.Targets[0].WarmIdle = 3
+		harness.controller.config.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
+		harness.controller.engineMemoryTotal = 40 << 30
+		resources := &mutableResources{snapshot: model.ResourceSnapshot{
+			TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 20 << 30, CPUUtilizationPercent: 10,
+		}}
+		harness.controller.deps.Resources = resources
+		blocking := newFirstBlockingScaleSet(harness.scaleSets)
+		harness.controller.deps.ScaleSets = blocking
+		ctx, cancel := context.WithCancel(context.Background())
+		stepDone := make(chan struct{})
+		go func() {
+			_, _ = harness.controller.Step(ctx)
+			close(stepDone)
+		}()
+		waitForSignal(t, blocking.entered, "budget-funded listener poll did not begin")
+		if got := harness.runtime.startCount(); got != 3 {
+			t.Fatalf("pre-poll warm burst = %d, want 3", got)
+		}
+		if got := blocking.capacitiesSnapshot(); len(got) != 1 || got[0] == 0 {
+			t.Fatalf("initial advertised capacity = %v, want a positive single poll", got)
+		}
+		synctest.Wait()
+		if got := blocking.capacitiesSnapshot(); len(got) != 1 {
+			t.Fatalf("budget-funded cadence withdrew on host headroom: capacities=%v", got)
+		}
+		cancel()
+		<-stepDone
+	})
 }

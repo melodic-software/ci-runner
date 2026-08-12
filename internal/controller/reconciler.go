@@ -471,6 +471,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
 	var reservedMemory uint64
+	prePollRefreshFailed := false
 	if !recoveryOnly {
 		if provisional.StartDesktop {
 			if startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration); startErr != nil {
@@ -485,11 +486,13 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 				if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
 					jobStateKnown = false
 					observationFailed = true
+					prePollRefreshFailed = true
 					resources = model.ResourceSnapshot{}
 					record("worker-pre-poll-refresh-error", "managed-worker refresh failed before the listener poll; new work is blocked", "", true, listErr)
 				} else if enriched, lookupErr := r.enrichWorkerJobs(ctx, latest); lookupErr != nil {
 					jobStateKnown = false
 					observationFailed = true
+					prePollRefreshFailed = true
 					resources = model.ResourceSnapshot{}
 					record("job-index-pre-poll-refresh-error", "durable job lifecycle state could not be refreshed before the listener poll; new work is blocked", "", true, lookupErr)
 				} else {
@@ -505,6 +508,15 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if limit, ok := pending[poolID]; ok && capacity > limit {
 				pollPlan.AdvertisedCapacity[poolID] = limit
 			}
+		}
+	}
+	// Pre-poll start succeeded but the follow-up inventory/job refresh failed:
+	// forcedZero only freezes cadence observations. Zero every advertised slot
+	// before Statistics so a transient Docker listing failure cannot acknowledge
+	// new work without authoritative worker visibility.
+	if prePollRefreshFailed {
+		for poolID := range pollPlan.AdvertisedCapacity {
+			pollPlan.AdvertisedCapacity[poolID] = 0
 		}
 	}
 	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)

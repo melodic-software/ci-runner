@@ -206,13 +206,13 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				// phase behind it, so the larger capacity waits for the next poll.
 				// Start admission re-verifies live memory before every container.
 				withdrawn := capacityDecreased(state.advertised, plan.AdvertisedCapacity) ||
-					advertisedCapacityExceedsMemoryFunding(state.advertised, resources, r.config)
+					advertisedCapacityExceedsMemoryFunding(state.advertised, resources, workers, r.config, state.engineMemoryTotal)
 				restored := capacityRestoredFromZero(state.advertised, plan.AdvertisedCapacity)
 				if withdrawn || (restored && checkpointErr == nil) {
 					message := "open listener poll was restarted to advertise restored capacity"
 					if withdrawn {
 						message = "open listener poll was restarted to withdraw advertised capacity"
-						r.seedPendingCapacity(memoryAffordableAdvertisedCapacity(state.advertised, resources, r.config))
+						r.seedPendingCapacity(memoryAffordableAdvertisedCapacity(state.advertised, resources, workers, r.config, state.engineMemoryTotal))
 					}
 					r.writeLog(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
 					cancel(errReconcileInputsChanged)
@@ -270,7 +270,7 @@ func capacityRestoredFromZero(previous, current map[string]int) bool {
 	return false
 }
 
-func advertisedCapacityExceedsMemoryFunding(advertised map[string]int, resources model.ResourceSnapshot, cfg config.Config) bool {
+func advertisedCapacityExceedsMemoryFunding(advertised map[string]int, resources model.ResourceSnapshot, workers []model.Worker, cfg config.Config, engineMemoryTotal uint64) bool {
 	total := 0
 	for _, capacity := range advertised {
 		total += capacity
@@ -278,14 +278,11 @@ func advertisedCapacityExceedsMemoryFunding(advertised map[string]int, resources
 	if total == 0 {
 		return false
 	}
-	headroom := availableMemoryHeadroom(resources, cfg.Resources)
-	affordable := affordableWorkerCount(headroom, cfg.Resources.Worker.Memory)
-	return affordable < total
+	return memoryFundingSlots(resources, workers, cfg, engineMemoryTotal) < total
 }
 
-func memoryAffordableAdvertisedCapacity(advertised map[string]int, resources model.ResourceSnapshot, cfg config.Config) map[string]int {
-	headroom := availableMemoryHeadroom(resources, cfg.Resources)
-	slots := affordableWorkerCount(headroom, cfg.Resources.Worker.Memory)
+func memoryAffordableAdvertisedCapacity(advertised map[string]int, resources model.ResourceSnapshot, workers []model.Worker, cfg config.Config, engineMemoryTotal uint64) map[string]int {
+	slots := memoryFundingSlots(resources, workers, cfg, engineMemoryTotal)
 	result := make(map[string]int, len(advertised))
 	remaining := slots
 	for poolID, capacity := range advertised {
@@ -302,6 +299,32 @@ func memoryAffordableAdvertisedCapacity(advertised map[string]int, resources mod
 		remaining -= capacity
 	}
 	return result
+}
+
+// memoryFundingSlots reports how many default-profile worker slots the current
+// memory basis can still fund. Host-headroom mode matches BuildPlan's physical
+// reading. Budget mode counts already-reserved active workers plus new slots
+// from the static remainder so pre-poll starts do not look unfundable merely
+// because AvailablePhysical dropped under ordinary load.
+func memoryFundingSlots(resources model.ResourceSnapshot, workers []model.Worker, cfg config.Config, engineMemoryTotal uint64) int {
+	gate := evaluateMemoryBasis(PlanInput{
+		Config: cfg, Workers: workers, Resources: resources, EngineMemoryTotalBytes: engineMemoryTotal,
+	})
+	workerMemory := cfg.Resources.Worker.Memory
+	if !gate.budgetActive {
+		return affordableWorkerCount(gate.remaining, workerMemory)
+	}
+	active := 0
+	for _, worker := range workers {
+		if worker.Active() {
+			active++
+		}
+	}
+	additional := affordableWorkerCount(gate.remaining, workerMemory)
+	if gate.floorBlocked {
+		additional = 0
+	}
+	return active + additional
 }
 
 func sameWorkerInventory(left, right []model.Worker) bool {
