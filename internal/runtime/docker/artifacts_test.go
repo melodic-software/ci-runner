@@ -493,7 +493,6 @@ func TestCleanupDeletesNothingWhenTheCatalogCannotBeRead(t *testing.T) {
 	}
 }
 
-
 func TestCapSweepProtectsOpenRecordsAndInFlightTemporaries(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -582,6 +581,28 @@ func TestProtectedCountedBytesDoNotForceHealthyArtifactDeletion(t *testing.T) {
 	}
 	if _, err := os.Stat(inFlightPath); err != nil {
 		t.Fatalf("in-flight temporary was removed: %v", err)
+	}
+}
+
+func TestCapSweepProtectsDegradedMetadataPathsForAdoptedContainer(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 32, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 32, CleanupEvery: time.Nanosecond,
+	})
+	containerID := "abcdef0123456789"
+	adopted := testArtifactMetadata(containerID, "runner-live")
+	degradedDiag := filepath.Join(root, "diag", artifactBaseName(degradedArtifactMetadata(containerID))+"-diag.tar.gz")
+	if err := os.WriteFile(degradedDiag, bytes.Repeat([]byte("d"), 20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), []ArtifactMetadata{adopted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(degradedDiag); err != nil {
+		t.Fatalf("degraded-metadata diagnostic for adopted container was cap-evicted: %v", err)
 	}
 }
 

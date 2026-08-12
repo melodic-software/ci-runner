@@ -249,18 +249,27 @@ func buildReferencedFromCatalog(logDirectory, diagnosticDirectory string, catalo
 }
 
 func buildReferencedFromInventory(logDirectory, diagnosticDirectory string, adopted []ArtifactMetadata) map[string]struct{} {
-	referenced := make(map[string]struct{}, len(adopted)*3)
+	referenced := make(map[string]struct{}, len(adopted)*6)
 	for _, metadata := range adopted {
-		base := artifactBaseName(metadata)
-		for _, path := range []string{
-			filepath.Join(logDirectory, base+".log"),
-			filepath.Join(diagnosticDirectory, base+"-diag.tar.gz"),
-			filepath.Join(diagnosticDirectory, base+"-resources.json"),
-		} {
-			referenced[canonicalPath(path)] = struct{}{}
+		for _, variant := range []ArtifactMetadata{metadata, degradedArtifactMetadata(metadata.ContainerID)} {
+			base := artifactBaseName(variant)
+			for _, path := range []string{
+				filepath.Join(logDirectory, base+".log"),
+				filepath.Join(diagnosticDirectory, base+"-diag.tar.gz"),
+				filepath.Join(diagnosticDirectory, base+"-resources.json"),
+			} {
+				referenced[canonicalPath(path)] = struct{}{}
+			}
 		}
 	}
 	return referenced
+}
+
+// degradedArtifactMetadata matches Runtime.metadata when ContainerInspect fails.
+// Finalization retries can publish diagnostics under this base name while the
+// adoption inventory still derives label-based paths; both must stay referenced.
+func degradedArtifactMetadata(containerID string) ArtifactMetadata {
+	return ArtifactMetadata{ContainerID: containerID}
 }
 
 func mergeReferenced(into map[string]struct{}, from map[string]struct{}) {
