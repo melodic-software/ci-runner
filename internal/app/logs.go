@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/jobindex"
+	dockerruntime "github.com/melodic-software/ci-runner/internal/runtime/docker"
 )
 
 var safeJobID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -24,10 +25,22 @@ func (a *Application) logs(ctx context.Context, args []string) int {
 	follow := flags.Bool("follow", false, "follow controller logs")
 	jobID := flags.String("job", "", "show diagnostic artifacts for one job")
 	cleanup := flags.Bool("cleanup", false, "run finalized worker-artifact retention now")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || boolCount(*follow, *jobID != "", *cleanup) > 1 {
-		if boolCount(*follow, *jobID != "", *cleanup) > 1 {
-			writeln(a.errOut, "--follow, --job, and --cleanup are mutually exclusive")
+	audit := flags.Bool("audit", false, "report disk-vs-catalog worker artifact accounting")
+	purge := flags.Bool("purge", false, "remove unreferenced worker artifacts")
+	confirm := flags.Bool("confirm", false, "apply reference-based purge deletions")
+	jsonOutput := flags.Bool("json", false, "write machine-readable audit or purge output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || modeCount(*follow, *jobID != "", *cleanup, *audit, *purge) > 1 {
+		if modeCount(*follow, *jobID != "", *cleanup, *audit, *purge) > 1 {
+			writeln(a.errOut, "--follow, --job, --cleanup, --audit, and --purge are mutually exclusive")
 		}
+		return ExitUsage
+	}
+	if *jsonOutput && !*audit && !*purge {
+		writeln(a.errOut, "--json requires --audit or --purge")
+		return ExitUsage
+	}
+	if *confirm && !*purge {
+		writeln(a.errOut, "--confirm requires --purge")
 		return ExitUsage
 	}
 	if a.dependencies.Logs == nil {
@@ -40,6 +53,44 @@ func (a *Application) logs(ctx context.Context, args []string) int {
 			return ExitRuntime
 		}
 		writeln(a.out, "Finalized worker-artifact retention cleanup completed.")
+		return ExitOK
+	}
+	if *audit {
+		report, err := a.dependencies.Logs.Audit(ctx)
+		if err != nil {
+			writef(a.errOut, "audit worker artifacts: %v\n", err)
+			return ExitRuntime
+		}
+		if *jsonOutput {
+			if err := encodeJSON(a.out, report); err != nil {
+				writef(a.errOut, "encode audit report: %v\n", err)
+				return ExitRuntime
+			}
+			return ExitOK
+		}
+		if err := writeArtifactAudit(a.out, report); err != nil {
+			writef(a.errOut, "write audit report: %v\n", err)
+			return ExitRuntime
+		}
+		return ExitOK
+	}
+	if *purge {
+		result, err := a.dependencies.Logs.Purge(ctx, !*confirm)
+		if err != nil {
+			writef(a.errOut, "purge unreferenced worker artifacts: %v\n", err)
+			return ExitRuntime
+		}
+		if *jsonOutput {
+			if err := encodeJSON(a.out, result); err != nil {
+				writef(a.errOut, "encode purge result: %v\n", err)
+				return ExitRuntime
+			}
+			return ExitOK
+		}
+		if err := writeArtifactPurge(a.out, result); err != nil {
+			writef(a.errOut, "write purge result: %v\n", err)
+			return ExitRuntime
+		}
 		return ExitOK
 	}
 	if err := a.dependencies.Logs.Write(ctx, a.out, *follow, *jobID); err != nil {
@@ -66,7 +117,7 @@ type LogCleanupFunc func(context.Context) error
 
 func (f LogCleanupFunc) Cleanup(ctx context.Context) error { return f(ctx) }
 
-func boolCount(values ...bool) int {
+func modeCount(values ...bool) int {
 	count := 0
 	for _, value := range values {
 		if value {
@@ -129,6 +180,22 @@ func (f FileLogs) Cleanup(ctx context.Context) error {
 		return errors.New("artifact cleanup is unavailable")
 	}
 	return f.Cleaner.Cleanup(ctx)
+}
+
+func (f FileLogs) Audit(ctx context.Context) (dockerruntime.ArtifactAuditReport, error) {
+	maintainer, ok := f.Cleaner.(artifactMaintainer)
+	if !ok {
+		return dockerruntime.ArtifactAuditReport{}, errors.New("worker artifact audit is unavailable")
+	}
+	return maintainer.Audit(ctx)
+}
+
+func (f FileLogs) Purge(ctx context.Context, dryRun bool) (dockerruntime.ArtifactPurgeResult, error) {
+	maintainer, ok := f.Cleaner.(artifactMaintainer)
+	if !ok {
+		return dockerruntime.ArtifactPurgeResult{}, errors.New("worker artifact purge is unavailable")
+	}
+	return maintainer.Purge(ctx, dryRun)
 }
 
 func (f FileLogs) writeJobArtifacts(ctx context.Context, destination io.Writer, jobID string) error {

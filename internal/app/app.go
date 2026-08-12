@@ -594,7 +594,7 @@ func (a *Application) usage() {
   ci-runner host disable [--wait|--detach]
   ci-runner host game [--wait|--detach]
   ci-runner host doctor [--json] [--include-elevated]
-  ci-runner host logs [--follow|--job ID]
+  ci-runner host logs [--follow|--job ID|--cleanup|--audit|--purge [--confirm] [--json]]
   ci-runner host force-stop
 	ci-runner host controller restart
 	ci-runner host controller stop-for-update

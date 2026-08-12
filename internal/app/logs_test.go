@@ -76,6 +76,9 @@ func TestLogsCleanupIsExplicitAndMutuallyExclusive(t *testing.T) {
 	if code := application.Run(context.Background(), []string{"host", "logs", "--cleanup", "--follow"}); code != ExitUsage {
 		t.Fatalf("mutually exclusive cleanup exit=%d", code)
 	}
+	if code := application.Run(context.Background(), []string{"host", "logs", "--audit", "--purge"}); code != ExitUsage {
+		t.Fatalf("mutually exclusive audit/purge exit=%d", code)
+	}
 }
 
 type staticJobStore struct{ records map[string]jobindex.Record }

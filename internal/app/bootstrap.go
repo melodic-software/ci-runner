@@ -89,17 +89,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 			WorkerLogDirectory:  filepath.Join(cfg.Paths.Logs, "workers"),
 			DiagnosticDirectory: cfg.Paths.Diagnostics,
 			Jobs:                jobs,
-			Cleaner: LogCleanupFunc(func(ctx context.Context) error {
-				artifacts, err := newWorkerArtifactSink(cfg, acl, jobs)
-				if err != nil {
-					return err
-				}
-				adopted, err := dockerruntime.InventoryLocalArtifacts(ctx, buildinfo.Version, cfg.Host.ID)
-				if err != nil {
-					return fmt.Errorf("inventory local workers before cleanup: %w", err)
-				}
-				return artifacts.CleanupNow(ctx, adopted)
-			}),
+			Cleaner:             newWorkerArtifactMaintenance(cfg, acl, jobs),
 		},
 		Doctor: NewLocalDoctorInspector(cfg, acl, bitLocker, secretStore, func(ctx context.Context) (string, string, error) {
 			return dockerruntime.ProbeLocal(ctx, buildinfo.Version)
