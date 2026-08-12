@@ -246,9 +246,11 @@ lag. Reconcile spans contain timestamped `worker.registered`, `worker.started`,
 and `job.started` events without runner or job identities. `jobs.json` remains
 the durable exact-identity ledger for operator diagnostics and retains
 `jobStartedAt`, artifact start, completion, and finalization timestamps.
-`runnerAssignedAt` records GitHub's runner-assignment timestamp when the scale-set
-listener persists a job-started or job-completed event, enabling assignment→create
-queue wait from local state without recomputing visibility lag from telemetry.
+GitHub's runner-assignment timestamp is persisted beside that ledger in
+`runner-assign-times.json` (not inside schema-version-1 `jobs.json`) when the
+scale-set listener records a job-started or job-completed event, so assignment→create
+queue wait stays measurable from local state without breaking rollback readability
+for older controllers that reject unknown job-record fields.
 
 ## Why the controller is draining
 

@@ -227,6 +227,11 @@ func (s *FileStore) loadUnlocked() (_ Catalog, resultErr error) {
 	if err := Validate(catalog); err != nil {
 		return Catalog{}, fmt.Errorf("invalid jobs.json: %w", err)
 	}
+	times, err := loadAssignTimes(s.directory)
+	if err != nil {
+		return Catalog{}, err
+	}
+	hydrateAssignTimes(&catalog, times)
 	return catalog, nil
 }
 
@@ -280,6 +285,9 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	}
 	committed = true
 	appendDropJournal(s.directory, s.acl, dropped, s.now())
+	if err := saveAssignTimesUnlocked(s.directory, s.acl, catalog); err != nil {
+		return err
+	}
 	if err := s.acl.Harden(target); err != nil {
 		return fmt.Errorf("verify jobs.json ACL: %w", err)
 	}

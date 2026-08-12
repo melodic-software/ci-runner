@@ -32,9 +32,12 @@ type Record struct {
 	Result            string     `json:"result,omitempty"`
 	LogPath           string     `json:"logPath,omitempty"`
 	DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
-	ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
-	RunnerAssignedAt  *time.Time `json:"runnerAssignedAt,omitempty"`
-	JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
+	ArtifactStartedAt time.Time `json:"artifactStartedAt,omitempty"`
+	// RunnerAssignedAt is hydrated from the runner-assign-times sidecar. It must
+	// not appear in jobs.json: schemaVersion 1 stays strictly readable by older
+	// controllers that decode with DisallowUnknownFields.
+	RunnerAssignedAt *time.Time `json:"-"`
+	JobStartedAt     time.Time  `json:"jobStartedAt,omitempty"`
 	CompletedAt       time.Time  `json:"completedAt,omitempty"`
 	FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
 	UpdatedAt         time.Time  `json:"updatedAt"`

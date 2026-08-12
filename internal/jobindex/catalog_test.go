@@ -39,10 +39,11 @@ func TestSchemaVersionOneEncodingRemainsStrictlyReadableByV019(t *testing.T) {
 
 	now := time.Unix(500, 0).UTC()
 	tombstonedAt := now.Add(time.Minute)
+	assignedAt := now.Add(-time.Second)
 	encoded, err := json.Marshal(Catalog{SchemaVersion: SchemaVersion, Records: []Record{{
 		PoolID: "org", RunnerName: "runner", ContainerID: "container", JobID: "job", Result: "Succeeded",
 		LogPath: filepath.Join(t.TempDir(), "worker.log"), DiagnosticPath: filepath.Join(t.TempDir(), "worker-diag.tar.gz"),
-		ArtifactStartedAt: now, JobStartedAt: now, CompletedAt: now, FinalizedAt: now,
+		ArtifactStartedAt: now, RunnerAssignedAt: &assignedAt, JobStartedAt: now, CompletedAt: now, FinalizedAt: now,
 		UpdatedAt: now, Open: false, TombstonedAt: &tombstonedAt,
 	}}})
 	if err != nil {
@@ -50,6 +51,9 @@ func TestSchemaVersionOneEncodingRemainsStrictlyReadableByV019(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(`"resourcePath"`)) {
 		t.Fatalf("schemaVersion 1 unexpectedly persisted resourcePath: %s", encoded)
+	}
+	if bytes.Contains(encoded, []byte(`"runnerAssignedAt"`)) {
+		t.Fatalf("schemaVersion 1 unexpectedly persisted runnerAssignedAt in jobs.json: %s", encoded)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
@@ -183,6 +187,16 @@ func TestRunnerAssignedAtPersistsAcrossRestartAndReadsLegacyJobsJSON(t *testing.
 	if err := events.JobStarted(context.Background(), "org", "runner", "job-1", assignedAt); err != nil {
 		t.Fatal(err)
 	}
+	jobsJSON, err := os.ReadFile(filepath.Join(directory, jobsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(jobsJSON, []byte(`"runnerAssignedAt"`)) {
+		t.Fatalf("jobs.json must not embed runnerAssignedAt for rollback safety: %s", jobsJSON)
+	}
+	if _, err := os.Stat(filepath.Join(directory, assignTimesFilename)); err != nil {
+		t.Fatalf("assign-times sidecar missing after JobStarted: %v", err)
+	}
 	reopened := newFileStoreWithDependencies(t, directory, locker)
 	record, err := reopened.FindByJobID(context.Background(), "job-1")
 	if err != nil {
@@ -198,6 +212,9 @@ func TestRunnerAssignedAtPersistsAcrossRestartAndReadsLegacyJobsJSON(t *testing.
 	if err := os.WriteFile(filepath.Join(directory, jobsFilename), []byte(legacyJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(directory, assignTimesFilename)); err != nil {
+		t.Fatal(err)
+	}
 	legacyStore := newFileStoreWithDependencies(t, directory, locker)
 	legacy, err := legacyStore.FindByJobID(context.Background(), "legacy-job")
 	if err != nil {
@@ -205,6 +222,48 @@ func TestRunnerAssignedAtPersistsAcrossRestartAndReadsLegacyJobsJSON(t *testing.
 	}
 	if legacy.RunnerAssignedAt != nil {
 		t.Fatalf("legacy record must omit runnerAssignedAt, got %v", legacy.RunnerAssignedAt)
+	}
+}
+
+func TestAssignedJobJobsJSONRemainsStrictlyReadableByV019(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	store := newFileStoreForTest(t, directory)
+	assignedAt := time.Unix(1700000100, 0).UTC()
+	if _, err := store.Upsert(context.Background(), Patch{
+		PoolID: "org", RunnerName: "runner", JobID: "job", RunnerAssignedAt: assignedAt, JobStartedAt: assignedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(filepath.Join(directory, jobsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type legacyRecord struct {
+		PoolID            string     `json:"poolId"`
+		RunnerName        string     `json:"runnerName"`
+		ContainerID       string     `json:"containerId,omitempty"`
+		JobID             string     `json:"jobId,omitempty"`
+		Result            string     `json:"result,omitempty"`
+		LogPath           string     `json:"logPath,omitempty"`
+		DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
+		ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
+		JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
+		CompletedAt       time.Time  `json:"completedAt,omitempty"`
+		FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
+		UpdatedAt         time.Time  `json:"updatedAt"`
+		Open              bool       `json:"open"`
+		TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
+	}
+	type legacyCatalog struct {
+		SchemaVersion int            `json:"schemaVersion"`
+		Records       []legacyRecord `json:"records"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var decoded legacyCatalog
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("v0.1.9 strict decoder rejected jobs.json after assigned job: %v\n%s", err, encoded)
 	}
 }
 
