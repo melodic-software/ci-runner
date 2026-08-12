@@ -735,6 +735,38 @@ func TestListReportsNoMemoryLimitWhenTheResponseCarriesNoHostConfig(t *testing.T
 	}
 }
 
+func TestListReportsInvalidWorkerStateDiagnostics(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	engine.addContainer("truncated", "comp", "running")
+	var reported []error
+	options := testOptions(&memoryArtifacts{})
+	options.OnError = func(err error) { reported = append(reported, err) }
+	runtime, err := New(engine, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+
+	workers, err := runtime.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(workers) != 1 || workers[0].State != model.WorkerStarting {
+		t.Fatalf("workers = %#v, want unknown state preserved as Starting", workers)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("reported = %#v, want diagnostic plus wrapped read failure", reported)
+	}
+	if !strings.Contains(reported[0].Error(), `tarSize=4 rawHex=636f6d70`) {
+		t.Fatalf("diagnostic = %v, want tar size and hex bytes for comp", reported[0])
+	}
+	if !strings.Contains(reported[1].Error(), `invalid worker state "comp"`) {
+		t.Fatalf("read failure = %v, want invalid worker state error", reported[1])
+	}
+}
+
 func TestListKeepsWorkerStateWhenTheMemoryLimitCannotBeRead(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
