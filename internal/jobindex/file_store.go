@@ -47,6 +47,8 @@ func NewFileStore(directory string, locker statefs.Locker, acl AccessController)
 	}, nil
 }
 
+func (s *FileStore) JobsStateDirectory() string { return s.directory }
+
 func (s *FileStore) PruneTombstones(ctx context.Context, before time.Time) (removed int, resultErr error) {
 	if before.IsZero() {
 		return 0, errors.New("tombstone prune cutoff is required")
@@ -238,7 +240,7 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	if err := s.acl.Verify(s.directory); err != nil {
 		return fmt.Errorf("verify jobs state directory ACL: %w", err)
 	}
-	encoded, err := encodeWithinCapacity(&catalog)
+	encoded, dropped, err := encodeWithinCapacity(&catalog)
 	if err != nil {
 		return err
 	}
@@ -277,6 +279,7 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 		return fmt.Errorf("replace jobs.json atomically: %w", err)
 	}
 	committed = true
+	appendDropJournal(s.directory, s.acl, dropped, s.now())
 	if err := s.acl.Harden(target); err != nil {
 		return fmt.Errorf("verify jobs.json ACL: %w", err)
 	}
@@ -301,24 +304,26 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 // and worker finalization retries livelock reconciliation. The cap can then
 // only be exceeded by open or still-running records alone, which the
 // concurrent worker ceiling makes unreachable at supported worker counts.
-func encodeWithinCapacity(catalog *Catalog) ([]byte, error) {
+func encodeWithinCapacity(catalog *Catalog) ([]byte, []Record, error) {
+	var dropped []Record
 	for {
 		encoded, err := json.MarshalIndent(catalog, "", "  ")
 		if err != nil {
-			return nil, fmt.Errorf("encode jobs.json: %w", err)
+			return nil, nil, fmt.Errorf("encode jobs.json: %w", err)
 		}
 		encoded = append(encoded, '\n')
 		if len(encoded) <= maximumJobState {
-			return encoded, nil
+			return encoded, dropped, nil
 		}
 		overshoot := len(encoded) - maximumJobState
 		if compactOldestTombstones(catalog, overshoot, len(encoded)) != 0 {
 			continue
 		}
-		if compactOldestCompleted(catalog, overshoot, len(encoded)) != 0 {
+		if removed := compactOldestCompleted(catalog, overshoot, len(encoded)); len(removed) != 0 {
+			dropped = append(dropped, removed...)
 			continue
 		}
-		return nil, fmt.Errorf("jobs.json exceeds the %d-byte safety limit with no tombstoned or completed records left to compact", maximumJobState)
+		return nil, nil, fmt.Errorf("jobs.json exceeds the %d-byte safety limit with no tombstoned or completed records left to compact", maximumJobState)
 	}
 }
 
@@ -348,7 +353,7 @@ func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int)
 		}
 		return left.RunnerName < right.RunnerName
 	})
-	return compactOldestFirst(catalog, tombstoned, overshootBytes, encodedBytes)
+	return len(compactOldestFirst(catalog, tombstoned, overshootBytes, encodedBytes))
 }
 
 // compactOldestCompleted removes the oldest terminal (closed and completed or
@@ -357,9 +362,9 @@ func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int)
 // files to the age-based orphan sweep instead of record-driven cleanup — an
 // accepted trade against livelocking the index. Open records and records
 // without a terminal marker are never touched here.
-func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) (removed int) {
+func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) (removed []Record) {
 	if len(catalog.Records) == 0 {
-		return 0
+		return nil
 	}
 	terminalTime := func(record Record) time.Time {
 		if !record.FinalizedAt.IsZero() {
@@ -381,7 +386,7 @@ func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) 
 		completed = append(completed, i)
 	}
 	if len(completed) == 0 {
-		return 0
+		return nil
 	}
 	sort.Slice(completed, func(a, b int) bool {
 		left, right := catalog.Records[completed[a]], catalog.Records[completed[b]]
@@ -400,7 +405,7 @@ func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) 
 // compactOldestFirst drops the oldest-first candidate record indices from
 // catalog.Records, capped at a count sized from the average encoded record so
 // the caller's re-encode loop usually converges in one compaction pass.
-func compactOldestFirst(catalog *Catalog, oldestFirst []int, overshootBytes, encodedBytes int) (removed int) {
+func compactOldestFirst(catalog *Catalog, oldestFirst []int, overshootBytes, encodedBytes int) (removed []Record) {
 	averageRecordBytes := max(encodedBytes/len(catalog.Records), 1)
 	dropCount := min(overshootBytes/averageRecordBytes+1, len(oldestFirst))
 	drop := make(map[int]struct{}, dropCount)
@@ -409,13 +414,14 @@ func compactOldestFirst(catalog *Catalog, oldestFirst []int, overshootBytes, enc
 	}
 	kept := catalog.Records[:0]
 	for i, record := range catalog.Records {
-		if _, dropped := drop[i]; dropped {
+		if _, dropped := drop[i]; !dropped {
+			kept = append(kept, record)
 			continue
 		}
-		kept = append(kept, record)
+		removed = append(removed, record)
 	}
 	catalog.Records = kept
-	return dropCount
+	return removed
 }
 
 var _ Store = (*FileStore)(nil)
