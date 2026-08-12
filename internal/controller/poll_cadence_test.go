@@ -12,6 +12,10 @@ import (
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
@@ -478,6 +482,103 @@ func TestSupersededListenerPollIsNotRecordedAsStatisticsError(t *testing.T) {
 	if logs.contains("scale-set-statistics-error") {
 		t.Fatalf("benign supersession was misreported as a scale-set poll failure: %s", logs)
 	}
+}
+
+func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) {
+	t.Parallel()
+	recorder, reader, err := telemetry.NewManualRecorder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.deps.Telemetry = recorder
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	now := harness.now
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now,
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org",
+			TotalAssignedJobs: 3, MaxCapacity: 3, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 3}
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatalf("baseline reconcile failed: %v", err)
+	}
+	if got := capacityAcknowledgedGauge(t, reader); got != 1 {
+		t.Fatalf("baseline gauge = %d, want 1", got)
+	}
+
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 41 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
+	harness.controller.deps.State = notifying
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := harness.controller.Step(ctx)
+		done <- err
+	}()
+	waitForSignal(t, blocking.entered, "memory-funded listener poll did not begin")
+
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
+	var checkpointGauge int64 = -1
+	waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
+		if len(observed.Pools) != 1 || observed.Pools[0].CapacityAcknowledged {
+			return false
+		}
+		checkpointGauge = capacityAcknowledgedGauge(t, reader)
+		return true
+	}, "pending acknowledgement was not checkpointed before poll supersession")
+	if checkpointGauge != 0 {
+		t.Fatalf("checkpoint gauge after durable poll checkpoint = %d, want 0", checkpointGauge)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("canceled listener poll did not stop")
+	}
+}
+
+func capacityAcknowledgedGauge(t *testing.T, reader *metric.ManualReader) int64 {
+	t.Helper()
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range collected.ScopeMetrics {
+		for _, current := range scope.Metrics {
+			if current.Name != "ci_runner.capacity.acknowledged" {
+				continue
+			}
+			gauge, ok := current.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("metric %q data = %T, want int64 gauge", current.Name, current.Data)
+			}
+			for _, point := range gauge.DataPoints {
+				if setValue(point.Attributes, "ci_runner.pool.id") == "org" {
+					return point.Value
+				}
+			}
+		}
+	}
+	t.Fatal("ci_runner.capacity.acknowledged has no org pool point")
+	return 0
+}
+
+func setValue(set attribute.Set, key string) string {
+	value, found := set.Value(attribute.Key(key))
+	if !found {
+		return ""
+	}
+	return value.AsString()
 }
 
 func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
