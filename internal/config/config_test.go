@@ -118,6 +118,26 @@ func TestLoadValidConfiguration(t *testing.T) {
 // successfully, with PullTimeout defaulted to defaultWorkerImagePullTimeout,
 // rather than failing Validate the way an omitted dockerDesktop.startTimeout
 // or drain.warningAfter would.
+func TestLoadDefaultsHealthWatchdog(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HealthWatchdog.CheckInterval.Duration != defaultHealthWatchCheckInterval {
+		t.Fatalf("checkInterval = %s, want %s", cfg.HealthWatchdog.CheckInterval.Duration, defaultHealthWatchCheckInterval)
+	}
+	if cfg.HealthWatchdog.HeartbeatStaleMultiplier != defaultHealthWatchHeartbeatMultiplier {
+		t.Fatalf("heartbeatStaleMultiplier = %d", cfg.HealthWatchdog.HeartbeatStaleMultiplier)
+	}
+	if cfg.HealthWatchdog.WorkerDivergenceGrace.Duration != defaultHealthWatchWorkerDivergenceGrace {
+		t.Fatalf("workerDivergenceGrace = %s", cfg.HealthWatchdog.WorkerDivergenceGrace.Duration)
+	}
+	if cfg.HealthWatchdog.JobsSizeWarningPercent != defaultHealthWatchJobsSizeWarningPercent {
+		t.Fatalf("jobsSizeWarningPercent = %d", cfg.HealthWatchdog.JobsSizeWarningPercent)
+	}
+}
+
 func TestLoadDefaultsOmittedWorkerImagePullTimeout(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "workerImage:\n  pullTimeout: 20m\n", "", 1)
