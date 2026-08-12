@@ -46,6 +46,8 @@ const (
 	maximumStateBytes           = 32
 )
 
+var errWorkerStateUnavailable = errors.New("worker state unavailable")
+
 var digestPinnedImage = regexp.MustCompile(`^[^\s@]+(?::[^\s@]+)?@sha256:[0-9a-f]{64}$`)
 
 // Engine is a narrow seam over the official Moby client for deterministic
@@ -424,7 +426,7 @@ func safeWorkerStartError(err error) error {
 
 func (r *Runtime) RemoveIfIdle(ctx context.Context, id string) (bool, error) {
 	first, err := r.readWorkerState(ctx, id)
-	if cerrdefs.IsNotFound(err) {
+	if cerrdefs.IsNotFound(err) || errors.Is(err, errWorkerStateUnavailable) {
 		return true, nil
 	}
 	if err != nil || first != "idle" {
@@ -438,7 +440,7 @@ func (r *Runtime) RemoveIfIdle(ctx context.Context, id string) (bool, error) {
 	case <-timer.C:
 	}
 	second, err := r.readWorkerState(ctx, id)
-	if cerrdefs.IsNotFound(err) {
+	if cerrdefs.IsNotFound(err) || errors.Is(err, errWorkerStateUnavailable) {
 		return true, nil
 	}
 	if err != nil || second != "idle" {
@@ -518,6 +520,10 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 	}
 	worker.MemoryLimitBytes = memoryLimit
 	state, err := r.readWorkerState(ctx, id)
+	if errors.Is(err, errWorkerStateUnavailable) {
+		worker.State = model.WorkerExited
+		return worker, nil
+	}
 	if err != nil {
 		return worker, fmt.Errorf("read worker %s state: %w", id, err)
 	}
@@ -551,6 +557,9 @@ func (r *Runtime) readWorkerMemoryLimit(ctx context.Context, id string) (int64, 
 func (r *Runtime) readWorkerState(ctx context.Context, id string) (_ string, resultErr error) {
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.StatePath})
 	if err != nil {
+		if r.containerGoneOrNotRunning(ctx, id) {
+			return "", errWorkerStateUnavailable
+		}
 		return "", err
 	}
 	defer func() {
@@ -577,6 +586,17 @@ func (r *Runtime) readWorkerState(ctx context.Context, id string) (_ string, res
 		return "", fmt.Errorf("invalid worker state %q", state)
 	}
 	return state, nil
+}
+
+func (r *Runtime) containerGoneOrNotRunning(ctx context.Context, id string) bool {
+	inspect, err := r.engine.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return inspect.Container.State == nil || !inspect.Container.State.Running
 }
 
 func (r *Runtime) ensureWatch(id string, existing *client.ContainerWaitResult) *containerWatch {
