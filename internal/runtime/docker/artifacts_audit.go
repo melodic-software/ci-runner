@@ -82,22 +82,87 @@ func isInFlightTemporary(name string) bool {
 }
 
 func (s *FileArtifactSink) Audit(ctx context.Context, adopted []ArtifactMetadata, inventoryAvailable bool, inventoryError string) (ArtifactAuditReport, error) {
+	catalog, catalogAvailable, catalogError := s.loadCatalogSoft(ctx)
+	return s.buildAuditReport(catalog, adopted, inventoryAvailable, inventoryError, catalogAvailable, catalogError)
+}
+
+func (s *FileArtifactSink) PurgeUnreferencedNow(ctx context.Context, adopted []ArtifactMetadata, dryRun bool) (ArtifactPurgeResult, error) {
+	adoptedIDs, err := s.indexAdopted(ctx, adopted)
+	if err != nil {
+		return ArtifactPurgeResult{DryRun: dryRun}, err
+	}
 	now := time.Now().UTC()
-	cutoff := now.Add(-s.policy.Retention)
+	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
+		return ArtifactPurgeResult{DryRun: dryRun}, err
+	}
+	catalog, err := s.loadCatalogStrict(ctx)
+	if err != nil {
+		return ArtifactPurgeResult{DryRun: dryRun}, fmt.Errorf("load catalog before purge: %w", err)
+	}
+	return s.purgeUnreferenced(ctx, catalog, adopted, dryRun)
+}
+
+func (s *FileArtifactSink) PurgeUnreferenced(ctx context.Context, dryRun bool) (ArtifactPurgeResult, error) {
+	catalog, err := s.loadCatalogStrict(ctx)
+	if err != nil {
+		return ArtifactPurgeResult{DryRun: dryRun}, fmt.Errorf("load catalog before purge: %w", err)
+	}
+	return s.purgeUnreferenced(ctx, catalog, nil, dryRun)
+}
+
+func (s *FileArtifactSink) purgeUnreferenced(ctx context.Context, catalog jobindex.Catalog, adopted []ArtifactMetadata, dryRun bool) (ArtifactPurgeResult, error) {
+	report, err := s.buildAuditReport(catalog, adopted, true, "", true, "")
+	if err != nil {
+		return ArtifactPurgeResult{DryRun: dryRun}, err
+	}
+
+	result := ArtifactPurgeResult{DryRun: dryRun}
+	for _, directory := range report.Directories {
+		for _, file := range directory.Files {
+			if file.Classification != ArtifactUnreferencedPastCutoff &&
+				file.Classification != ArtifactUnreferencedWithinCutoff {
+				continue
+			}
+			if file.InFlightTemporary {
+				result.Skipped = append(result.Skipped, file)
+				continue
+			}
+			if dryRun {
+				result.Deleted = append(result.Deleted, file)
+				result.TotalBytes += file.SizeBytes
+				result.DeleteCount++
+				continue
+			}
+			if err := removeRegularArtifact(file.Path); err != nil {
+				return result, err
+			}
+			result.Deleted = append(result.Deleted, file)
+			result.TotalBytes += file.SizeBytes
+			result.DeleteCount++
+		}
+	}
+	return result, nil
+}
+
+func (s *FileArtifactSink) buildAuditReport(
+	catalog jobindex.Catalog,
+	adopted []ArtifactMetadata,
+	inventoryAvailable bool,
+	inventoryError string,
+	catalogAvailable bool,
+	catalogError string,
+) (ArtifactAuditReport, error) {
+	cutoff := time.Now().UTC().Add(-s.policy.Retention)
 	report := ArtifactAuditReport{
 		RetentionCutoff:    cutoff,
+		CatalogAvailable:   catalogAvailable,
+		CatalogError:       catalogError,
 		InventoryAvailable: inventoryAvailable,
 		InventoryError:     inventoryError,
 	}
 
-	catalog, catalogAvailable, catalogError, err := s.loadCatalogForAudit(ctx)
-	report.CatalogAvailable = catalogAvailable
-	report.CatalogError = catalogError
-	if err != nil {
-		return report, err
-	}
-
 	referenced, catalogPaths := buildReferencedFromCatalog(s.logDirectory, s.diagnosticDirectory, catalog)
+	mergeReferenced(referenced, buildReferencedFromInventory(s.logDirectory, s.diagnosticDirectory, adopted))
 	if inventoryAvailable {
 		report.TombstonedAdopted = findTombstonedAdopted(catalog, adopted)
 	}
@@ -133,70 +198,20 @@ func (s *FileArtifactSink) Audit(ctx context.Context, adopted []ArtifactMetadata
 	return report, nil
 }
 
-func (s *FileArtifactSink) PurgeUnreferencedNow(ctx context.Context, adopted []ArtifactMetadata, dryRun bool) (ArtifactPurgeResult, error) {
-	adoptedIDs, err := s.indexAdopted(ctx, adopted)
-	if err != nil {
-		return ArtifactPurgeResult{DryRun: dryRun}, err
-	}
-	now := time.Now().UTC()
-	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
-		return ArtifactPurgeResult{DryRun: dryRun}, err
-	}
-	return s.PurgeUnreferenced(ctx, dryRun)
-}
-
-func (s *FileArtifactSink) PurgeUnreferenced(ctx context.Context, dryRun bool) (ArtifactPurgeResult, error) {
-	catalog, catalogAvailable, catalogError, err := s.loadCatalogForAudit(ctx)
-	if err != nil {
-		return ArtifactPurgeResult{DryRun: dryRun}, err
-	}
-	if !catalogAvailable {
-		return ArtifactPurgeResult{DryRun: dryRun}, fmt.Errorf("catalog is unavailable: %s", catalogError)
-	}
-	_ = catalog
-
-	report, err := s.Audit(ctx, nil, true, "")
-	if err != nil {
-		return ArtifactPurgeResult{DryRun: dryRun}, err
-	}
-
-	result := ArtifactPurgeResult{DryRun: dryRun}
-	for _, directory := range report.Directories {
-		for _, file := range directory.Files {
-			if file.Classification != ArtifactUnreferencedPastCutoff &&
-				file.Classification != ArtifactUnreferencedWithinCutoff {
-				continue
-			}
-			if file.InFlightTemporary {
-				result.Skipped = append(result.Skipped, file)
-				continue
-			}
-			if dryRun {
-				result.Deleted = append(result.Deleted, file)
-				result.TotalBytes += file.SizeBytes
-				result.DeleteCount++
-				continue
-			}
-			if err := removeRegularArtifact(file.Path); err != nil {
-				return result, err
-			}
-			result.Deleted = append(result.Deleted, file)
-			result.TotalBytes += file.SizeBytes
-			result.DeleteCount++
-		}
-	}
-	return result, nil
-}
-
-func (s *FileArtifactSink) loadCatalogForAudit(ctx context.Context) (jobindex.Catalog, bool, string, error) {
+func (s *FileArtifactSink) loadCatalogStrict(ctx context.Context) (jobindex.Catalog, error) {
 	catalog, err := s.jobs.Load(ctx)
 	if errors.Is(err, jobindex.ErrNotFound) {
-		return jobindex.Catalog{}, true, "", nil
+		return jobindex.Catalog{}, nil
 	}
+	return catalog, err
+}
+
+func (s *FileArtifactSink) loadCatalogSoft(ctx context.Context) (jobindex.Catalog, bool, string) {
+	catalog, err := s.loadCatalogStrict(ctx)
 	if err != nil {
-		return jobindex.Catalog{}, false, err.Error(), nil
+		return jobindex.Catalog{}, false, err.Error()
 	}
-	return catalog, true, "", nil
+	return catalog, true, ""
 }
 
 type catalogPathEntry struct {
@@ -231,6 +246,27 @@ func buildReferencedFromCatalog(logDirectory, diagnosticDirectory string, catalo
 		}
 	}
 	return referenced, catalogPaths
+}
+
+func buildReferencedFromInventory(logDirectory, diagnosticDirectory string, adopted []ArtifactMetadata) map[string]struct{} {
+	referenced := make(map[string]struct{}, len(adopted)*3)
+	for _, metadata := range adopted {
+		base := artifactBaseName(metadata)
+		for _, path := range []string{
+			filepath.Join(logDirectory, base+".log"),
+			filepath.Join(diagnosticDirectory, base+"-diag.tar.gz"),
+			filepath.Join(diagnosticDirectory, base+"-resources.json"),
+		} {
+			referenced[canonicalPath(path)] = struct{}{}
+		}
+	}
+	return referenced
+}
+
+func mergeReferenced(into map[string]struct{}, from map[string]struct{}) {
+	for path := range from {
+		into[path] = struct{}{}
+	}
 }
 
 func auditArtifactDirectory(root string, referenced map[string]struct{}, cutoff time.Time) (ArtifactAuditDirectory, error) {

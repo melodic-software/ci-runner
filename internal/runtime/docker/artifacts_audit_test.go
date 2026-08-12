@@ -190,6 +190,96 @@ func TestPurgeConfirmRemovesUnreferencedNonTemporaryFiles(t *testing.T) {
 	}
 }
 
+func TestAuditProtectsInventoryDerivedPathsWhenCatalogRecordIsTombstoned(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	metadata := testArtifactMetadata("container-live", "frozen")
+	logPath := filepath.Join(root, "logs", artifactBaseName(metadata)+".log")
+	diagnosticPath := filepath.Join(root, "diag", artifactBaseName(metadata)+"-diag.tar.gz")
+	old := time.Now().Add(-48 * time.Hour)
+	for _, path := range []string{logPath, diagnosticPath} {
+		if err := os.WriteFile(path, []byte("evidence"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tombstone := time.Now().UTC()
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: "container-old",
+		TombstonedAt: &tombstone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := sink.Audit(context.Background(), []ArtifactMetadata{metadata}, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logDirectory := findAuditDirectory(t, report, filepath.Join(root, "logs"))
+	diagnosticDirectory := findAuditDirectory(t, report, filepath.Join(root, "diag"))
+	assertAuditFile(t, logDirectory, logPath, ArtifactReferencedPresent, false)
+	assertAuditFile(t, diagnosticDirectory, diagnosticPath, ArtifactReferencedPresent, false)
+}
+
+func TestPurgeProtectsInventoryDerivedPathsWhenCatalogRecordIsTombstoned(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	metadata := testArtifactMetadata("container-live", "frozen")
+	logPath := filepath.Join(root, "logs", artifactBaseName(metadata)+".log")
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.WriteFile(logPath, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(logPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := time.Now().UTC()
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: "container-old",
+		TombstonedAt: &tombstone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sink.PurgeUnreferencedNow(context.Background(), []ArtifactMetadata{metadata}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeleteCount != 0 {
+		t.Fatalf("purge deleted inventory-derived artifacts: %#v", result.Deleted)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("inventory-derived artifact was removed: %v", err)
+	}
+}
+
+func TestPurgeFailsWhenTheCatalogCannotBeRead(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	sink := newArtifactSinkForTest(t, root, failingJobStore{}, defaultArtifactPolicy())
+	orphan := filepath.Join(root, "logs", "unknown.log")
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.WriteFile(orphan, []byte("unknown"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sink.PurgeUnreferenced(context.Background(), true); err == nil {
+		t.Fatal("purge must fail when the catalog cannot be read")
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("purge deleted artifacts after an unreadable catalog load: %v", err)
+	}
+}
+
 func findAuditDirectory(t *testing.T, report ArtifactAuditReport, want string) ArtifactAuditDirectory {
 	t.Helper()
 	for _, directory := range report.Directories {
