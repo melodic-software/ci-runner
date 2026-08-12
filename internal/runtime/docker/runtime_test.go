@@ -767,6 +767,94 @@ func TestListReportsInvalidWorkerStateDiagnostics(t *testing.T) {
 	}
 }
 
+func TestListSuppressesStateReadFailureWhenContainerIsGoneOrNotRunning(t *testing.T) {
+	t.Parallel()
+	rwLayerNil := cerrdefs.ErrInternal.WithMessage("RWLayer of container is unexpectedly nil")
+
+	t.Run("not found on re-inspect", func(t *testing.T) {
+		t.Parallel()
+		engine := newFakeEngine()
+		engine.addContainer("gone", "idle", "running")
+		engine.failStateCopy("gone", rwLayerNil)
+		engine.containers["gone"].state = "exited"
+		var reported []error
+		options := testOptions(&memoryArtifacts{})
+		options.OnError = func(err error) { reported = append(reported, err) }
+		runtime, err := New(engine, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeRuntime(t, runtime)
+
+		workers, err := runtime.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(workers) != 1 || workers[0].State != model.WorkerExited {
+			t.Fatalf("workers = %#v, want benign teardown classified as exited", workers)
+		}
+		if len(reported) != 0 {
+			t.Fatalf("reported = %#v, want no OnError for benign teardown", reported)
+		}
+	})
+
+	t.Run("not found on memory inspect", func(t *testing.T) {
+		t.Parallel()
+		engine := newFakeEngine()
+		engine.addContainer("gone", "idle", "running")
+		engine.failInspect("gone", cerrdefs.ErrNotFound.WithMessage("container missing"))
+		engine.failStateCopy("gone", rwLayerNil)
+		var reported []error
+		options := testOptions(&memoryArtifacts{})
+		options.OnError = func(err error) { reported = append(reported, err) }
+		runtime, err := New(engine, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeRuntime(t, runtime)
+
+		workers, err := runtime.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(workers) != 1 || workers[0].State != model.WorkerExited {
+			t.Fatalf("workers = %#v, want benign teardown classified as exited", workers)
+		}
+		if len(reported) != 0 {
+			t.Fatalf("reported = %#v, want no OnError when memory inspect fails during teardown", reported)
+		}
+	})
+
+	t.Run("still running on re-inspect", func(t *testing.T) {
+		t.Parallel()
+		engine := newFakeEngine()
+		engine.addContainer("live", "idle", "running")
+		engine.failStateCopy("live", rwLayerNil)
+		var reported []error
+		options := testOptions(&memoryArtifacts{})
+		options.OnError = func(err error) { reported = append(reported, err) }
+		runtime, err := New(engine, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeRuntime(t, runtime)
+
+		workers, err := runtime.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(workers) != 1 || workers[0].State != model.WorkerStarting {
+			t.Fatalf("workers = %#v, want unresolved read failure to stay Starting", workers)
+		}
+		if len(reported) != 1 {
+			t.Fatalf("reported = %#v, want the state read failure surfaced once", reported)
+		}
+		if !strings.Contains(reported[0].Error(), "RWLayer") {
+			t.Fatalf("reported = %v, want the daemon copy failure preserved", reported[0])
+		}
+	})
+}
+
 func TestListKeepsWorkerStateWhenTheMemoryLimitCannotBeRead(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -1185,6 +1273,7 @@ type fakeContainer struct {
 	hookState      string
 	created        int64
 	stateReads     int
+	stateCopyErr   error
 	changeAfter    int
 	changeTo       string
 	exitCode       int
@@ -1375,6 +1464,9 @@ func (e *fakeEngine) CopyFromContainer(_ context.Context, id string, options cli
 	e.calls = append(e.calls, "copy:"+options.SourcePath)
 	if options.SourcePath == defaultStatePath {
 		container.stateReads++
+		if container.stateCopyErr != nil {
+			return client.CopyFromContainerResult{}, container.stateCopyErr
+		}
 		state := container.hookState
 		if container.changeAfter > 0 && container.stateReads > container.changeAfter {
 			state = container.changeTo
@@ -1432,6 +1524,12 @@ func (e *fakeEngine) ContainerRemove(_ context.Context, id string, _ client.Cont
 	e.calls = append(e.calls, "remove:"+id)
 	delete(e.containers, id)
 	return client.ContainerRemoveResult{}, nil
+}
+
+func (e *fakeEngine) failStateCopy(id string, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.containers[id].stateCopyErr = err
 }
 
 func (e *fakeEngine) addContainer(id, hookState, state string) {
