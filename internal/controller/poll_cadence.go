@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
 )
 
@@ -204,12 +205,14 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				// the poll faster than it can complete and starves the worker-start
 				// phase behind it, so the larger capacity waits for the next poll.
 				// Start admission re-verifies live memory before every container.
-				withdrawn := capacityDecreased(state.advertised, plan.AdvertisedCapacity)
+				withdrawn := capacityDecreased(state.advertised, plan.AdvertisedCapacity) ||
+					advertisedCapacityExceedsMemoryFunding(state.advertised, resources, r.config)
 				restored := capacityRestoredFromZero(state.advertised, plan.AdvertisedCapacity)
 				if withdrawn || (restored && checkpointErr == nil) {
 					message := "open listener poll was restarted to advertise restored capacity"
 					if withdrawn {
 						message = "open listener poll was restarted to withdraw advertised capacity"
+						r.seedPendingCapacity(memoryAffordableAdvertisedCapacity(state.advertised, resources, r.config))
 					}
 					r.writeLog(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
 					cancel(errReconcileInputsChanged)
@@ -265,6 +268,40 @@ func capacityRestoredFromZero(previous, current map[string]int) bool {
 		}
 	}
 	return false
+}
+
+func advertisedCapacityExceedsMemoryFunding(advertised map[string]int, resources model.ResourceSnapshot, cfg config.Config) bool {
+	total := 0
+	for _, capacity := range advertised {
+		total += capacity
+	}
+	if total == 0 {
+		return false
+	}
+	headroom := availableMemoryHeadroom(resources, cfg.Resources)
+	affordable := affordableWorkerCount(headroom, cfg.Resources.Worker.Memory)
+	return affordable < total
+}
+
+func memoryAffordableAdvertisedCapacity(advertised map[string]int, resources model.ResourceSnapshot, cfg config.Config) map[string]int {
+	headroom := availableMemoryHeadroom(resources, cfg.Resources)
+	slots := affordableWorkerCount(headroom, cfg.Resources.Worker.Memory)
+	result := make(map[string]int, len(advertised))
+	remaining := slots
+	for poolID, capacity := range advertised {
+		if remaining <= 0 {
+			result[poolID] = 0
+			continue
+		}
+		if capacity > remaining {
+			result[poolID] = remaining
+			remaining = 0
+			continue
+		}
+		result[poolID] = capacity
+		remaining -= capacity
+	}
+	return result
 }
 
 func sameWorkerInventory(left, right []model.Worker) bool {

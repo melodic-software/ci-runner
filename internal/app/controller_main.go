@@ -234,9 +234,12 @@ const reconcileStepOpsPerTarget = 4
 
 // reconcileStepJITOpsPerWorker is how many retryable GitHub calls a Step makes
 // per worker it starts during its worst-case legitimate JIT registration
-// sequence: one CreateJITConfig call, a full RetryValue budget, mirroring the
-// same policy-compliant retry/backoff shape as reconcileStepOpsPerTarget.
-const reconcileStepJITOpsPerWorker = 1
+// sequence. With start-before-poll ordering, a single Step can issue one
+// CreateJITConfig in the pre-poll warm-pool pass and another in the post-poll
+// assignment-latency pass; each runs through RetryValue for up to
+// Retry.MaxAttempts attempts, mirroring the same policy-compliant retry/backoff
+// shape as reconcileStepOpsPerTarget.
+const reconcileStepJITOpsPerWorker = 2
 
 // reconcileStepRetirementOpsPerWorker is how many retryable GitHub calls a
 // Step makes per worker it retires during its worst-case legitimate
@@ -411,8 +414,9 @@ const reconcileStepJITBudgetFloorWorkers = 64
 // retry loop unable to exceed this deadline.
 //
 // Step's worker-start section also calls CreateJITConfig once per worker it
-// starts, each likewise run through RetryValue for up to Retry.MaxAttempts
-// attempts. BuildPlan bounds workers started (and therefore JIT registrations)
+// starts in each of its two sequential passes (the pre-poll warm-pool pass and
+// the post-poll assignment-latency pass), each likewise run through RetryValue
+// for up to Retry.MaxAttempts attempts. BuildPlan bounds workers started (and therefore JIT registrations)
 // within a single Step by the EFFECTIVE host limit -- the desired state's
 // TemporaryCapacityOverride when an operator has set one, otherwise the
 // static configured Resources.MaximumConcurrentWorkers (see

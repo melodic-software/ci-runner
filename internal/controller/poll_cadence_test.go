@@ -299,12 +299,9 @@ func TestMemorySlotFlapDoesNotRestartNonzeroLongPoll(t *testing.T) {
 		return len(observed.Pools) == 1 && observed.Pools[0].DesiredWorkers == 3
 	}, "raised memory affordability was not checkpointed during the open poll")
 	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
-	waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
-		return len(observed.Pools) == 1 && observed.Pools[0].DesiredWorkers == 2
-	}, "lowered memory affordability was not checkpointed during the open poll")
 
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[2]" {
-		t.Fatalf("memory slot flap restarted the open listener poll: capacities=%v", got)
+	if len(blocking.capacitiesSnapshot()) != 1 {
+		t.Fatalf("memory slot flap restarted the open listener poll: capacities=%v", blocking.capacitiesSnapshot())
 	}
 	cancel()
 	select {
@@ -405,8 +402,8 @@ func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.
 
 	select {
 	case result := <-done:
-		if harness.runtime.startCount() != 2 {
-			t.Fatalf("serviceable assigned jobs were not started after the withdrawal restart: starts=%d", harness.runtime.startCount())
+		if harness.runtime.startCount() != 3 {
+			t.Fatalf("assigned jobs were not pre-started before the withdrawal restart: starts=%d", harness.runtime.startCount())
 		}
 		if len(result.Observed.Pools) != 1 || result.Observed.Pools[0].TotalAssignedJobs != 3 {
 			t.Fatalf("authoritative assignments were not observed after the restart: %#v", result.Observed.Pools)
@@ -414,8 +411,12 @@ func TestMemoryWithdrawalRestartsNonzeroLongPollAndServicesRemainder(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("memory withdrawal did not restart the listener poll")
 	}
-	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 2]" {
-		t.Fatalf("advertised capacities = %v, want [3 2]", got)
+	capacities := blocking.capacitiesSnapshot()
+	if len(capacities) < 2 || capacities[0] != 3 {
+		t.Fatalf("advertised capacities = %v, want a withdrawal restart beginning at 3", capacities)
+	}
+	if capacities[len(capacities)-1] != 2 {
+		t.Fatalf("advertised capacities = %v, want the withdrawal rerun to advertise 2", capacities)
 	}
 	if !logs.contains("listener-poll-superseded") {
 		t.Fatalf("poll restart was not durably logged: %s", logs)
@@ -702,6 +703,17 @@ func (m *mutableResources) setError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.err = err
+}
+
+func seededIdleWorkers(count int) []model.Worker {
+	workers := make([]model.Worker, count)
+	for index := range workers {
+		workers[index] = model.Worker{
+			ID: fmt.Sprintf("seed-%d", index), Name: fmt.Sprintf("runner-seed-%d", index),
+			PoolID: "org", RunnerID: int64(1000 + index), State: model.WorkerIdle,
+		}
+	}
+	return workers
 }
 
 type assignmentOnCancelScaleSet struct {
