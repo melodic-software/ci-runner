@@ -1,8 +1,9 @@
 name: pr-issue-linkage
 
-# Requires the PR body to carry a native closing keyword (or the literal
-# "No linked issue") and a non-empty "## Related" section. Thin caller of the
-# shared pr-issue-linkage reusable; the emitted required-check context is
+# Requires the PR body to carry a native GitHub closing keyword (or the literal
+# "No linked issue") and the four contract headers with content: "## Summary",
+# "## Fix", "## Verification", and "## Related". Thin caller of the shared
+# pr-issue-linkage reusable; the emitted required-check context is
 # `pr-issue-linkage / pr-issue-linkage`. pull_request_target runs the
 # base-branch definition (the gate reads PR body metadata only — no head code
 # runs); `edited` re-validates on a body edit. Public repo: runs on the
@@ -22,7 +23,7 @@ concurrency:
 jobs:
   pr-issue-linkage:
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@e94438746c300b02385a7f8a2a2dcd19a7f4ad4a # v0.10.2
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@036c3909885da6efaff7e76b676d97ae9450067d # v0.13.0
     with:
       # Dependabot's generated PR bodies cannot carry the closing-keyword +
       # "## Related" markers; exact-login exemption per the reusable's contract.
