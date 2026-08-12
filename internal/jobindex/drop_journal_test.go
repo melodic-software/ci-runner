@@ -41,7 +41,9 @@ func TestSaveRecordsEveryTier2DropInTheDropJournal(t *testing.T) {
 	}
 
 	catalog := Catalog{SchemaVersion: SchemaVersion}
-	padding := strings.Repeat("v", 512)
+	// Keep the fixture comfortably under the drop-journal byte cap on Windows,
+	// where temp-dir artifact paths are longer than on Linux.
+	padding := strings.Repeat("v", 704)
 	recordCount := maximumJobState/len(padding) + 64
 	droppedRunners := make(map[string]Record, recordCount)
 	for index := range recordCount {
