@@ -15,6 +15,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 const instrumentationName = "github.com/melodic-software/ci-runner/internal/telemetry"
@@ -25,11 +27,21 @@ var workerStates = [...]string{"starting", "idle", "busy", "unregistered", "exit
 // worker admission, draining, finalization, or controller shutdown decisions.
 type Recorder interface {
 	BeginReconcile(context.Context) (context.Context, func(ReconcileSnapshot, error))
+	RecordCapacityCheckpoint(context.Context, time.Time, []CapacityCheckpointPool)
 	WorkerRegistered(context.Context, string, string, time.Duration, WorkerStartOutcome)
 	WorkerStarted(context.Context, string, string, time.Duration, WorkerStartOutcome)
 	WorkerFinalized(context.Context, string, WorkerFinalization)
 	ObserveJobStarted(context.Context, string, time.Duration)
 	ObserveJobCompleted(context.Context, string, string, bool)
+}
+
+// CapacityCheckpointPool carries durable poll-cadence acknowledgement state
+// without requiring a completed reconcile snapshot.
+type CapacityCheckpointPool struct {
+	ID                             string
+	CapacityAcknowledged           bool
+	AcknowledgementPendingAge      time.Duration
+	AcknowledgementPendingAgeValid bool
 }
 
 type ReconcilePool struct {
@@ -146,6 +158,7 @@ func Noop() Recorder { return noopRecorder{} }
 func (noopRecorder) BeginReconcile(ctx context.Context) (context.Context, func(ReconcileSnapshot, error)) {
 	return ctx, func(ReconcileSnapshot, error) {}
 }
+func (noopRecorder) RecordCapacityCheckpoint(context.Context, time.Time, []CapacityCheckpointPool) {}
 func (noopRecorder) WorkerRegistered(context.Context, string, string, time.Duration, WorkerStartOutcome) {
 }
 func (noopRecorder) WorkerStarted(context.Context, string, string, time.Duration, WorkerStartOutcome) {
@@ -371,16 +384,36 @@ func classifyReconcileResult(err error) (string, bool) {
 	return "failed", true
 }
 
+func (r *recorder) RecordCapacityCheckpoint(ctx context.Context, heartbeatAt time.Time, pools []CapacityCheckpointPool) {
+	r.recordCapacityCheckpoint(ctx, pools)
+}
+
+func reconcilePoolCapacityCheckpoint(pool ReconcilePool) CapacityCheckpointPool {
+	return CapacityCheckpointPool{
+		ID:                             pool.ID,
+		CapacityAcknowledged:           pool.CapacityAcknowledged,
+		AcknowledgementPendingAge:      pool.AcknowledgementPendingAge,
+		AcknowledgementPendingAgeValid: pool.AcknowledgementPendingAgeValid,
+	}
+}
+
+func (r *recorder) recordCapacityCheckpoint(ctx context.Context, pools []CapacityCheckpointPool) {
+	for _, pool := range pools {
+		attrs := metric.WithAttributes(attribute.String("ci_runner.pool.id", pool.ID))
+		r.capacityAcknowledged.Record(ctx, boolInt64(pool.CapacityAcknowledged), attrs)
+		if !pool.CapacityAcknowledged && pool.AcknowledgementPendingAgeValid {
+			r.acknowledgementPendingAge.Record(ctx, max(0, pool.AcknowledgementPendingAge.Seconds()), attrs)
+		}
+	}
+}
+
 func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapshot) {
 	counts := make(map[string]map[string]int64, len(snapshot.Pools))
 	active := make(map[string]int64, len(snapshot.Pools))
 	for _, pool := range snapshot.Pools {
 		attrs := metric.WithAttributes(attribute.String("ci_runner.pool.id", pool.ID))
 		r.advertised.Record(ctx, int64(pool.Advertised), attrs)
-		r.capacityAcknowledged.Record(ctx, boolInt64(pool.CapacityAcknowledged), attrs)
-		if !pool.CapacityAcknowledged && pool.AcknowledgementPendingAgeValid {
-			r.acknowledgementPendingAge.Record(ctx, max(0, pool.AcknowledgementPendingAge.Seconds()), attrs)
-		}
+		r.recordCapacityCheckpoint(ctx, []CapacityCheckpointPool{reconcilePoolCapacityCheckpoint(pool)})
 		r.assigned.Record(ctx, int64(pool.Assigned), attrs)
 		r.desired.Record(ctx, int64(pool.Desired), attrs)
 		r.memoryAffordable.Record(ctx, int64(pool.AffordableWorkers), attrs)
@@ -643,4 +676,16 @@ func boolInt64(value bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// NewManualRecorder returns a Recorder backed by a ManualReader for tests.
+func NewManualRecorder() (Recorder, *sdkmetric.ManualReader, error) {
+	reader := sdkmetric.NewManualReader()
+	meters := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	traces := tracenoop.NewTracerProvider()
+	recorder, err := newRecorder(traces, meters)
+	if err != nil {
+		return nil, nil, err
+	}
+	return recorder, reader, nil
 }

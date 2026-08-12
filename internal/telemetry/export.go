@@ -61,6 +61,9 @@ type Provider struct {
 func (p *Provider) BeginReconcile(ctx context.Context) (context.Context, func(ReconcileSnapshot, error)) {
 	return p.recorder.BeginReconcile(ctx)
 }
+func (p *Provider) RecordCapacityCheckpoint(ctx context.Context, heartbeatAt time.Time, pools []CapacityCheckpointPool) {
+	p.recorder.RecordCapacityCheckpoint(ctx, heartbeatAt, pools)
+}
 func (p *Provider) WorkerRegistered(ctx context.Context, poolID, tier string, duration time.Duration, outcome WorkerStartOutcome) {
 	p.recorder.WorkerRegistered(ctx, poolID, tier, duration, outcome)
 }

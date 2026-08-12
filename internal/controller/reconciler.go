@@ -525,7 +525,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		pollWatchDone chan pollCadenceResult
 	)
 	if containsReadyPool(pools) {
-		checkpointErr := r.persistObserved(ctx, checkpoint)
+		checkpointErr := r.persistPollCheckpoint(ctx, checkpoint)
 		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
 		// separate per-request deadline would expire this cadence watcher during a
 		// normal multi-attempt poll retry sequence, so none is set here.
@@ -1390,6 +1390,20 @@ func (r *Reconciler) persistObserved(ctx context.Context, observed model.Observe
 	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), ObservedPersistTimeout)
 	defer cancel()
 	return r.deps.State.SaveObserved(persistContext, observed)
+}
+
+func (r *Reconciler) persistPollCheckpoint(ctx context.Context, observed model.ObservedState) error {
+	err := r.persistObserved(ctx, observed)
+	pools := make([]telemetry.CapacityCheckpointPool, 0, len(observed.Pools))
+	for _, pool := range observed.Pools {
+		acknowledgementAgeValid := !pool.UpdatedAt.IsZero() && !observed.HeartbeatAt.Before(pool.UpdatedAt)
+		pools = append(pools, telemetry.CapacityCheckpointPool{
+			ID: pool.ID, CapacityAcknowledged: pool.CapacityAcknowledged,
+			AcknowledgementPendingAge: observed.HeartbeatAt.Sub(pool.UpdatedAt), AcknowledgementPendingAgeValid: acknowledgementAgeValid,
+		})
+	}
+	r.deps.Telemetry.RecordCapacityCheckpoint(ctx, observed.HeartbeatAt, pools)
+	return err
 }
 
 const diagnosticLogWriteTimeout = 2 * time.Second

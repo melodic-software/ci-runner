@@ -192,7 +192,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				state.observed = checkpoint
 				result.observed = checkpoint
 
-				checkpointErr := r.persistObserved(ctx, checkpoint)
+				checkpointErr := r.persistPollCheckpoint(ctx, checkpoint)
 				if ctx.Err() == nil {
 					result.checkpointErr = checkpointErr
 				}
@@ -225,7 +225,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 		checkpoint.HeartbeatAt = now
 		state.observed = checkpoint
 		result.observed = checkpoint
-		if checkpointErr := r.persistObserved(ctx, checkpoint); ctx.Err() == nil {
+		if checkpointErr := r.persistPollCheckpoint(ctx, checkpoint); ctx.Err() == nil {
 			result.checkpointErr = checkpointErr
 		}
 		if observationErr != nil {
