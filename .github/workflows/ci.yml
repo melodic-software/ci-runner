@@ -207,6 +207,11 @@ jobs:
     name: Zizmor
     permissions:
       contents: read # Reusable advisory audit reads the checked-in workflow graph.
+      # Reusable zizmor.yml always declares security-events: write (expressions
+      # are illegal in that scope). Callers must grant it too — reusable
+      # workflows cannot elevate. Lane stays annotations-only
+      # (upload-sarif defaults false); grant write so the job can start.
+      security-events: write
     uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@036c3909885da6efaff7e76b676d97ae9450067d # v0.13.0
     with:
       paths: .
