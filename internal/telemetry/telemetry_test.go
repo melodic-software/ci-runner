@@ -44,6 +44,20 @@ func TestRecorderRecordCapacityCheckpointExportsAcknowledgementGauges(t *testing
 	if got := floatGaugeValue(t, metrics["ci_runner.capacity.acknowledgement.pending.age"], "ci_runner.pool.id", "org"); got != 30 {
 		t.Fatalf("acknowledgement pending age = %v, want 30", got)
 	}
+
+	recorder.RecordCapacityCheckpoint(context.Background(), time.Unix(160, 0).UTC(), []CapacityCheckpointPool{{
+		ID: "org", CapacityAcknowledged: true,
+	}})
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	metrics = metricMap(collected)
+	if got := intGaugeValue(t, metrics["ci_runner.capacity.acknowledged"], "ci_runner.pool.id", "org"); got != 1 {
+		t.Fatalf("capacity acknowledged after ack = %d, want 1", got)
+	}
+	if got := floatGaugeValue(t, metrics["ci_runner.capacity.acknowledgement.pending.age"], "ci_runner.pool.id", "org"); got != 0 {
+		t.Fatalf("acknowledgement pending age after ack = %v, want 0", got)
+	}
 }
 
 func floatGaugeValue(t *testing.T, current metricdata.Metrics, key, value string) float64 {

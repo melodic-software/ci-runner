@@ -14,9 +14,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 const instrumentationName = "github.com/melodic-software/ci-runner/internal/telemetry"
@@ -401,8 +401,13 @@ func (r *recorder) recordCapacityCheckpoint(ctx context.Context, pools []Capacit
 	for _, pool := range pools {
 		attrs := metric.WithAttributes(attribute.String("ci_runner.pool.id", pool.ID))
 		r.capacityAcknowledged.Record(ctx, boolInt64(pool.CapacityAcknowledged), attrs)
-		if !pool.CapacityAcknowledged && pool.AcknowledgementPendingAgeValid {
+		switch {
+		case !pool.CapacityAcknowledged && pool.AcknowledgementPendingAgeValid:
 			r.acknowledgementPendingAge.Record(ctx, max(0, pool.AcknowledgementPendingAge.Seconds()), attrs)
+		case pool.CapacityAcknowledged:
+			// Expire the synchronous-gauge series so cumulative OTLP exporters do
+			// not keep reporting a stale pending age beside acknowledged=1.
+			r.acknowledgementPendingAge.Record(ctx, 0, attrs)
 		}
 	}
 }

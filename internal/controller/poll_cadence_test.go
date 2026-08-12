@@ -581,7 +581,6 @@ func setValue(set attribute.Set, key string) string {
 	return value.AsString()
 }
 
-
 func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)

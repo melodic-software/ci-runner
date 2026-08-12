@@ -1393,7 +1393,9 @@ func (r *Reconciler) persistObserved(ctx context.Context, observed model.Observe
 }
 
 func (r *Reconciler) persistPollCheckpoint(ctx context.Context, observed model.ObservedState) error {
-	err := r.persistObserved(ctx, observed)
+	if err := r.persistObserved(ctx, observed); err != nil {
+		return err
+	}
 	pools := make([]telemetry.CapacityCheckpointPool, 0, len(observed.Pools))
 	for _, pool := range observed.Pools {
 		acknowledgementAgeValid := !pool.UpdatedAt.IsZero() && !observed.HeartbeatAt.Before(pool.UpdatedAt)
@@ -1402,8 +1404,10 @@ func (r *Reconciler) persistPollCheckpoint(ctx context.Context, observed model.O
 			AcknowledgementPendingAge: observed.HeartbeatAt.Sub(pool.UpdatedAt), AcknowledgementPendingAgeValid: acknowledgementAgeValid,
 		})
 	}
+	// Publish gauges only after the durable checkpoint lands so telemetry cannot
+	// claim CapacityAcknowledged diverged from observed.json on a save failure.
 	r.deps.Telemetry.RecordCapacityCheckpoint(ctx, observed.HeartbeatAt, pools)
-	return err
+	return nil
 }
 
 const diagnosticLogWriteTimeout = 2 * time.Second
