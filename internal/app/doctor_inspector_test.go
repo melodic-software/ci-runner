@@ -3,11 +3,27 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/host"
 )
+
+type stubDoctorACLVerifier struct {
+	verify func(path string) error
+}
+
+func (s stubDoctorACLVerifier) Verify(path string) error {
+	if s.verify != nil {
+		return s.verify(path)
+	}
+	return nil
+}
 
 type recordingDoctorBitLocker struct {
 	calls int
@@ -104,6 +120,153 @@ func TestLocalDoctorInspectorSkipsPendingRebootOffWindows(t *testing.T) {
 
 	if !check.Skipped || !strings.Contains(check.Detail, "Windows") {
 		t.Fatalf("unsupported pending reboot check = %#v, want an explicit non-failing skip", check)
+	}
+}
+
+func TestVerifyACLTreeIgnoresVanishedChildDuringProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	child := filepath.Join(root, "observed.json")
+	if err := os.WriteFile(child, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == child {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{ACL: verifier}
+
+	count, err := inspector.verifyACLTree(root)
+	if err != nil {
+		t.Fatalf("verifyACLTree() err = %v, want nil", err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 (root and listed child)", count)
+	}
+}
+
+func TestVerifyACLTreeFailsOnRealACLFault(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	child := filepath.Join(root, "jobs.json")
+	if err := os.WriteFile(child, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == child {
+			return fmt.Errorf("ACL has 3 entries; expected exactly current user and SYSTEM")
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{ACL: verifier}
+
+	_, err := inspector.verifyACLTree(root)
+	if err == nil || !strings.Contains(err.Error(), "verify "+child) {
+		t.Fatalf("verifyACLTree() err = %v, want a wrapped ACL fault for the child", err)
+	}
+}
+
+func TestVerifyACLTreeFailsOnMissingRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "missing-state")
+	inspector := &LocalDoctorInspector{ACL: stubDoctorACLVerifier{}}
+
+	_, err := inspector.verifyACLTree(root)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("verifyACLTree() err = %v, want fs.ErrNotExist for a missing root", err)
+	}
+}
+
+func TestVerifyACLTreeFailsWhenRootVanishesAfterWalkBegins(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == root {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{ACL: verifier}
+
+	_, err := inspector.verifyACLTree(root)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("verifyACLTree() err = %v, want fs.ErrNotExist when root vanishes before ACL probe", err)
+	}
+}
+
+func TestLocalDoctorInspectorACLStateCheckFailsWhenRootVanishesDuringProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == root {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{
+		Config: config.Config{Paths: config.Paths{State: root}},
+		ACL:    verifier,
+	}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "acl/state")
+	if check.Healthy {
+		t.Fatalf("acl/state check = %#v, want unhealthy when root vanishes before ACL probe", check)
+	}
+}
+
+func TestVerifyACLTreeIgnoresVanishedChildDuringWalk(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	childDir := filepath.Join(root, "child")
+	if err := os.Mkdir(childDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == childDir {
+			if err := os.Remove(childDir); err != nil {
+				t.Fatalf("remove vanished child directory: %v", err)
+			}
+			return fs.ErrNotExist
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{ACL: verifier}
+
+	count, err := inspector.verifyACLTree(root)
+	if err != nil {
+		t.Fatalf("verifyACLTree() err = %v, want nil after child vanished between listing and probe", err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 (root and listed child)", count)
+	}
+}
+
+func TestLocalDoctorInspectorACLStateCheckStaysHealthyWhenChildVanishesDuringProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	child := filepath.Join(root, ".observed.json-tmp")
+	if err := os.WriteFile(child, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier := stubDoctorACLVerifier{verify: func(path string) error {
+		if path == child {
+			return fmt.Errorf("inspect ACL target: %w", fs.ErrNotExist)
+		}
+		return nil
+	}}
+	inspector := &LocalDoctorInspector{
+		Config: config.Config{Paths: config.Paths{State: root}},
+		ACL:    verifier,
+	}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{}), "acl/state")
+	if !check.Healthy {
+		t.Fatalf("acl/state check = %#v, want healthy when a listed child vanishes before ACL probe", check)
+	}
+	if !strings.Contains(check.Detail, "(2 entries)") {
+		t.Fatalf("acl/state detail %q, want unchanged entry-count semantics", check.Detail)
 	}
 }
 

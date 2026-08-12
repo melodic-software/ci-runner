@@ -200,9 +200,13 @@ func (i *LocalDoctorInspector) verifyACLTree(root string) (int, error) {
 	if i.ACL == nil {
 		return 0, errors.New("ACL verifier is unavailable")
 	}
+	root = filepath.Clean(root)
 	count := 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) && path != root {
+				return nil
+			}
 			return walkErr
 		}
 		count++
@@ -216,6 +220,9 @@ func (i *LocalDoctorInspector) verifyACLTree(root string) (int, error) {
 			return fmt.Errorf("unsupported filesystem entry in private runtime tree: %s (%s)", path, entry.Type())
 		}
 		if err := i.ACL.Verify(path); err != nil {
+			if errors.Is(err, fs.ErrNotExist) && path != root {
+				return nil
+			}
 			return fmt.Errorf("verify %s: %w", path, err)
 		}
 		return nil
