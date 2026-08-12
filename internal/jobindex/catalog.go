@@ -25,24 +25,24 @@ type Catalog struct {
 }
 
 type Record struct {
-	PoolID            string     `json:"poolId"`
-	RunnerName        string     `json:"runnerName"`
-	ContainerID       string     `json:"containerId,omitempty"`
-	JobID             string     `json:"jobId,omitempty"`
-	Result            string     `json:"result,omitempty"`
-	LogPath           string     `json:"logPath,omitempty"`
-	DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
+	PoolID            string    `json:"poolId"`
+	RunnerName        string    `json:"runnerName"`
+	ContainerID       string    `json:"containerId,omitempty"`
+	JobID             string    `json:"jobId,omitempty"`
+	Result            string    `json:"result,omitempty"`
+	LogPath           string    `json:"logPath,omitempty"`
+	DiagnosticPath    string    `json:"diagnosticPath,omitempty"`
 	ArtifactStartedAt time.Time `json:"artifactStartedAt,omitempty"`
 	// RunnerAssignedAt is hydrated from the runner-assign-times sidecar. It must
 	// not appear in jobs.json: schemaVersion 1 stays strictly readable by older
 	// controllers that decode with DisallowUnknownFields.
 	RunnerAssignedAt *time.Time `json:"-"`
 	JobStartedAt     time.Time  `json:"jobStartedAt,omitempty"`
-	CompletedAt       time.Time  `json:"completedAt,omitempty"`
-	FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	Open              bool       `json:"open"`
-	TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
+	CompletedAt      time.Time  `json:"completedAt,omitempty"`
+	FinalizedAt      time.Time  `json:"finalizedAt,omitempty"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	Open             bool       `json:"open"`
+	TombstonedAt     *time.Time `json:"tombstonedAt,omitempty"`
 }
 
 type Patch struct {
