@@ -293,12 +293,12 @@ func TestDesktopBootstrapRecoversAfterTransientStartFailure(t *testing.T) {
 	if second.Observed.Phase != model.PhaseReady || harness.runtime.startCount() != 1 {
 		t.Fatalf("second observed = %#v; workers=%#v", second.Observed, harness.runtime.snapshot())
 	}
-	// While the desktop is down, both start sites fire in a Step: the eager
-	// bootstrap and BuildPlan's StartDesktop fallback (no longer suppressed by a
-	// resource gate). The first Step makes two failing attempts, the second one
-	// succeeding attempt.
-	if got := harness.desktop.startCount(); got != 3 {
-		t.Fatalf("Desktop starts = %d, want two failed attempts and one recovery", got)
+	// While the desktop is down, three start sites can fire in a Step: the eager
+	// bootstrap, BuildPlan's pre-poll StartDesktop fallback, and the post-poll
+	// StartDesktop fallback when the resource gate stays open. The first Step
+	// makes two failing attempts, the second one succeeding attempt.
+	if got := harness.desktop.startCount(); got != 4 {
+		t.Fatalf("Desktop starts = %d, want two failed attempts and one recovery plus the pre-poll fallback", got)
 	}
 }
 
@@ -1074,10 +1074,11 @@ func TestControlStatusAndCommittedShutdownInterruptLongPoll(t *testing.T) {
 			SchemaVersion: control.SchemaVersion, RequestID: "status-while-polling", Operation: control.OperationStatus,
 		})
 	}()
+	var statusResp control.Response
 	select {
-	case response := <-statusDone:
-		if !response.OK {
-			t.Fatalf("status response = %#v", response)
+	case statusResp = <-statusDone:
+		if !statusResp.OK {
+			t.Fatalf("status response = %#v", statusResp)
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("status was blocked by the listener poll")
@@ -1086,7 +1087,8 @@ func TestControlStatusAndCommittedShutdownInterruptLongPoll(t *testing.T) {
 	request := control.Request{
 		SchemaVersion: control.SchemaVersion, RequestID: "shutdown-while-polling", Operation: control.OperationShutdown,
 		Shutdown: &control.ShutdownRequest{
-			Reason: "test", ExpectedProcessID: 1234, ExpectedVersion: "test-version", ExpectedActiveJobCount: 0,
+			Reason: "test", ExpectedProcessID: 1234, ExpectedVersion: "test-version",
+			ExpectedActiveJobCount: statusResp.Status.ActiveJobCount, ExpectedActiveWorkerCount: statusResp.Status.ActiveWorkerCount,
 		},
 	}
 	if response := handler.Handle(context.Background(), request); !response.OK {
@@ -1245,7 +1247,7 @@ func TestDesiredFlipAfterAcquireServicesAssignedJobWhileCapacityStaysZero(t *tes
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
 	harness.scaleSets.Stats["statistics:1"] = scaleset.Statistics{TotalAssignedJobs: 1}
-	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.now}
+	flipping := &desiredFlippingScaleSet{Client: harness.scaleSets, store: harness.store, now: harness.now, flipAfter: 2}
 	harness.controller.deps.ScaleSets = flipping
 
 	result, err := harness.controller.Step(context.Background())
@@ -2431,21 +2433,31 @@ func (p *mutablePower) set(connected bool) {
 
 type desiredFlippingScaleSet struct {
 	scaleset.Client
-	store StateStore
-	now   time.Time
-	once  sync.Once
+	store     StateStore
+	now       time.Time
+	once      sync.Once
+	flipAfter int
+	jitCalls  int
 }
 
 func (s *desiredFlippingScaleSet) CreateJITConfig(ctx context.Context, identity scaleset.Identity, runnerName string) (scaleset.JITConfig, error) {
+	s.jitCalls++
+	flipAfter := s.flipAfter
+	if flipAfter <= 0 {
+		flipAfter = 1
+	}
 	jit, err := s.Client.CreateJITConfig(ctx, identity, runnerName)
 	if err != nil {
 		return jit, err
 	}
-	var saveErr error
-	s.once.Do(func() {
-		saveErr = s.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: s.now})
-	})
-	return jit, saveErr
+	if s.jitCalls >= flipAfter {
+		var saveErr error
+		s.once.Do(func() {
+			saveErr = s.store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: s.now})
+		})
+		return jit, saveErr
+	}
+	return jit, nil
 }
 
 func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {

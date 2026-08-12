@@ -470,8 +470,55 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
 		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
+	var reservedMemory uint64
+	prePollRefreshFailed := false
+	if !recoveryOnly {
+		if provisional.StartDesktop {
+			if startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration); startErr != nil {
+				record("desktop-start-error", "Docker Desktop did not start within the configured policy", "", true, startErr)
+			}
+		}
+		if len(provisional.Start) > 0 {
+			if err := r.executePlannedStarts(ctx, cancel, provisional.Start, identities, pools, previous, desired, power, resources, desktop, now, record, &reservedMemory, &operationErrors); err != nil {
+				return ReconcileResult{}, err
+			}
+			if mayHaveManagedWorkers(desktop, desktopStatusKnown) {
+				if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
+					jobStateKnown = false
+					observationFailed = true
+					prePollRefreshFailed = true
+					resources = model.ResourceSnapshot{}
+					record("worker-pre-poll-refresh-error", "managed-worker refresh failed before the listener poll; new work is blocked", "", true, listErr)
+				} else if enriched, lookupErr := r.enrichWorkerJobs(ctx, latest); lookupErr != nil {
+					jobStateKnown = false
+					observationFailed = true
+					prePollRefreshFailed = true
+					resources = model.ResourceSnapshot{}
+					record("job-index-pre-poll-refresh-error", "durable job lifecycle state could not be refreshed before the listener poll; new work is blocked", "", true, lookupErr)
+				} else {
+					workers = enriched
+				}
+			}
+		}
+	}
 	pollPlan := provisional
 	pollPlan.AdvertisedCapacity = sequenceCapacityTransfer(previous, provisional.AdvertisedCapacity)
+	if pending := r.pendingCapacitySnapshot(); pending != nil {
+		for poolID, capacity := range pollPlan.AdvertisedCapacity {
+			if limit, ok := pending[poolID]; ok && capacity > limit {
+				pollPlan.AdvertisedCapacity[poolID] = limit
+			}
+		}
+	}
+	// Pre-poll start succeeded but the follow-up inventory/job refresh failed:
+	// forcedZero only freezes cadence observations. Zero every advertised slot
+	// before Statistics so a transient Docker listing failure cannot acknowledge
+	// new work without authoritative worker visibility.
+	if prePollRefreshFailed {
+		for poolID := range pollPlan.AdvertisedCapacity {
+			pollPlan.AdvertisedCapacity[poolID] = 0
+		}
+	}
 	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)
 	var (
 		stopPollWatch context.CancelFunc
@@ -788,83 +835,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	r.retirementCursor += uint64(retirementDeregistrations)
 
-	var reservedMemory uint64
-	for _, decision := range plan.Start {
-		identity, ok := identities[decision.PoolID]
-		if !ok {
-			continue
-		}
-		limits, configured := r.config.WorkerForTarget(decision.PoolID)
-		if !configured {
-			record("worker-profile-missing", "planned worker target has no configured resource profile", decision.PoolID, false, nil)
-			continue
-		}
-		for count := 0; count < decision.Count; count++ {
-			if err := ctx.Err(); err != nil {
-				operationErrors = append(operationErrors, err)
-				break
-			}
-			allowed, safetyChanged, admissionErr := r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedMemory)
-			if admissionErr != nil || safetyChanged {
-				cancel(errReconcileInputsChanged)
-				return ReconcileResult{}, errReconcileInputsChanged
-			}
-			if !allowed {
-				break
-			}
-			name := r.nextRunnerName(decision.PoolID, now)
-			resourceTier := r.resourceTier(decision.PoolID)
-			registrationStartedAt := time.Now()
-			jit, jitErr := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
-				return r.deps.ScaleSets.CreateJITConfig(callCtx, identity, name)
-			})
-			r.deps.Telemetry.WorkerRegistered(ctx, decision.PoolID, resourceTier, time.Since(registrationStartedAt), telemetry.ClassifyWorkerStart(jitErr, false))
-			if jitErr != nil {
-				record("jit-config-error", safeScaleSetMessage("create JIT configuration", jitErr), decision.PoolID, scaleset.Retryable(jitErr), jitErr)
-				break
-			}
-			// JIT creation is a network operation. Re-read every safety and
-			// admission input again immediately before the irreversible container
-			// start so a stale pre-JIT snapshot cannot admit work.
-			allowed, safetyChanged, admissionErr = r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, reservedMemory)
-			if admissionErr != nil || safetyChanged {
-				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
-				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
-				cleanupCancel()
-				if cleanupErr != nil {
-					r.writeLog(ctx, LogEvent{At: time.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
-				}
-				cancel(errReconcileInputsChanged)
-				return ReconcileResult{}, errReconcileInputsChanged
-			}
-			if !allowed {
-				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
-				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
-				cleanupCancel()
-				if cleanupErr != nil {
-					record("unused-jit-runner-cleanup-error", safeScaleSetMessage("deregister unused JIT runner", cleanupErr), decision.PoolID, scaleset.Retryable(cleanupErr), cleanupErr)
-				}
-				break
-			}
-			_, startErr := r.deps.Workers.Start(ctx, StartWorkerRequest{
-				PoolID: decision.PoolID, Name: name, ResourceTier: resourceTier, JITConfig: jit, Limits: limits,
-			})
-			if startErr != nil {
-				// Start is intentionally not retried: it may have created a running
-				// container before returning an error. The next inventory reconciles it.
-				record("worker-start-error", "one-job worker start failed; inventory will reconcile before retry", decision.PoolID, true, startErr)
-				if !RunnerStartMayBeActive(startErr) {
-					cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
-					cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
-					cleanupCancel()
-					if cleanupErr != nil {
-						record("failed-start-runner-cleanup-error", safeScaleSetMessage("deregister runner after pre-start failure", cleanupErr), decision.PoolID, scaleset.Retryable(cleanupErr), cleanupErr)
-					}
-				}
-				break
-			}
-			reservedMemory = saturatingAddUint64(reservedMemory, uint64(limits.Memory))
-		}
+	if err := r.executePlannedStarts(ctx, cancel, plan.Start, identities, pools, previous, desired, power, resources, desktop, now, record, &reservedMemory, &operationErrors); err != nil {
+		return ReconcileResult{}, err
 	}
 
 	if plan.StopDesktop || plan.ShutdownWSL {
@@ -1136,6 +1108,27 @@ func (r *Reconciler) rememberDrainCapacity(poolID string, capacity int) {
 	r.drainCapacity[poolID] = capacity
 }
 
+// seedPendingCapacity records the affordable remainder an open listener poll must
+// hold after a withdrawal supersession. Without this, a rerun still sees the
+// canceled poll's in-flight capacity as pending hysteresis and can re-advertise
+// capacity the host no longer funds.
+func (r *Reconciler) seedPendingCapacity(capacity map[string]int) {
+	r.capacityMu.Lock()
+	defer r.capacityMu.Unlock()
+	if len(capacity) == 0 {
+		return
+	}
+	if r.pendingCapacity == nil {
+		r.pendingCapacity = make(map[string]int, len(capacity))
+	}
+	for poolID, value := range capacity {
+		if value < 0 {
+			value = 0
+		}
+		r.pendingCapacity[poolID] = value
+	}
+}
+
 func (r *Reconciler) watchSafetyInputs(ctx context.Context, desired model.DesiredState, power model.PowerSnapshot, cancel context.CancelCauseFunc, forcedZero bool) {
 	ticker := time.NewTicker(r.safetyWatchInterval())
 	defer ticker.Stop()
@@ -1164,6 +1157,102 @@ func (r *Reconciler) watchSafetyInputs(ctx context.Context, desired model.Desire
 			}
 		}
 	}
+}
+
+func (r *Reconciler) executePlannedStarts(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+	starts []StartDecision,
+	identities map[string]scaleset.Identity,
+	pools []PoolSnapshot,
+	previous model.ObservedState,
+	desired model.DesiredState,
+	power model.PowerSnapshot,
+	resources model.ResourceSnapshot,
+	desktop model.DesktopStatus,
+	now time.Time,
+	record func(code, message, poolID string, retryable bool, err error),
+	reservedMemory *uint64,
+	operationErrors *[]error,
+) error {
+	for _, decision := range starts {
+		identity, ok := identities[decision.PoolID]
+		if !ok {
+			continue
+		}
+		limits, configured := r.config.WorkerForTarget(decision.PoolID)
+		if !configured {
+			record("worker-profile-missing", "planned worker target has no configured resource profile", decision.PoolID, false, nil)
+			continue
+		}
+		for count := 0; count < decision.Count; count++ {
+			if err := ctx.Err(); err != nil {
+				*operationErrors = append(*operationErrors, err)
+				break
+			}
+			allowed, safetyChanged, admissionErr := r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, *reservedMemory)
+			if admissionErr != nil || safetyChanged {
+				cancel(errReconcileInputsChanged)
+				return errReconcileInputsChanged
+			}
+			if !allowed {
+				break
+			}
+			name := r.nextRunnerName(decision.PoolID, now)
+			resourceTier := r.resourceTier(decision.PoolID)
+			registrationStartedAt := time.Now()
+			jit, jitErr := RetryValue(ctx, r.backoffPolicy(), scaleset.Retryable, func(callCtx context.Context) (scaleset.JITConfig, error) {
+				return r.deps.ScaleSets.CreateJITConfig(callCtx, identity, name)
+			})
+			r.deps.Telemetry.WorkerRegistered(ctx, decision.PoolID, resourceTier, time.Since(registrationStartedAt), telemetry.ClassifyWorkerStart(jitErr, false))
+			if jitErr != nil {
+				record("jit-config-error", safeScaleSetMessage("create JIT configuration", jitErr), decision.PoolID, scaleset.Retryable(jitErr), jitErr)
+				break
+			}
+			// JIT creation is a network operation. Re-read every safety and
+			// admission input again immediately before the irreversible container
+			// start so a stale pre-JIT snapshot cannot admit work.
+			allowed, safetyChanged, admissionErr = r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, *reservedMemory)
+			if admissionErr != nil || safetyChanged {
+				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
+				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
+				cleanupCancel()
+				if cleanupErr != nil {
+					r.writeLog(ctx, LogEvent{At: time.Now().UTC(), Code: "unused-jit-runner-cleanup-error", Message: safeScaleSetMessage("deregister unused JIT runner", cleanupErr), PoolID: decision.PoolID})
+				}
+				cancel(errReconcileInputsChanged)
+				return errReconcileInputsChanged
+			}
+			if !allowed {
+				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
+				cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
+				cleanupCancel()
+				if cleanupErr != nil {
+					record("unused-jit-runner-cleanup-error", safeScaleSetMessage("deregister unused JIT runner", cleanupErr), decision.PoolID, scaleset.Retryable(cleanupErr), cleanupErr)
+				}
+				break
+			}
+			_, startErr := r.deps.Workers.Start(ctx, StartWorkerRequest{
+				PoolID: decision.PoolID, Name: name, ResourceTier: resourceTier, JITConfig: jit, Limits: limits,
+			})
+			if startErr != nil {
+				// Start is intentionally not retried: it may have created a running
+				// container before returning an error. The next inventory reconciles it.
+				record("worker-start-error", "one-job worker start failed; inventory will reconcile before retry", decision.PoolID, true, startErr)
+				if !RunnerStartMayBeActive(startErr) {
+					cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
+					cleanupErr := r.deregisterRunner(cleanupContext, decision.PoolID, jit.RunnerID())
+					cleanupCancel()
+					if cleanupErr != nil {
+						record("failed-start-runner-cleanup-error", safeScaleSetMessage("deregister runner after pre-start failure", cleanupErr), decision.PoolID, scaleset.Retryable(cleanupErr), cleanupErr)
+					}
+				}
+				break
+			}
+			*reservedMemory = saturatingAddUint64(*reservedMemory, uint64(limits.Memory))
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) freshStartAllowed(
