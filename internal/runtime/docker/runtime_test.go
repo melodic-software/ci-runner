@@ -1885,6 +1885,8 @@ func (*contextBlockingReadCloser) Close() error { return nil }
 func (r *recordingTelemetry) BeginReconcile(ctx context.Context) (context.Context, func(telemetry.ReconcileSnapshot, error)) {
 	return ctx, func(telemetry.ReconcileSnapshot, error) {}
 }
+func (*recordingTelemetry) RecordCapacityCheckpoint(context.Context, time.Time, []telemetry.CapacityCheckpointPool) {
+}
 func (*recordingTelemetry) WorkerRegistered(context.Context, string, string, time.Duration, telemetry.WorkerStartOutcome) {
 }
 func (r *recordingTelemetry) WorkerStarted(_ context.Context, poolID, _ string, _ time.Duration, outcome telemetry.WorkerStartOutcome) {
