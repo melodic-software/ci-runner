@@ -1,23 +1,18 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-12T00:20:00.0000000Z",
-  "issue": 72,
+  "reviewedAt": "2026-08-12T06:20:00.0000000Z",
+  "issue": 233,
   "cycle": "2026-08-12",
-  "held": [
+  "held": [],
+  "bumped": [
     {
       "dependency": "repository-pin:melodic-software/ci-workflows",
-      "pinned": "e94438746c300b02385a7f8a2a2dcd19a7f4ad4a",
-      "pinnedVersion": "v0.10.2",
-      "latestObservedAtReview": "5c534b12ce8651bad96b4691ba80360bd6b2e0fc",
-      "decision": "no-bump-this-cycle",
-      "rationale": "Main is past v0.12.0 with feat!: reset instruction surfaces (#403) and other cross-repo contract changes. Deferred to a dedicated ci-workflows compatibility PR after range review."
-    },
-    {
-      "dependency": "github-action:zizmorcore/zizmor-action",
-      "pinned": "3dc1ecc9bcb9e94e9b2c709687979e1298497054",
-      "pinnedVersion": "v0.6.2",
-      "decision": "already-current",
-      "rationale": "Synced on main via #217 before this drain; no change in this PR."
+      "from": "e94438746c300b02385a7f8a2a2dcd19a7f4ad4a",
+      "fromVersion": "v0.10.2",
+      "to": "036c3909885da6efaff7e76b676d97ae9450067d",
+      "toVersion": "v0.13.0",
+      "decision": "bump",
+      "rationale": "Dedicated compatibility absorb of main tip after v0.10.2 hold. Tagged melodic-software/ci-workflows@v0.13.0 at 036c390 for pin identity. Includes select-runner offline-capacity surfacing and pr-issue-linkage Summary/Fix/Verification contract."
     }
   ]
 }
