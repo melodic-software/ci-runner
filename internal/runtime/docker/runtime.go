@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -569,6 +570,10 @@ func (r *Runtime) readWorkerState(ctx context.Context, id string) (_ string, res
 	}
 	state := string(content)
 	if state != "idle" && state != "busy" && state != "completed" {
+		r.opts.OnError(fmt.Errorf(
+			"invalid worker state diagnostic for %s: tarSize=%d rawHex=%s",
+			id, header.Size, hex.EncodeToString(content),
+		))
 		return "", fmt.Errorf("invalid worker state %q", state)
 	}
 	return state, nil
