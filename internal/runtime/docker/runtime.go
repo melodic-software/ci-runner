@@ -514,10 +514,7 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 	// reserves against the budget. A limit that cannot be read is not fatal on its
 	// own - the worker keeps its real state and reserves its pool profile, the
 	// same fallback an unlimited container takes.
-	memoryLimit, err := r.readWorkerMemoryLimit(ctx, id)
-	if err != nil {
-		r.opts.OnError(fmt.Errorf("read worker %s memory limit; reserving the configured profile: %w", id, err))
-	}
+	memoryLimit, memoryErr := r.readWorkerMemoryLimit(ctx, id)
 	worker.MemoryLimitBytes = memoryLimit
 	state, err := r.readWorkerState(ctx, id)
 	if errors.Is(err, errWorkerStateUnavailable) {
@@ -526,6 +523,9 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 	}
 	if err != nil {
 		return worker, fmt.Errorf("read worker %s state: %w", id, err)
+	}
+	if memoryErr != nil {
+		r.opts.OnError(fmt.Errorf("read worker %s memory limit; reserving the configured profile: %w", id, memoryErr))
 	}
 	switch state {
 	case "idle":

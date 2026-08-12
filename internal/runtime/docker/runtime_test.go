@@ -735,8 +735,6 @@ func TestListReportsNoMemoryLimitWhenTheResponseCarriesNoHostConfig(t *testing.T
 	}
 }
 
-}
-
 func TestListReportsInvalidWorkerStateDiagnostics(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
