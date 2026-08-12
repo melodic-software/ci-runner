@@ -91,7 +91,7 @@ func TestEventThenArtifactAndArtifactThenEventConverge(t *testing.T) {
 			}
 			writeEvent := func() {
 				t.Helper()
-				if err := events.JobStarted(context.Background(), "org", "runner-1", "42"); err != nil {
+				if err := events.JobStarted(context.Background(), "org", "runner-1", "42", time.Time{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -163,12 +163,72 @@ func TestImmutableIdentityConflictsAndIdempotentRedelivery(t *testing.T) {
 	store := newFileStoreForTest(t, t.TempDir())
 	events := EventSink{Store: store, Now: func() time.Time { return time.Unix(300, 0).UTC() }}
 	for range 2 {
-		if err := events.JobStarted(context.Background(), "org", "runner", "job"); err != nil {
+		if err := events.JobStarted(context.Background(), "org", "runner", "job", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := events.JobStarted(context.Background(), "org", "runner", "different-job"); !errors.Is(err, ErrConflict) {
+	if err := events.JobStarted(context.Background(), "org", "runner", "different-job", time.Time{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting redelivery error = %v", err)
+	}
+}
+
+func TestRunnerAssignedAtPersistsAcrossRestartAndReadsLegacyJobsJSON(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	locker := &testLocker{}
+	store := newFileStoreWithDependencies(t, directory, locker)
+	assignedAt := time.Unix(1700000000, 0).UTC()
+	observedAt := assignedAt.Add(2 * time.Second)
+	events := EventSink{Store: store, Now: func() time.Time { return observedAt }}
+	if err := events.JobStarted(context.Background(), "org", "runner", "job-1", assignedAt); err != nil {
+		t.Fatal(err)
+	}
+	reopened := newFileStoreWithDependencies(t, directory, locker)
+	record, err := reopened.FindByJobID(context.Background(), "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.RunnerAssignedAt == nil || !record.RunnerAssignedAt.Equal(assignedAt) {
+		t.Fatalf("runnerAssignedAt = %v, want %v", record.RunnerAssignedAt, assignedAt)
+	}
+	if !record.JobStartedAt.Equal(observedAt) {
+		t.Fatalf("jobStartedAt = %v, want controller observation %v", record.JobStartedAt, observedAt)
+	}
+	legacyJSON := `{"schemaVersion":1,"records":[{"poolId":"org","runnerName":"legacy","jobId":"legacy-job","jobStartedAt":"2024-01-02T03:04:05Z","updatedAt":"2024-01-02T03:04:05Z"}]}`
+	if err := os.WriteFile(filepath.Join(directory, jobsFilename), []byte(legacyJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyStore := newFileStoreWithDependencies(t, directory, locker)
+	legacy, err := legacyStore.FindByJobID(context.Background(), "legacy-job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.RunnerAssignedAt != nil {
+		t.Fatalf("legacy record must omit runnerAssignedAt, got %v", legacy.RunnerAssignedAt)
+	}
+}
+
+func TestRunnerAssignedAtMergeKeepsFirstNonZeroValue(t *testing.T) {
+	t.Parallel()
+	store := newFileStoreForTest(t, t.TempDir())
+	first := time.Unix(100, 0).UTC()
+	second := first.Add(time.Minute)
+	if _, err := store.Upsert(context.Background(), Patch{
+		PoolID: "org", RunnerName: "runner", JobID: "job", RunnerAssignedAt: first,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(context.Background(), Patch{
+		PoolID: "org", RunnerName: "runner", RunnerAssignedAt: second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.FindByRunner(context.Background(), "org", "runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.RunnerAssignedAt == nil || !record.RunnerAssignedAt.Equal(first) {
+		t.Fatalf("runnerAssignedAt = %v, want first write %v", record.RunnerAssignedAt, first)
 	}
 }
 
@@ -178,14 +238,14 @@ func TestActiveJobSurvivesRestartAndCompletionClearsIt(t *testing.T) {
 	locker := &testLocker{}
 	store := newFileStoreWithDependencies(t, directory, locker)
 	events := EventSink{Store: store, Now: func() time.Time { return time.Unix(350, 0).UTC() }}
-	if err := events.JobStarted(context.Background(), "org", "runner", "job-1"); err != nil {
+	if err := events.JobStarted(context.Background(), "org", "runner", "job-1", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	reopened := newFileStoreWithDependencies(t, directory, locker)
 	if jobID, active, err := reopened.ActiveJob(context.Background(), "org", "runner"); err != nil || !active || jobID != "job-1" {
 		t.Fatalf("reopened active job = %q %t, err=%v", jobID, active, err)
 	}
-	if err := events.JobCompleted(context.Background(), "org", "runner", "job-1", "Succeeded"); err != nil {
+	if err := events.JobCompleted(context.Background(), "org", "runner", "job-1", "Succeeded", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, active, err := reopened.ActiveJob(context.Background(), "org", "runner"); err != nil || active {

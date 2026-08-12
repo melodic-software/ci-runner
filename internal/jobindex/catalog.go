@@ -33,6 +33,7 @@ type Record struct {
 	LogPath           string     `json:"logPath,omitempty"`
 	DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
 	ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
+	RunnerAssignedAt  *time.Time `json:"runnerAssignedAt,omitempty"`
 	JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
 	CompletedAt       time.Time  `json:"completedAt,omitempty"`
 	FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
@@ -50,6 +51,7 @@ type Patch struct {
 	LogPath           string
 	DiagnosticPath    string
 	ArtifactStartedAt time.Time
+	RunnerAssignedAt  time.Time
 	JobStartedAt      time.Time
 	CompletedAt       time.Time
 	FinalizedAt       time.Time
@@ -104,6 +106,7 @@ func Merge(existing Record, patch Patch, now time.Time) (Record, error) {
 		}
 	}
 	mergeTime(&existing.ArtifactStartedAt, patch.ArtifactStartedAt)
+	mergeOptionalTime(&existing.RunnerAssignedAt, patch.RunnerAssignedAt)
 	mergeTime(&existing.JobStartedAt, patch.JobStartedAt)
 	mergeTime(&existing.CompletedAt, patch.CompletedAt)
 	mergeTime(&existing.FinalizedAt, patch.FinalizedAt)
@@ -200,17 +203,31 @@ func mergePath(name, current, incoming string) (string, error) {
 	return mergeImmutable(name+" path", current, filepath.Clean(incoming))
 }
 
+func mergeOptionalTime(destination **time.Time, value time.Time) {
+	if *destination != nil || value.IsZero() {
+		return
+	}
+	assigned := value.UTC()
+	*destination = &assigned
+}
+
 type EventSink struct {
 	Store Store
 	Now   func() time.Time
 }
 
-func (s EventSink) JobStarted(ctx context.Context, poolID, runnerName, jobID string) error {
-	return s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, JobStartedAt: s.now()})
+func (s EventSink) JobStarted(ctx context.Context, poolID, runnerName, jobID string, runnerAssignedAt time.Time) error {
+	return s.upsert(ctx, Patch{
+		PoolID: poolID, RunnerName: runnerName, JobID: jobID,
+		RunnerAssignedAt: runnerAssignedAt, JobStartedAt: s.now(),
+	})
 }
 
-func (s EventSink) JobCompleted(ctx context.Context, poolID, runnerName, jobID, result string) error {
-	return s.upsert(ctx, Patch{PoolID: poolID, RunnerName: runnerName, JobID: jobID, Result: result, CompletedAt: s.now()})
+func (s EventSink) JobCompleted(ctx context.Context, poolID, runnerName, jobID, result string, runnerAssignedAt time.Time) error {
+	return s.upsert(ctx, Patch{
+		PoolID: poolID, RunnerName: runnerName, JobID: jobID, Result: result,
+		RunnerAssignedAt: runnerAssignedAt, CompletedAt: s.now(),
+	})
 }
 
 func (s EventSink) upsert(ctx context.Context, patch Patch) error {

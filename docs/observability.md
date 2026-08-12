@@ -83,7 +83,10 @@ increment the reconcile error counter.
 ## Metrics
 
 All metrics use the `ci_runner` namespace. Gauges represent the most recent
-completed reconciliation; counters are monotonic process-lifetime events.
+completed reconciliation, except `ci_runner.capacity.acknowledged` and
+`ci_runner.capacity.acknowledgement.pending.age`, which are also refreshed from
+durable poll-cadence checkpoints during open listener polls; counters are
+monotonic process-lifetime events.
 
 | Metric | Meaning | Attributes |
 | --- | --- | --- |
@@ -91,8 +94,8 @@ completed reconciliation; counters are monotonic process-lifetime events.
 | `ci_runner.controller.reconcile.errors` | Unexpected reconcile failures | none |
 | `ci_runner.controller.observed.checkpoint.age` | Prior durable checkpoint age at reconcile start; omitted when missing, corrupt, or future-dated | none |
 | `ci_runner.capacity.advertised` | Capacity acknowledged to GitHub | `ci_runner.pool.id` |
-| `ci_runner.capacity.acknowledged` | Latest target capacity is listener-acknowledged, `0` or `1` | `ci_runner.pool.id` |
-| `ci_runner.capacity.acknowledgement.pending.age` | Age of a pending capacity transition; omitted when acknowledged or unavailable | `ci_runner.pool.id` |
+| `ci_runner.capacity.acknowledged` | Latest target capacity is listener-acknowledged, `0` or `1`; refreshed from durable poll-cadence checkpoints during open listener polls | `ci_runner.pool.id` |
+| `ci_runner.capacity.acknowledgement.pending.age` | Age of a pending capacity transition; omitted when acknowledged or unavailable; refreshed from durable poll-cadence checkpoints during open listener polls | `ci_runner.pool.id` |
 | `ci_runner.capacity.assigned` | Authoritative assigned jobs | `ci_runner.pool.id` |
 | `ci_runner.capacity.desired` | Desired local workers | `ci_runner.pool.id` |
 | `ci_runner.workers` | Workers in each bounded state | `ci_runner.pool.id`, `ci_runner.worker.state` |
@@ -243,6 +246,9 @@ lag. Reconcile spans contain timestamped `worker.registered`, `worker.started`,
 and `job.started` events without runner or job identities. `jobs.json` remains
 the durable exact-identity ledger for operator diagnostics and retains
 `jobStartedAt`, artifact start, completion, and finalization timestamps.
+`runnerAssignedAt` records GitHub's runner-assignment timestamp when the scale-set
+listener persists a job-started or job-completed event, enabling assignment→create
+queue wait from local state without recomputing visibility lag from telemetry.
 
 ## Why the controller is draining
 

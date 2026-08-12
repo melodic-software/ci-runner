@@ -23,17 +23,19 @@ const (
 )
 
 type JobEventSink interface {
-	JobStarted(context.Context, string, string, string) error
+	JobStarted(context.Context, string, string, string, time.Time) error
 	// JobCompleted receives only completions with an exact runner identity.
 	// Valid canceled-before-assignment events are not runner-indexable and are
 	// acknowledged without calling this method.
-	JobCompleted(context.Context, string, string, string, string) error
+	JobCompleted(context.Context, string, string, string, string, time.Time) error
 }
 
 type DiscardJobEventSink struct{}
 
-func (DiscardJobEventSink) JobStarted(context.Context, string, string, string) error { return nil }
-func (DiscardJobEventSink) JobCompleted(context.Context, string, string, string, string) error {
+func (DiscardJobEventSink) JobStarted(context.Context, string, string, string, time.Time) error {
+	return nil
+}
+func (DiscardJobEventSink) JobCompleted(context.Context, string, string, string, string, time.Time) error {
 	return nil
 }
 
@@ -251,12 +253,12 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	// Persist lifecycle identity before either acquiring or acknowledging the
 	// message. Redelivery is expected, so the sink contract is idempotent.
 	for _, started := range message.JobStartedMessages {
-		if err := c.opts.Events.JobStarted(ctx, target.definition.TargetID, started.RunnerName, started.JobID); err != nil {
+		if err := c.opts.Events.JobStarted(ctx, target.definition.TargetID, started.RunnerName, started.JobID, started.RunnerAssignTime); err != nil {
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-started event", Err: err}
 		}
 	}
 	for _, completed := range identifiedCompletions {
-		if err := c.opts.Events.JobCompleted(ctx, target.definition.TargetID, completed.RunnerName, completed.JobID, completed.Result); err != nil {
+		if err := c.opts.Events.JobCompleted(ctx, target.definition.TargetID, completed.RunnerName, completed.JobID, completed.Result, completed.RunnerAssignTime); err != nil {
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-completed event", Err: err}
 		}
 	}
