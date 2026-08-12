@@ -304,6 +304,12 @@ func TestOfficialIdentifiedStartAndCompletionInSameBatchConverge(t *testing.T) {
 	if events.started != 1 || len(events.completions) != 1 {
 		t.Fatalf("identified batch persistence = starts:%d completions:%#v", events.started, events.completions)
 	}
+	if len(events.startedAssignAt) != 1 || !events.startedAssignAt[0].IsZero() {
+		t.Fatalf("job-started assign time = %v, want zero when GitHub omits it", events.startedAssignAt)
+	}
+	if len(events.completionAssign) != 1 || !events.completionAssign[0].Equal(time.Unix(1, 0).UTC()) {
+		t.Fatalf("job-completed assign time = %v, want GitHub runner assignment", events.completionAssign)
+	}
 	if _, active := client.ActiveJob("org", "runner-1"); active {
 		t.Fatal("identified same-batch completion left the runner job active")
 	}
@@ -608,8 +614,10 @@ func (fakeSecretStore) PrivateKey(context.Context, string) (SecretMaterial, erro
 
 type failingJobEventSink struct{ err error }
 
-func (s failingJobEventSink) JobStarted(context.Context, string, string, string) error { return s.err }
-func (s failingJobEventSink) JobCompleted(context.Context, string, string, string, string) error {
+func (s failingJobEventSink) JobStarted(context.Context, string, string, string, time.Time) error {
+	return s.err
+}
+func (s failingJobEventSink) JobCompleted(context.Context, string, string, string, string, time.Time) error {
 	return s.err
 }
 
@@ -618,8 +626,10 @@ type recordedCompletion struct {
 }
 
 type recordingJobEventSink struct {
-	started     int
-	completions []recordedCompletion
+	started          int
+	startedAssignAt  []time.Time
+	completions      []recordedCompletion
+	completionAssign []time.Time
 }
 
 type observedJobCompletion struct {
@@ -640,12 +650,14 @@ func (o *recordingJobEventObserver) ObserveJobCompleted(_ context.Context, poolI
 	o.completions = append(o.completions, observedJobCompletion{poolID: poolID, result: result, assigned: assigned})
 }
 
-func (s *recordingJobEventSink) JobStarted(context.Context, string, string, string) error {
+func (s *recordingJobEventSink) JobStarted(_ context.Context, _, _, _ string, runnerAssignedAt time.Time) error {
 	s.started++
+	s.startedAssignAt = append(s.startedAssignAt, runnerAssignedAt)
 	return nil
 }
-func (s *recordingJobEventSink) JobCompleted(_ context.Context, poolID, runnerName, jobID, result string) error {
+func (s *recordingJobEventSink) JobCompleted(_ context.Context, poolID, runnerName, jobID, result string, runnerAssignedAt time.Time) error {
 	s.completions = append(s.completions, recordedCompletion{poolID: poolID, runnerName: runnerName, jobID: jobID, result: result})
+	s.completionAssign = append(s.completionAssign, runnerAssignedAt)
 	return nil
 }
 
