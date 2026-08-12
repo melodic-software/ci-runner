@@ -493,6 +493,184 @@ func TestCleanupDeletesNothingWhenTheCatalogCannotBeRead(t *testing.T) {
 	}
 }
 
+func TestCapSweepProtectsOpenRecordsAndInFlightTemporaries(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 64, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 64, CleanupEvery: time.Nanosecond,
+	})
+	now := time.Now().UTC()
+	open := true
+	closed := false
+	openPath := filepath.Join(root, "logs", "open.log")
+	inFlightPath := filepath.Join(root, "logs", ".ci-runner-log-live.tmp")
+	orphanPath := filepath.Join(root, "logs", "orphan.log")
+	for _, spec := range []struct {
+		path  string
+		bytes []byte
+	}{
+		{path: openPath, bytes: bytes.Repeat([]byte("o"), 20)},
+		{path: inFlightPath, bytes: bytes.Repeat([]byte("t"), 20)},
+		{path: orphanPath, bytes: bytes.Repeat([]byte("x"), 20)},
+	} {
+		if err := os.WriteFile(spec.path, spec.bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: "org", RunnerName: "open", ContainerID: "container-open",
+		LogPath: openPath, FinalizedAt: now.Add(-time.Hour), Open: &open,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: "org", RunnerName: "finalized", ContainerID: "container-finalized",
+		LogPath: filepath.Join(root, "logs", "keep.log"), FinalizedAt: now.Add(-time.Hour), Open: &closed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "logs", "keep.log"), bytes.Repeat([]byte("k"), 5), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), []ArtifactMetadata{
+		testArtifactMetadata("container-open", "open"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{openPath, inFlightPath, filepath.Join(root, "logs", "keep.log")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("protected artifact %q was removed: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unreferenced orphan must be reclaimed before catalog candidates, stat error = %v", err)
+	}
+}
+
+func TestProtectedCountedBytesDoNotForceHealthyArtifactDeletion(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 32, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 32, CleanupEvery: time.Nanosecond,
+	})
+	now := time.Now().UTC()
+	closed := false
+	healthyPath := filepath.Join(root, "logs", "healthy.log")
+	inFlightPath := filepath.Join(root, "logs", ".ci-runner-log-live.tmp")
+	if err := os.WriteFile(healthyPath, bytes.Repeat([]byte("h"), 10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inFlightPath, bytes.Repeat([]byte("t"), 25), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: "org", RunnerName: "healthy", ContainerID: "container-healthy",
+		LogPath: healthyPath, FinalizedAt: now.Add(-time.Minute), Open: &closed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(healthyPath); err != nil {
+		t.Fatalf("healthy in-window artifact was removed to pay for protected temp bytes: %v", err)
+	}
+	if _, err := os.Stat(inFlightPath); err != nil {
+		t.Fatalf("in-flight temporary was removed: %v", err)
+	}
+}
+
+func TestCapSweepProtectsDegradedMetadataPathsForAdoptedContainer(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 32, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 32, CleanupEvery: time.Nanosecond,
+	})
+	containerID := "abcdef0123456789"
+	adopted := testArtifactMetadata(containerID, "runner-live")
+	degradedDiag := filepath.Join(root, "diag", artifactBaseName(degradedArtifactMetadata(containerID))+"-diag.tar.gz")
+	if err := os.WriteFile(degradedDiag, bytes.Repeat([]byte("d"), 20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), []ArtifactMetadata{adopted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(degradedDiag); err != nil {
+		t.Fatalf("degraded-metadata diagnostic for adopted container was cap-evicted: %v", err)
+	}
+}
+
+func TestCapSweepEvictsUnreferencedOrphansOldestFirst(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 32, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 32, CleanupEvery: time.Nanosecond,
+	})
+	now := time.Now().UTC()
+	paths := map[string]string{}
+	for index, name := range []string{"oldest-orphan", "newest-orphan"} {
+		path := filepath.Join(root, "logs", name+".log")
+		if err := os.WriteFile(path, bytes.Repeat([]byte{byte('a' + index)}, 20), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		modTime := now.Add(time.Duration(index-1) * time.Hour)
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+		paths[name] = path
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths["oldest-orphan"]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oldest unreferenced orphan still exists: %v", err)
+	}
+	if _, err := os.Stat(paths["newest-orphan"]); err != nil {
+		t.Fatalf("newest unreferenced orphan was removed while still under cap: %v", err)
+	}
+}
+
+func TestCleanupPerPathReferenceSurvivesSiblingPathStatError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	sink := newArtifactSinkForTest(t, root, store, ArtifactPolicy{
+		MaxFileSizeBytes: 32, RawDiagnosticMaxInputBytes: 128,
+		Retention: 24 * time.Hour, TotalCapBytes: 32, CleanupEvery: time.Nanosecond,
+	})
+	now := time.Now().UTC()
+	closed := false
+	logPath := filepath.Join(root, "logs", "valid.log")
+	badDiagnosticPath := filepath.Join(root, "diag", "not-a-diag.txt")
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("l"), 20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badDiagnosticPath, []byte("bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: "org", RunnerName: "partial", ContainerID: "container-partial",
+		LogPath: logPath, DiagnosticPath: badDiagnosticPath,
+		FinalizedAt: now.Add(-time.Minute), Open: &closed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.AdoptAndCleanup(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "resource sidecar") {
+		t.Fatalf("partial path validation must surface without deleting protected files: %v", err)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("valid referenced log was removed after sibling path validation failed: %v", err)
+	}
+}
+
 type failingJobStore struct{ jobindex.Store }
 
 func (failingJobStore) Load(context.Context) (jobindex.Catalog, error) {
