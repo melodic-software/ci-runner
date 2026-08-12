@@ -52,6 +52,8 @@ test('recovery requires a verified hosted-only cutoff and fresh selector evaluat
   assert.match(routingRecoverySummary, /guarantee that the selector executes again/);
   assert.match(routingRecoverySummary, /partial-rerun dependency behavior/);
   assert.match(routingRecoverySummary, /does not recover the original pull-request check/);
+  assert.match(routingRecoverySummary, /at least `v0\.1\.21`/);
+  assert.match(routingRecoverySummary, /Confirm the managed runner host is running a release/);
   assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
 });
 

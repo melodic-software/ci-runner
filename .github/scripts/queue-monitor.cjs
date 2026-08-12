@@ -16,7 +16,12 @@ const nonterminalRunStatuses = Object.freeze([
 ]);
 
 const routingRecoverySummary = `
-Follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
+Confirm the managed runner host is running a release that includes the latest
+capacity and reconciliation fixes (at least \`v0.1.21\` / current \`main\` tip)
+before changing routing. An unrebuilt host on an older controller will keep
+queuing work against dead capacity even when \`main\` already carries the fix.
+
+Then follow the [audited CI routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance) to make the affected repository's effective \`CI_RUNNER_POLICY\` value \`hosted-only\` and verify the readback. Cancel the affected run, choose **Re-run all jobs** to guarantee that the selector executes again, and confirm that it selects hosted capacity. Do not use a failed-job or single-job rerun for this recovery because partial-rerun dependency behavior does not guarantee a fresh selector decision. A \`workflow_dispatch\` creates a separate run with different event and ref context; it does not recover the original pull-request check.
 `;
 
 // A worst-case queue-wide outage could stall far more than a handful of
