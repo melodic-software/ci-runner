@@ -138,6 +138,12 @@ installer or `latest`:
 - never auto-merge controller, runner, image, toolchain, Scale Set Client,
   Action, or release changes.
 
+A partial drain may advance mechanical toolchain and publication pins while
+holding a cross-repository SHA pin such as `melodic-software/ci-workflows`.
+Record the reviewed hold in `release/dependency-drift-review.json`; the daily
+freshness monitor continues to report the held row until a dedicated
+compatibility PR moves every reference together.
+
 GitHub progressively deploys runner versions. A release PR therefore must also
 confirm the version offered in the organization runner setup UI/API before
 promotion. A passing drift check is necessary but is not promotion approval.

@@ -205,6 +205,9 @@ foreach ($builder in @(
     }
 }
 
+# Repository-wide SHA pins (for example melodic-software/ci-workflows) may be
+# intentionally held across a mechanical drain cycle; record the reviewed
+# decision in release/dependency-drift-review.json before merging partial bumps.
 foreach ($repositoryPin in $dependencies.repositoryPins) {
     $repository = $repositoryPin.repository
     $repo = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repository"
