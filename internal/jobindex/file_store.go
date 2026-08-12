@@ -47,6 +47,8 @@ func NewFileStore(directory string, locker statefs.Locker, acl AccessController)
 	}, nil
 }
 
+func (s *FileStore) JobsStateDirectory() string { return s.directory }
+
 func (s *FileStore) PruneTombstones(ctx context.Context, before time.Time) (removed int, resultErr error) {
 	if before.IsZero() {
 		return 0, errors.New("tombstone prune cutoff is required")
@@ -277,6 +279,7 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 		return fmt.Errorf("replace jobs.json atomically: %w", err)
 	}
 	committed = true
+	appendDropJournal(s.directory, s.acl, dropped, s.now())
 	if err := s.acl.Harden(target); err != nil {
 		return fmt.Errorf("verify jobs.json ACL: %w", err)
 	}
@@ -286,7 +289,6 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	if err := statefs.SyncDirectory(s.directory); err != nil {
 		return fmt.Errorf("flush jobs state directory: %w", err)
 	}
-	appendDropJournal(s.directory, dropped, s.now())
 	return nil
 }
 

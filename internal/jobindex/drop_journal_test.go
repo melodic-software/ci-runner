@@ -31,8 +31,14 @@ func TestSaveRecordsEveryTier2DropInTheDropJournal(t *testing.T) {
 	store := newFileStoreForTest(t, directory)
 	now := time.Unix(800, 0).UTC()
 	store.now = func() time.Time { return now }
-	logDirectory := t.TempDir()
-	diagnosticDirectory := t.TempDir()
+	logDirectory := filepath.Join(directory, "logs")
+	diagnosticDirectory := filepath.Join(directory, "diag")
+	if err := os.MkdirAll(logDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(diagnosticDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	catalog := Catalog{SchemaVersion: SchemaVersion}
 	padding := strings.Repeat("v", 512)
@@ -47,7 +53,7 @@ func TestSaveRecordsEveryTier2DropInTheDropJournal(t *testing.T) {
 			Result: "succeeded", JobStartedAt: completed.Add(-time.Minute),
 			LogPath:        filepath.Join(logDirectory, runner+".log"),
 			DiagnosticPath: filepath.Join(diagnosticDirectory, runner+"-diag.tar.gz"),
-			CompletedAt: completed, FinalizedAt: completed, UpdatedAt: now,
+			CompletedAt:    completed, FinalizedAt: completed, UpdatedAt: now,
 		}
 		catalog.Records = append(catalog.Records, record)
 		droppedRunners[runner] = record
@@ -194,10 +200,10 @@ func TestDropJournalIsBoundedByMaximumJobState(t *testing.T) {
 			JobID: fmt.Sprintf("job-%07d-%s", index, padding), Result: "succeeded",
 			LogPath:        filepath.Join(directory, runner+".log"),
 			DiagnosticPath: filepath.Join(directory, runner+"-diag.tar.gz"),
-			JobStartedAt: completed.Add(-time.Minute), CompletedAt: completed, FinalizedAt: completed, UpdatedAt: now,
+			JobStartedAt:   completed.Add(-time.Minute), CompletedAt: completed, FinalizedAt: completed, UpdatedAt: now,
 		})
 	}
-	appendDropJournal(directory, records, now)
+	appendDropJournal(directory, testACL{}, records, now)
 	info, err := os.Stat(filepath.Join(directory, dropJournalFilename))
 	if err != nil {
 		t.Fatal(err)

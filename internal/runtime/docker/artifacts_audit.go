@@ -56,14 +56,17 @@ type TombstonedAdoptedContainer struct {
 
 // ArtifactAuditReport is the read-only disk-vs-catalog audit result.
 type ArtifactAuditReport struct {
-	RetentionCutoff    time.Time                    `json:"retentionCutoff"`
-	CatalogAvailable   bool                         `json:"catalogAvailable"`
-	CatalogError       string                       `json:"catalogError,omitempty"`
-	InventoryAvailable bool                         `json:"inventoryAvailable"`
-	InventoryError     string                       `json:"inventoryError,omitempty"`
-	Directories        []ArtifactAuditDirectory     `json:"directories"`
-	ReferencedMissing  []ArtifactAuditFile          `json:"referencedMissing"`
-	TombstonedAdopted  []TombstonedAdoptedContainer `json:"tombstonedAdopted,omitempty"`
+	RetentionCutoff      time.Time                    `json:"retentionCutoff"`
+	CatalogAvailable     bool                         `json:"catalogAvailable"`
+	CatalogError         string                       `json:"catalogError,omitempty"`
+	InventoryAvailable   bool                         `json:"inventoryAvailable"`
+	InventoryError       string                       `json:"inventoryError,omitempty"`
+	DropJournalAvailable bool                         `json:"dropJournalAvailable"`
+	DropJournalError     string                       `json:"dropJournalError,omitempty"`
+	CompactionsDropped   []jobindex.DropEntry         `json:"compactionsDropped,omitempty"`
+	Directories          []ArtifactAuditDirectory     `json:"directories"`
+	ReferencedMissing    []ArtifactAuditFile          `json:"referencedMissing"`
+	TombstonedAdopted    []TombstonedAdoptedContainer `json:"tombstonedAdopted,omitempty"`
 }
 
 // ArtifactPurgeResult reports reference-based purge actions.
@@ -163,6 +166,16 @@ func (s *FileArtifactSink) buildAuditReport(
 
 	referenced, catalogPaths := buildReferencedFromCatalog(s.logDirectory, s.diagnosticDirectory, catalog)
 	mergeReferenced(referenced, buildReferencedFromInventory(s.logDirectory, s.diagnosticDirectory, adopted))
+	if journal, available, journalError := s.loadDropJournal(); available {
+		report.DropJournalAvailable = true
+		report.CompactionsDropped = journal.Entries
+		mergeReferenced(referenced, referencedFromDropJournal(journal))
+	} else if journalError != "" {
+		report.DropJournalAvailable = false
+		report.DropJournalError = journalError
+	} else {
+		report.DropJournalAvailable = true
+	}
 	if inventoryAvailable {
 		report.TombstonedAdopted = findTombstonedAdopted(catalog, adopted)
 	}
@@ -212,6 +225,28 @@ func (s *FileArtifactSink) loadCatalogSoft(ctx context.Context) (jobindex.Catalo
 		return jobindex.Catalog{}, false, err.Error()
 	}
 	return catalog, true, ""
+}
+
+func (s *FileArtifactSink) loadDropJournal() (jobindex.DropJournal, bool, string) {
+	provider, ok := s.jobs.(interface{ JobsStateDirectory() string })
+	if !ok {
+		return jobindex.DropJournal{}, false, ""
+	}
+	journal, err := jobindex.LoadDropJournal(provider.JobsStateDirectory())
+	if err != nil {
+		return jobindex.DropJournal{}, false, err.Error()
+	}
+	return journal, true, ""
+}
+
+func referencedFromDropJournal(journal jobindex.DropJournal) map[string]struct{} {
+	referenced := make(map[string]struct{})
+	for _, entry := range journal.Entries {
+		for _, path := range entry.ArtifactPaths() {
+			referenced[canonicalPath(path)] = struct{}{}
+		}
+	}
+	return referenced
 }
 
 type catalogPathEntry struct {

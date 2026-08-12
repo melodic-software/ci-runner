@@ -110,7 +110,7 @@ func dropEntryFromRecord(record Record, droppedAt time.Time) DropEntry {
 // two writes loses at most the latest batch, matching the pre-journal state.
 // Journal write failures are ignored so compaction cannot reintroduce the
 // permanent-write-failure livelock the save cap exists to prevent.
-func appendDropJournal(directory string, dropped []Record, droppedAt time.Time) {
+func appendDropJournal(directory string, acl AccessController, dropped []Record, droppedAt time.Time) {
 	if len(dropped) == 0 {
 		return
 	}
@@ -140,6 +140,10 @@ func appendDropJournal(directory string, dropped []Record, droppedAt time.Time) 
 	if err := temporary.Chmod(0o600); err != nil {
 		return
 	}
+	if acl != nil {
+		_ = acl.Harden(temporaryPath)
+		_ = acl.Verify(temporaryPath)
+	}
 	if _, err := temporary.Write(encoded); err != nil {
 		return
 	}
@@ -154,6 +158,10 @@ func appendDropJournal(directory string, dropped []Record, droppedAt time.Time) 
 		return
 	}
 	committed = true
+	if acl != nil {
+		_ = acl.Harden(target)
+		_ = acl.Verify(target)
+	}
 	_ = statefs.SyncDirectory(directory)
 }
 

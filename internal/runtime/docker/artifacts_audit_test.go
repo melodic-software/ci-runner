@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -125,6 +126,45 @@ func TestAuditReportsTombstonedAdoptedContainersWhenInventoryIsAvailable(t *test
 	if report.TombstonedAdopted[0].ContainerID != "container-live" {
 		t.Fatalf("tombstoned adopted container = %#v", report.TombstonedAdopted[0])
 	}
+}
+
+func TestAuditSurfacesDropJournalEntries(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	stateDirectory := filepath.Join(root, "state")
+	store := newTestJobStore(t, stateDirectory)
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	now := time.Unix(830, 0).UTC()
+	droppedLog := filepath.Join(root, "logs", "dropped.log")
+	if err := os.WriteFile(droppedLog, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := jobindex.DropJournal{
+		SchemaVersion: 1,
+		Entries: []jobindex.DropEntry{{
+			DroppedAt: now, PoolID: "org", RunnerName: "dropped", JobID: "job-dropped", LogPath: droppedLog,
+		}},
+	}
+	encoded, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDirectory, "jobs-drop.json"), append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := sink.Audit(context.Background(), nil, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.CompactionsDropped) != 1 || report.CompactionsDropped[0].RunnerName != "dropped" {
+		t.Fatalf("compactions dropped = %#v", report.CompactionsDropped)
+	}
+	logDirectory := findAuditDirectory(t, report, filepath.Join(root, "logs"))
+	assertAuditFile(t, logDirectory, droppedLog, ArtifactReferencedPresent, false)
 }
 
 func TestPurgeDryRunSkipsInFlightTemporaryFiles(t *testing.T) {

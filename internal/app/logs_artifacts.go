@@ -107,6 +107,15 @@ func writeArtifactAudit(destination io.Writer, report dockerruntime.ArtifactAudi
 			writef(destination, "  %s/%s container=%s\n", container.PoolID, container.RunnerName, container.ContainerID)
 		}
 	}
+	if len(report.CompactionsDropped) > 0 {
+		writef(destination, "\nSave-cap compaction drops (journal): %d entries\n", len(report.CompactionsDropped))
+		for _, entry := range report.CompactionsDropped {
+			writef(destination, "  %s/%s dropped=%s job=%s\n",
+				entry.PoolID, entry.RunnerName, entry.DroppedAt.Format(time.RFC3339), entry.JobID)
+		}
+	} else if !report.DropJournalAvailable && report.DropJournalError != "" {
+		writef(destination, "\nDrop journal: unavailable (%s)\n", report.DropJournalError)
+	}
 	return nil
 }
 
