@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read # Checkout only; no write grants at the workflow root.
 
 concurrency:
   group: actions-budget-monitor
@@ -35,8 +35,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: read
-      issues: write
+      contents: read # Checkout the monitor scripts for github-script require().
+      issues: write # Upsert the marker-deduped budget incident issue in this repo.
     steps:
       - name: Checkout monitor implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

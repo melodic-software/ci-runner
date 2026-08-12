@@ -20,7 +20,8 @@ commit instead of moving or deleting the tag. `v0.1.6` is reserved by this rule
 and has no release assets. The same one-way rule applies when the release
 workflow itself fails on a tag: `v0.1.17` is reserved by a failed release
 verification (workflow-audit findings on gate workflows added after `v0.1.16`)
-and has no release assets.
+and has no release assets; `v0.1.20` is reserved by a failed zizmor permissions
+comment check on `actions-budget-monitor.yml` and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
