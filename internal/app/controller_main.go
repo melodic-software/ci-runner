@@ -82,9 +82,27 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 	}
 	telemetryOptions := telemetry.Options{
 		HostID: cfg.Host.ID, Version: buildinfo.Version,
-		OnError: func(exportErr error) {
-			if exportErr != nil {
-				logEvent("telemetry-export-error", exportErr.Error())
+		OnExportNotice: func(notice telemetry.ExportNotice) {
+			switch notice.Kind {
+			case telemetry.ExportNoticeUnreachable:
+				if notice.Err != nil {
+					logEvent("telemetry-export-unreachable", notice.Err.Error())
+				}
+			case telemetry.ExportNoticeDegradedSummary:
+				message := "OTLP export still failing"
+				if notice.Err != nil {
+					message = notice.Err.Error()
+				}
+				if notice.Suppressed > 0 {
+					message = fmt.Sprintf("%s (%d suppressed export failures since last notice)", message, notice.Suppressed)
+				}
+				logEvent("telemetry-export-degraded", message)
+			case telemetry.ExportNoticeRestored:
+				logEvent("telemetry-export-restored", "OTLP export resumed")
+			default:
+				if notice.Err != nil {
+					logEvent("telemetry-export-error", notice.Err.Error())
+				}
 			}
 		},
 	}
