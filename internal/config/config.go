@@ -76,20 +76,20 @@ func (s *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type Config struct {
-	SchemaVersion int           `yaml:"schemaVersion"`
-	Host          Host          `yaml:"host"`
-	Controller    Controller    `yaml:"controller"`
-	Release       Release       `yaml:"release"`
-	GitHub        GitHub        `yaml:"github"`
-	Resources     Resources     `yaml:"resources"`
-	Power         Power         `yaml:"power"`
-	Drain         Drain         `yaml:"drain"`
-	DockerDesktop DockerDesktop `yaml:"dockerDesktop"`
-	WorkerImage   WorkerImage   `yaml:"workerImage"`
-	Logs          Logs          `yaml:"logs"`
-	Telemetry     Telemetry     `yaml:"telemetry"`
+	SchemaVersion  int            `yaml:"schemaVersion"`
+	Host           Host           `yaml:"host"`
+	Controller     Controller     `yaml:"controller"`
+	Release        Release        `yaml:"release"`
+	GitHub         GitHub         `yaml:"github"`
+	Resources      Resources      `yaml:"resources"`
+	Power          Power          `yaml:"power"`
+	Drain          Drain          `yaml:"drain"`
+	DockerDesktop  DockerDesktop  `yaml:"dockerDesktop"`
+	WorkerImage    WorkerImage    `yaml:"workerImage"`
+	Logs           Logs           `yaml:"logs"`
+	Telemetry      Telemetry      `yaml:"telemetry"`
 	HealthWatchdog HealthWatchdog `yaml:"healthWatchdog"`
-	Paths         Paths         `yaml:"paths"`
+	Paths          Paths          `yaml:"paths"`
 }
 
 type Telemetry struct {
