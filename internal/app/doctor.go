@@ -160,13 +160,17 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	if a.dependencies.Doctor == nil {
 		checks = append(checks, DoctorCheck{Name: "host-security-and-runtime", Healthy: false, Detail: "doctor inspector dependency is unavailable"})
 	} else {
-		probeContext, cancelProbe := a.localProbeContext(ctx)
-		checks = append(checks, a.dependencies.Doctor.Inspect(probeContext, DoctorInspection{
+		// Inspection probes carry their own per-probe deadlines -- one of them
+		// sized for a person answering a UAC prompt -- so the command context is
+		// passed through: an aggregate budget here would re-create the starvation
+		// the per-probe deadlines exist to remove, and would cap the elevated
+		// probe below human speed because a derived context expires no later than
+		// its parent.
+		checks = append(checks, a.dependencies.Doctor.Inspect(ctx, DoctorInspection{
 			CheckDocker:     dockerReachable,
 			RequireDocker:   requireDocker,
 			IncludeElevated: *includeElevated,
 		})...)
-		cancelProbe()
 	}
 
 	if *jsonOutput {

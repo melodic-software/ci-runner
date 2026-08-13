@@ -26,16 +26,18 @@ func (doctorControlFake) Shutdown(context.Context, string, control.Status, bool)
 }
 
 type doctorInspectorFake struct {
-	beforeInspect func()
-	request       DoctorInspection
-	checks        []DoctorCheck
+	beforeInspect  func()
+	request        DoctorInspection
+	inspectContext context.Context
+	checks         []DoctorCheck
 }
 
-func (f *doctorInspectorFake) Inspect(_ context.Context, request DoctorInspection) []DoctorCheck {
+func (f *doctorInspectorFake) Inspect(ctx context.Context, request DoctorInspection) []DoctorCheck {
 	if f.beforeInspect != nil {
 		f.beforeInspect()
 	}
 	f.request = request
+	f.inspectContext = ctx
 	return append([]DoctorCheck(nil), f.checks...)
 }
 
@@ -98,6 +100,38 @@ func TestDoctorJSONDefaultsToNonElevatedInspectionWithoutWarning(t *testing.T) {
 	}
 	if check := doctorCheckNamed(t, result.Checks, "bitlocker"); !check.Skipped {
 		t.Fatalf("default JSON BitLocker check = %#v, want skipped", check)
+	}
+}
+
+// TestDoctorLeavesTheInspectionRoomForTheElevatedProbeBudget asserts the
+// criterion rather than the mechanism: a derived context expires no later than
+// its parent, so budgeting the inspection as a whole -- on the machine-probe
+// budget doctorTestConfig sets to 1s -- silently caps the elevated BitLocker
+// probe far below the human budget it needs, and every per-check test still
+// passes while the probe stays unpassable at human speed.
+func TestDoctorLeavesTheInspectionRoomForTheElevatedProbeBudget(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, errOut := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	inspector := &doctorInspectorFake{checks: []DoctorCheck{{Name: "bitlocker", Healthy: true, Detail: "verified"}}}
+	application.dependencies.Doctor = inspector
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--include-elevated"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d; stdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if inspector.inspectContext == nil {
+		t.Fatal("doctor never invoked the inspector")
+	}
+	deadline, bounded := inspector.inspectContext.Deadline()
+	if bounded && time.Until(deadline) < defaultElevatedProbeTimeout {
+		t.Fatalf("inspection context leaves %s, want room for the %s elevated probe budget", time.Until(deadline), defaultElevatedProbeTimeout)
 	}
 }
 

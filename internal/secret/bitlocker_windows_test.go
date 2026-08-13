@@ -5,6 +5,7 @@ package secret
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -116,6 +117,47 @@ func TestElevatedBitLockerExitCodeContract(t *testing.T) {
 		if err := parseElevatedBitLockerExit([]byte(value)); err == nil || !strings.Contains(err.Error(), expected) {
 			t.Fatalf("exit %q error = %v, want substring %q", value, err, expected)
 		}
+	}
+}
+
+func TestElevationLaunchErrorNamesTheExpiredDeadlineRatherThanTheOperator(t *testing.T) {
+	t.Parallel()
+	budgetExpired := errors.New("elevated host probe did not complete within its deadline")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(budgetExpired)
+
+	// exec kills the child on context expiry and then reports its exit status,
+	// which is why the live host saw a deadline kill surface as "exit status 1".
+	err := elevationLaunchError(ctx, errors.New("exit status 1"), nil)
+
+	if !errors.Is(err, budgetExpired) {
+		t.Fatalf("deadline kill error = %v, want the context cause", err)
+	}
+	if strings.Contains(err.Error(), "declined") {
+		t.Fatalf("deadline kill reported as a declined UAC prompt: %v", err)
+	}
+}
+
+func TestElevationLaunchErrorSurfacesTheChildAccountOfAGenuineFailure(t *testing.T) {
+	t.Parallel()
+	runErr := errors.New("exit status 1")
+
+	err := elevationLaunchError(context.Background(), runErr, []byte("  The operation was canceled by the user.\r\n"))
+
+	if !errors.Is(err, runErr) || !strings.Contains(err.Error(), "The operation was canceled by the user.") {
+		t.Fatalf("launch failure error = %v, want the child's own account of it", err)
+	}
+}
+
+func TestElevationLaunchErrorReportsSilentFailureAsSilent(t *testing.T) {
+	t.Parallel()
+	err := elevationLaunchError(context.Background(), errors.New("exit status 1"), []byte("  \r\n"))
+
+	if !strings.Contains(err.Error(), "produced no output") {
+		t.Fatalf("silent launch failure = %v, want the absent output stated", err)
+	}
+	if strings.Contains(err.Error(), "declined") {
+		t.Fatalf("silent launch failure blamed the operator: %v", err)
 	}
 }
 

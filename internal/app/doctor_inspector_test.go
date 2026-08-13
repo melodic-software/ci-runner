@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/host"
+	"github.com/melodic-software/ci-runner/internal/secret"
 )
 
 type stubDoctorACLVerifier struct {
@@ -62,6 +64,145 @@ func TestLocalDoctorInspectorRunsAndEnforcesBitLockerWhenExplicitlyIncluded(t *t
 	}
 	if check.Skipped || check.Healthy || !strings.Contains(check.Detail, "protection is off") {
 		t.Fatalf("opted-in BitLocker failure was weakened: %#v", check)
+	}
+}
+
+type deadlineRecordingBitLocker struct {
+	budget      time.Duration
+	hadDeadline bool
+	block       bool
+}
+
+func (v *deadlineRecordingBitLocker) VerifyProtected(ctx context.Context, _ string) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		v.hadDeadline = true
+		v.budget = time.Until(deadline)
+	}
+	if v.block {
+		<-ctx.Done()
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
+type deadlineRecordingSecrets struct {
+	budget     time.Duration
+	importedAt time.Time
+}
+
+func (s *deadlineRecordingSecrets) Inspect(ctx context.Context, _ string) (secret.ImportResult, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.budget = time.Until(deadline)
+	}
+	if err := ctx.Err(); err != nil {
+		return secret.ImportResult{}, err
+	}
+	return secret.ImportResult{Fingerprint: "sha256:fixture", ImportedAt: s.importedAt}, nil
+}
+
+type deadlineRecordingEngine struct {
+	budget time.Duration
+}
+
+func (e *deadlineRecordingEngine) probe(ctx context.Context) (string, string, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		e.budget = time.Until(deadline)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	return "linux", "amd64", nil
+}
+
+func TestLocalDoctorInspectorBudgetsTheElevatedProbeForHumanSpeed(t *testing.T) {
+	t.Parallel()
+	const machineBudget = 15 * time.Second
+	verifier := &deadlineRecordingBitLocker{}
+	inspector := &LocalDoctorInspector{
+		Config:    config.Config{Controller: config.Controller{LocalProbeTimeout: config.Duration{Duration: machineBudget}}},
+		BitLocker: verifier,
+	}
+
+	doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{IncludeElevated: true}), "bitlocker")
+
+	if !verifier.hadDeadline {
+		t.Fatal("elevated BitLocker probe ran with no deadline at all")
+	}
+	if verifier.budget <= machineBudget {
+		t.Fatalf("elevated probe budget = %s, want more than the %s machine-probe budget", verifier.budget, machineBudget)
+	}
+	if verifier.budget < defaultElevatedProbeTimeout-time.Minute {
+		t.Fatalf("elevated probe budget = %s, want the %s default when none is configured", verifier.budget, defaultElevatedProbeTimeout)
+	}
+}
+
+func TestLocalDoctorInspectorHonorsTheConfiguredElevatedProbeBudget(t *testing.T) {
+	t.Parallel()
+	const configured = 7 * time.Minute
+	verifier := &deadlineRecordingBitLocker{}
+	inspector := &LocalDoctorInspector{
+		Config: config.Config{Controller: config.Controller{
+			LocalProbeTimeout:    config.Duration{Duration: 15 * time.Second},
+			ElevatedProbeTimeout: config.Duration{Duration: configured},
+		}},
+		BitLocker: verifier,
+	}
+
+	doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{IncludeElevated: true}), "bitlocker")
+
+	if verifier.budget < configured-time.Minute || verifier.budget > configured {
+		t.Fatalf("elevated probe budget = %s, want the configured %s", verifier.budget, configured)
+	}
+}
+
+func TestLocalDoctorInspectorKeepsMachineChecksOffTheElevatedProbeBudget(t *testing.T) {
+	t.Parallel()
+	const machineBudget = 30 * time.Second
+	secrets := &deadlineRecordingSecrets{importedAt: time.Now().UTC().Add(-time.Hour)}
+	engine := &deadlineRecordingEngine{}
+	inspector := &LocalDoctorInspector{
+		Config: config.Config{
+			Controller: config.Controller{
+				LocalProbeTimeout:    config.Duration{Duration: machineBudget},
+				ElevatedProbeTimeout: config.Duration{Duration: 10 * time.Millisecond},
+			},
+			GitHub: config.GitHub{Targets: []config.Target{{ID: "organization", SecretID: "melodic-software-host"}}},
+		},
+		BitLocker: &deadlineRecordingBitLocker{block: true},
+		Secrets:   secrets,
+		Engine:    engine.probe,
+	}
+
+	checks := inspector.Inspect(context.Background(), DoctorInspection{IncludeElevated: true, CheckDocker: true})
+
+	if check := doctorCheckNamed(t, checks, "bitlocker"); check.Healthy {
+		t.Fatalf("elevated probe that never answered = %#v, want unhealthy", check)
+	}
+	if check := doctorCheckNamed(t, checks, "credential/melodic-software-host"); !check.Healthy {
+		t.Fatalf("credential check = %#v, want its real healthy observation", check)
+	}
+	if check := doctorCheckNamed(t, checks, "local-docker-engine"); !check.Healthy || !strings.Contains(check.Detail, "linux/amd64") {
+		t.Fatalf("docker engine check = %#v, want its real healthy observation", check)
+	}
+	if secrets.budget < machineBudget-time.Second || engine.budget < machineBudget-time.Second {
+		t.Fatalf("machine probes ran on %s and %s of budget, want their own %s", secrets.budget, engine.budget, machineBudget)
+	}
+}
+
+func TestLocalDoctorInspectorReportsAnExpiredElevatedProbeAsItsOwnDeadline(t *testing.T) {
+	t.Parallel()
+	inspector := &LocalDoctorInspector{
+		Config:    config.Config{Controller: config.Controller{ElevatedProbeTimeout: config.Duration{Duration: 10 * time.Millisecond}}},
+		BitLocker: &deadlineRecordingBitLocker{block: true},
+	}
+
+	check := doctorCheckNamed(t, inspector.Inspect(context.Background(), DoctorInspection{IncludeElevated: true}), "bitlocker")
+
+	if check.Healthy || !strings.Contains(check.Detail, "did not complete within its deadline") {
+		t.Fatalf("expired elevated probe = %#v, want the expired deadline named", check)
+	}
+	if strings.Contains(check.Detail, "declined") {
+		t.Fatalf("expired deadline reported as a declined UAC prompt: %q", check.Detail)
 	}
 }
 
