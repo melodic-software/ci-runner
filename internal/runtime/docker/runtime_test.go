@@ -1194,9 +1194,16 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	engine.setBlockLogs(true)
 	engine.addContainer("retry-evidence-worker", "completed", "running")
 	sink := &memoryArtifacts{}
+	artifacts := newDrainSignalingArtifacts(sink)
 	recorder := &recordingTelemetry{}
-	options := testOptions(sink)
-	options.FinalizationTimeout = 10 * time.Millisecond
+	options := testOptions(artifacts)
+	// The blocked stream never closes, so the first attempt times out whatever
+	// this is set to: the value is a bound on the retry's finalization tail --
+	// evidence, diagnostics, artifact finalize, container remove -- which runs
+	// under this deadline and cannot be ordered against it from the test side.
+	// It has to absorb however long those steps wait for CPU on a loaded host:
+	// a 20ms stall in the tail defeats 10ms and not 200ms.
+	options.FinalizationTimeout = 200 * time.Millisecond
 	options.Telemetry = recorder
 	runtime, err := New(engine, options)
 	if err != nil {
@@ -1208,7 +1215,7 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	}
 	first := runtime.watchForTest("retry-evidence-worker")
 	engine.signalExit("retry-evidence-worker")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := waitForWatch(ctx, first); err == nil || !strings.Contains(err.Error(), "log stream did not close") {
 		t.Fatalf("first finalization error = %v", err)
@@ -1221,10 +1228,14 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	}
 
 	engine.setBlockLogs(false)
+	artifacts.arm()
 	if _, err := runtime.List(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	second := runtime.watchForTest("retry-evidence-worker")
+	// The unblocked stream is a finite buffer that drains without waiting on
+	// container exit, so exit can be held until the drain has actually landed.
+	waitForSignal(t, artifacts.drained, "retry log stream did not drain")
 	engine.signalExit("retry-evidence-worker")
 	if err := waitForWatch(ctx, second); err != nil {
 		t.Fatalf("resource evidence retry failed: %v", err)
@@ -1864,6 +1875,60 @@ func (r *blockingFinalizationTelemetry) WorkerFinalized(ctx context.Context, poo
 	r.once.Do(func() { close(r.entered) })
 	<-r.release
 	r.recordingTelemetry.WorkerFinalized(ctx, poolID, value)
+}
+
+// captureLogs closes the sink's log writer as its last act before publishing
+// the capture result, so that close is the drain signal a test can wait on.
+// Signalling container exit before it lands opens the finalization deadline
+// against a log goroutine that may not have been scheduled yet, which fails as
+// a stream that never closed rather than as the defect under test.
+type drainSignalingArtifacts struct {
+	ArtifactSink
+	mu      sync.Mutex
+	armed   bool
+	drained chan struct{}
+	once    sync.Once
+}
+
+func newDrainSignalingArtifacts(inner ArtifactSink) *drainSignalingArtifacts {
+	return &drainSignalingArtifacts{ArtifactSink: inner, drained: make(chan struct{})}
+}
+
+// arm makes the next log close signal. Finalization attempts each close a log
+// writer, so a test arms between attempts to keep an earlier attempt's close
+// from satisfying the wait.
+func (s *drainSignalingArtifacts) arm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+}
+
+func (s *drainSignalingArtifacts) OpenLog(ctx context.Context, metadata ArtifactMetadata) (io.WriteCloser, error) {
+	writer, err := s.ArtifactSink.OpenLog(ctx, metadata)
+	if err != nil {
+		return nil, err
+	}
+	return &signalingWriteCloser{WriteCloser: writer, closed: s.signalDrained}, nil
+}
+
+func (s *drainSignalingArtifacts) signalDrained() {
+	s.mu.Lock()
+	armed := s.armed
+	s.mu.Unlock()
+	if armed {
+		s.once.Do(func() { close(s.drained) })
+	}
+}
+
+type signalingWriteCloser struct {
+	io.WriteCloser
+	closed func()
+}
+
+func (w *signalingWriteCloser) Close() error {
+	err := w.WriteCloser.Close()
+	w.closed()
+	return err
 }
 
 type shutdownPhaseEngine struct {
