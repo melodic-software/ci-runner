@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-12T06:20:00.0000000Z",
-  "issue": 233,
-  "cycle": "2026-08-12",
+  "reviewedAt": "2026-08-13T00:00:00.0000000Z",
+  "issue": 240,
+  "cycle": "2026-08-13",
   "held": [],
   "bumped": [
     {
       "dependency": "repository-pin:melodic-software/ci-workflows",
-      "from": "e94438746c300b02385a7f8a2a2dcd19a7f4ad4a",
-      "fromVersion": "v0.10.2",
-      "to": "036c3909885da6efaff7e76b676d97ae9450067d",
-      "toVersion": "v0.13.0",
+      "from": "036c3909885da6efaff7e76b676d97ae9450067d",
+      "fromVersion": "v0.13.0",
+      "to": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
+      "toVersion": "v0.14.2",
       "decision": "bump",
-      "rationale": "Dedicated compatibility absorb of main tip after v0.10.2 hold. Tagged melodic-software/ci-workflows@v0.13.0 at 036c390 for pin identity. Includes select-runner offline-capacity surfacing and pr-issue-linkage Summary/Fix/Verification contract."
+      "rationale": "Repairs a phantom pin identity: v0.13.0 exists upstream as neither a tag nor a Release, so the 21 reviewed references named a version online pin verification cannot resolve. v0.14.2 is a published Release pointing exactly at 7107b34. Reachability review of the 17-commit delta found select-runner prefer-hosted-while-free unreachable (every ci-runner job hardcodes runs-on), and the Claude review lanes unreachable (workflow_call reusables with no caller here). The only behavioral change reaching this repository is release-asset resilience in the composite lint actions: an actions/cache layer plus a widened curl retry budget."
     }
   ]
 }
