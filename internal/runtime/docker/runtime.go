@@ -839,7 +839,13 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 			if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
 				return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
 			}
-			r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
+			// A worker torn down while idle never ran the job-completed hook that
+			// writes terminal cgroup evidence, so Docker reports the path absent.
+			// That is the routine scale-down outcome, not a copy failure, and
+			// reporting it would mask the transport failures this error surfaces.
+			if !cerrdefs.IsNotFound(err) {
+				r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
+			}
 		} else {
 			content, extractErr := readSingleRegularArchive(result.Content, maximumResourceEvidenceBytes)
 			closeErr := result.Content.Close()

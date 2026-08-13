@@ -376,6 +376,76 @@ func TestResourceEvidenceCopyFailurePersistsFallbackWithoutBlockingDiagnostics(t
 	}
 }
 
+func TestResourceEvidenceAbsenceAndTransportFailureAreClassifiedDifferently(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		copyErr      error
+		wantReported bool
+	}{
+		{
+			name:    "absent evidence after idle teardown",
+			copyErr: cerrdefs.ErrNotFound.WithMessage("Could not find the file " + defaultResourceEvidencePath + " in container absent-evidence-worker"),
+		},
+		{
+			name:         "genuine copy failure",
+			copyErr:      errors.New("RWLayer of container is unexpectedly nil"),
+			wantReported: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			engine := newFakeEngine()
+			engine.resourceCopyErr = test.copyErr
+			sink := &memoryArtifacts{}
+			var reported []error
+			options := testOptions(sink)
+			options.OnError = func(err error) { reported = append(reported, err) }
+			runtime, err := New(engine, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeRuntime(t, runtime)
+			worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+				PoolID: "org", Name: "worker", ResourceTier: "default",
+				JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+				Limits:    config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			watch := runtime.watchForTest(worker.ID)
+			engine.signalExit(worker.ID)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := waitForWatch(ctx, watch); err != nil {
+				t.Fatalf("bounded resource fallback blocked finalization: %v", err)
+			}
+			var evidenceReports []error
+			for _, err := range reported {
+				if strings.Contains(err.Error(), "copy terminal worker resource evidence") {
+					evidenceReports = append(evidenceReports, err)
+				}
+			}
+			if test.wantReported && len(evidenceReports) != 1 {
+				t.Fatalf("evidence reports = %#v, want exactly one runtime error", evidenceReports)
+			}
+			if !test.wantReported && len(evidenceReports) != 0 {
+				t.Fatalf("evidence reports = %#v, want absence reported as no runtime error", evidenceReports)
+			}
+			if engine.hasContainer(worker.ID) {
+				t.Fatal("finalized worker was retained after bounded resource fallback")
+			}
+			sink.mu.Lock()
+			defer sink.mu.Unlock()
+			if len(sink.resources) != 1 || sink.resources[0].Status != "unavailable" || sink.resources[0].Reason != "docker-copy-unavailable" {
+				t.Fatalf("resource fallbacks = %#v", sink.resources)
+			}
+		})
+	}
+}
+
 func TestValidLogMarkerAvoidsPostExitArchiveFailure(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
