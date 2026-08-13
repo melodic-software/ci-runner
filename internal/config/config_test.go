@@ -174,6 +174,45 @@ func TestValidateRejectsNegativeWorkerImagePullTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadOptionalElevatedProbeTimeout(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "  localProbeTimeout: 15s\n", "  localProbeTimeout: 15s\n  elevatedProbeTimeout: 3m\n", 1)
+	if input == validYAML {
+		t.Fatal("test fixture did not contain the expected controller block")
+	}
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Controller.ElevatedProbeTimeout.Duration != 3*time.Minute {
+		t.Fatalf("controller.elevatedProbeTimeout = %s, want 3m", cfg.Controller.ElevatedProbeTimeout.Duration)
+	}
+	omitted, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if omitted.Controller.ElevatedProbeTimeout.Duration != 0 {
+		t.Fatalf("controller.elevatedProbeTimeout (omitted) = %s, want zero so the consumer's default applies", omitted.Controller.ElevatedProbeTimeout.Duration)
+	}
+}
+
+// TestValidateRejectsNegativeElevatedProbeTimeout mirrors
+// TestValidateRejectsNegativeWorkerImagePullTimeout: the value is optional, so
+// Validate is the only guard against a negative one reaching a consumer, and
+// only a non-YAML construction can produce it.
+func TestValidateRejectsNegativeElevatedProbeTimeout(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Controller.ElevatedProbeTimeout.Duration = -time.Minute
+	validateErr := cfg.Validate()
+	if validateErr == nil || !strings.Contains(validateErr.Error(), "controller.elevatedProbeTimeout") {
+		t.Fatalf("validate error = %v, want controller.elevatedProbeTimeout rejection", validateErr)
+	}
+}
+
 func TestLoadLegacySchemaVersionOneDefaultsMemoryCapacityIncreaseMarginToZero(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1)

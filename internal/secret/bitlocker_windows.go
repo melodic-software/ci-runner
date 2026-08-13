@@ -138,13 +138,27 @@ func verifyBitLockerElevated(ctx context.Context, powerShell, volume string) err
 	outerScript := elevatedBitLockerLauncherScript(powerShell, arguments)
 	out, err := runPowerShell(ctx, powerShell, outerScript)
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			detail = "the UAC prompt may have been declined"
-		}
-		return fmt.Errorf("start elevated Get-BitLockerVolume: %w (%s)", err, detail)
+		return elevationLaunchError(ctx, err, out)
 	}
 	return parseElevatedBitLockerExit(out)
+}
+
+// elevationLaunchError separates a launcher killed because its own context
+// expired from a launcher that genuinely failed. Both surface as a non-zero
+// child exit -- exec terminates the child on context expiry and then reports
+// the resulting process status -- so only the context discriminates them, and
+// a deadline kill reported as a launch failure sends the operator after the
+// wrong cause. Nothing here explains why a genuine failure failed: a declined
+// prompt writes Windows' own account of it to the captured output, and empty
+// output is reported as empty rather than guessed at.
+func elevationLaunchError(ctx context.Context, runErr error, out []byte) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return fmt.Errorf("elevated Get-BitLockerVolume did not complete: %w", cause)
+	}
+	if detail := strings.TrimSpace(string(out)); detail != "" {
+		return fmt.Errorf("start elevated Get-BitLockerVolume: %w (%s)", runErr, detail)
+	}
+	return fmt.Errorf("start elevated Get-BitLockerVolume: %w (the launcher produced no output)", runErr)
 }
 
 func elevatedBitLockerLauncherScript(powerShell, arguments string) string {

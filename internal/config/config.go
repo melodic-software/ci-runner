@@ -118,6 +118,14 @@ type Controller struct {
 	// which is far beyond what the other local probes need; one budget sized for
 	// it would slow every probe. Optional — zero falls back to LocalProbeTimeout.
 	DesktopProbeTimeout Duration `yaml:"desktopProbeTimeout"`
+	// ElevatedProbeTimeout bounds the doctor's elevated BitLocker probe alone.
+	// That probe blocks on an Administrator UAC prompt on the secure desktop, so
+	// its deadline has to span a person noticing and answering it, where every
+	// other local probe is machine-speed. One budget sized for a human would
+	// blind all of them to a hung host, and one sized for a machine makes the
+	// elevated probe unpassable. Optional — zero falls back to the doctor's own
+	// human-scaled default.
+	ElevatedProbeTimeout Duration `yaml:"elevatedProbeTimeout"`
 }
 
 type Release struct {
@@ -574,6 +582,9 @@ func (c Config) Validate() error {
 	}
 	if c.Controller.DesktopProbeTimeout.Duration < 0 {
 		add(errors.New("controller.desktopProbeTimeout: must not be negative"))
+	}
+	if c.Controller.ElevatedProbeTimeout.Duration < 0 {
+		add(errors.New("controller.elevatedProbeTimeout: must not be negative"))
 	}
 	add(validateSafeAbsolutePath("release.compatibilityManifest", c.Release.CompatibilityManifest, false))
 	if len(c.GitHub.Targets) == 0 {

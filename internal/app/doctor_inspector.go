@@ -19,6 +19,23 @@ import (
 
 const maximumDoctorACLEntries = 100_000
 
+// defaultElevatedProbeTimeout budgets the doctor's one elevated check on human
+// time rather than machine time. It spans the whole sequence the operator sits
+// through: the secure-desktop transition, a person noticing the prompt and
+// answering it, an elevated Windows PowerShell starting, and the BitLocker
+// module import plus CIM query behind Get-BitLockerVolume. The human term
+// dominates and the machine terms are seconds, so this is deliberately far
+// above controller.localProbeTimeout, which bounds probes no person
+// participates in and stays short so a hung host is detected quickly.
+// controller.elevatedProbeTimeout overrides it per host.
+const defaultElevatedProbeTimeout = 2 * time.Minute
+
+// errElevatedProbeTimedOut is the cause attached to the elevated probe's
+// context. The bare DeadlineExceeded sentinel serves every deadline and so
+// cannot say which one expired, and the probe's callee cannot see the doctor's
+// budgets at all -- it reports whatever cause the context carries.
+var errElevatedProbeTimedOut = errors.New("elevated host probe did not complete within its deadline, which spans answering the Administrator UAC prompt")
+
 type doctorACLVerifier interface {
 	Verify(string) error
 }
@@ -70,20 +87,6 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 		})
 	}
 
-	if !request.IncludeElevated {
-		checks = append(checks, DoctorCheck{
-			Name:    "bitlocker",
-			Skipped: true,
-			Detail:  "requires an elevated BitLocker status probe that may open an Administrator UAC prompt; rerun with --include-elevated to perform it",
-		})
-	} else if i.BitLocker == nil {
-		checks = append(checks, DoctorCheck{Name: "bitlocker", Healthy: false, Detail: "BitLocker verifier is unavailable"})
-	} else if err := i.BitLocker.VerifyProtected(ctx, i.Config.Paths.Secrets); err != nil {
-		checks = append(checks, DoctorCheck{Name: "bitlocker", Healthy: false, Detail: err.Error()})
-	} else {
-		checks = append(checks, DoctorCheck{Name: "bitlocker", Healthy: true, Detail: "secret volume is fully encrypted and protection is on"})
-	}
-
 	aclRoots := []struct {
 		name string
 		path string
@@ -125,7 +128,9 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 			checks = append(checks, DoctorCheck{Name: "credential/" + id, Healthy: false, Detail: "secret inspector is unavailable"})
 			continue
 		}
-		metadata, err := i.Secrets.Inspect(ctx, id)
+		probeContext, cancelProbe := i.probe(ctx)
+		metadata, err := i.Secrets.Inspect(probeContext, id)
+		cancelProbe()
 		if err != nil {
 			checks = append(checks, DoctorCheck{Name: "credential/" + id, Healthy: false, Detail: err.Error()})
 			continue
@@ -148,7 +153,9 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 	} else if i.Engine == nil {
 		checks = append(checks, DoctorCheck{Name: "local-docker-engine", Healthy: false, Detail: "fixed-endpoint Docker Engine probe is unavailable"})
 	} else {
-		operatingSystem, architecture, err := i.Engine(ctx)
+		probeContext, cancelProbe := i.probe(ctx)
+		operatingSystem, architecture, err := i.Engine(probeContext)
+		cancelProbe()
 		healthy := err == nil && operatingSystem == "linux" && (architecture == "amd64" || architecture == "x86_64")
 		detail := fmt.Sprintf("fixed local endpoint reports %s/%s", displayValue(operatingSystem), displayValue(architecture))
 		if err != nil {
@@ -164,7 +171,53 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 		Skipped: true,
 		Detail:  "not performed by doctor because JIT creation mutates GitHub runner inventory; the first enable on a rolling-host rollout performs this proof under real traffic",
 	})
-	return checks
+	return append(checks, i.bitLockerCheck(ctx, request))
+}
+
+// bitLockerCheck runs last because it is the only check that can block on a
+// person: every other result is computed and recorded before the UAC prompt
+// takes the screen, so a slow or unanswered prompt costs nothing but its own
+// row.
+func (i *LocalDoctorInspector) bitLockerCheck(ctx context.Context, request DoctorInspection) DoctorCheck {
+	switch {
+	case !request.IncludeElevated:
+		return DoctorCheck{
+			Name:    "bitlocker",
+			Skipped: true,
+			Detail:  "requires an elevated BitLocker status probe that may open an Administrator UAC prompt; rerun with --include-elevated to perform it",
+		}
+	case i.BitLocker == nil:
+		return DoctorCheck{Name: "bitlocker", Healthy: false, Detail: "BitLocker verifier is unavailable"}
+	}
+	probeContext, cancelProbe := i.elevatedProbe(ctx)
+	defer cancelProbe()
+	if err := i.BitLocker.VerifyProtected(probeContext, i.Config.Paths.Secrets); err != nil {
+		return DoctorCheck{Name: "bitlocker", Healthy: false, Detail: err.Error()}
+	}
+	return DoctorCheck{Name: "bitlocker", Healthy: true, Detail: "secret volume is fully encrypted and protection is on"}
+}
+
+// probe derives one check's deadline from the caller's context so no check can
+// spend another's budget: on a single shared deadline the first probe to
+// exhaust it leaves every later check failing on a spent context without ever
+// running.
+func (i *LocalDoctorInspector) probe(ctx context.Context) (context.Context, context.CancelFunc) {
+	return budgetedProbe(ctx, i.Config.Controller.LocalProbeTimeout.Duration, host.ErrProbeTimedOut)
+}
+
+func (i *LocalDoctorInspector) elevatedProbe(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := i.Config.Controller.ElevatedProbeTimeout.Duration
+	if budget <= 0 {
+		budget = defaultElevatedProbeTimeout
+	}
+	return budgetedProbe(ctx, budget, errElevatedProbeTimedOut)
+}
+
+func budgetedProbe(ctx context.Context, budget time.Duration, cause error) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeoutCause(ctx, budget, cause)
 }
 
 // pendingRebootCheck surfaces pending-OS-reboot state as advisory only: with
