@@ -8,6 +8,13 @@ values, and resolution order are defined upstream in
 rule that makes this reviewed file the recorded baseline are defined in
 <https://github.com/melodic-software/claude-code-plugins/blob/main/docs/conventions/loop-lane/README.md>.
 
+`pr_body_required_sections` below mirrors what the required `pr-issue-linkage / pr-issue-linkage`
+check enforces, and that gate is authoritative:
+[`.github/workflows/pr-issue-linkage.yml`](../.github/workflows/pr-issue-linkage.yml) states the
+contract in full, including the closing-keyword (or `No linked issue`) requirement this key's
+grammar cannot express. The key is a closed literal list of heading names with no pointer form, so
+the headings are necessarily restated here — never move them independently of that gate.
+
 ## babysit_loop_stop_mode
 
 standing
@@ -27,5 +34,6 @@ c3-autonomous
 ## pr_body_required_sections
 
 - Summary
-- Test plan
+- Fix
+- Verification
 - Related
