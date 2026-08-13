@@ -1198,10 +1198,11 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	recorder := &recordingTelemetry{}
 	options := testOptions(artifacts)
 	// The blocked stream never closes, so the first attempt times out whatever
-	// this is set to: the value is a bound on the retry's in-memory finalization
-	// work, not a threshold either attempt is tuned against. It has to absorb
-	// however long a runnable goroutine waits for CPU on a loaded host, which
-	// 10ms did not.
+	// this is set to: the value is a bound on the retry's finalization tail --
+	// evidence, diagnostics, artifact finalize, container remove -- which runs
+	// under this deadline and cannot be ordered against it from the test side.
+	// It has to absorb however long those steps wait for CPU on a loaded host:
+	// a 20ms stall in the tail defeats 10ms and not 200ms.
 	options.FinalizationTimeout = 200 * time.Millisecond
 	options.Telemetry = recorder
 	runtime, err := New(engine, options)
