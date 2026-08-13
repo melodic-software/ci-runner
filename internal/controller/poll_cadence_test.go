@@ -491,7 +491,10 @@ func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) 
 		t.Fatal(err)
 	}
 	harness := newHarness(t, model.ModeEnabled)
-	harness.controller.deps.Telemetry = recorder
+	parking := newCheckpointParkingRecorder(recorder, func(pools []telemetry.CapacityCheckpointPool) bool {
+		return len(pools) == 1 && !pools[0].CapacityAcknowledged
+	})
+	harness.controller.deps.Telemetry = parking
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
 	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
@@ -513,8 +516,6 @@ func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) 
 
 	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 41 << 30, CPUUtilizationPercent: 10}}
 	harness.controller.deps.Resources = resources
-	notifying := &notifyingStateStore{StateStore: harness.store, saved: make(chan model.ObservedState, 8)}
-	harness.controller.deps.State = notifying
 	blocking := newFirstBlockingScaleSet(harness.scaleSets)
 	harness.controller.deps.ScaleSets = blocking
 	ctx, cancel := context.WithCancel(context.Background())
@@ -527,17 +528,11 @@ func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) 
 	waitForSignal(t, blocking.entered, "memory-funded listener poll did not begin")
 
 	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
-	var checkpointGauge int64 = -1
-	waitForObserved(t, notifying.saved, func(observed model.ObservedState) bool {
-		if len(observed.Pools) != 1 || observed.Pools[0].CapacityAcknowledged {
-			return false
-		}
-		checkpointGauge = capacityAcknowledgedGauge(t, reader)
-		return true
-	}, "pending acknowledgement was not checkpointed before poll supersession")
-	if checkpointGauge != 0 {
-		t.Fatalf("checkpoint gauge after durable poll checkpoint = %d, want 0", checkpointGauge)
+	waitForSignal(t, parking.entered, "pending acknowledgement was not checkpointed before poll supersession")
+	if got := capacityAcknowledgedGauge(t, reader); got != 0 {
+		t.Fatalf("checkpoint gauge after durable poll checkpoint = %d, want 0", got)
 	}
+	parking.release()
 
 	cancel()
 	select {
@@ -880,6 +875,50 @@ func (s *notifyingStateStore) SaveObserved(ctx context.Context, observed model.O
 	default:
 	}
 	return nil
+}
+
+// persistPollCheckpoint publishes the capacity gauges only after the durable
+// save lands, so the state-store save is not an observation point for them: a
+// test woken by SaveObserved races the recorder and reads the prior gauge
+// value. Parking the reconcile goroutine inside the matching recorder call
+// instead pins the gauges at the checkpoint under assertion, out of reach of
+// the next cadence-driven checkpoint.
+type checkpointParkingRecorder struct {
+	telemetry.Recorder
+	matches  func([]telemetry.CapacityCheckpointPool) bool
+	entered  chan struct{}
+	released chan struct{}
+	mu       sync.Mutex
+	parked   bool
+}
+
+func newCheckpointParkingRecorder(inner telemetry.Recorder, matches func([]telemetry.CapacityCheckpointPool) bool) *checkpointParkingRecorder {
+	return &checkpointParkingRecorder{
+		Recorder: inner, matches: matches,
+		entered: make(chan struct{}), released: make(chan struct{}),
+	}
+}
+
+func (r *checkpointParkingRecorder) RecordCapacityCheckpoint(ctx context.Context, heartbeatAt time.Time, pools []telemetry.CapacityCheckpointPool) {
+	r.Recorder.RecordCapacityCheckpoint(ctx, heartbeatAt, pools)
+	r.mu.Lock()
+	park := !r.parked && r.matches(pools)
+	r.parked = r.parked || park
+	r.mu.Unlock()
+	if !park {
+		return
+	}
+	close(r.entered)
+	// Cancellation is the escape hatch: a failing assertion unwinds through the
+	// test's deferred cancel rather than wedging until the package timeout.
+	select {
+	case <-r.released:
+	case <-ctx.Done():
+	}
+}
+
+func (r *checkpointParkingRecorder) release() {
+	close(r.released)
 }
 
 // The long-poll checkpoint is the second observed-state writer. An operator
