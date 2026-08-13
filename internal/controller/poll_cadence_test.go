@@ -495,6 +495,7 @@ func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) 
 		return len(pools) == 1 && !pools[0].CapacityAcknowledged
 	})
 	harness.controller.deps.Telemetry = parking
+	defer parking.release()
 	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
 	now := harness.now
 	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
@@ -888,6 +889,7 @@ type checkpointParkingRecorder struct {
 	matches  func([]telemetry.CapacityCheckpointPool) bool
 	entered  chan struct{}
 	released chan struct{}
+	releases sync.Once
 	mu       sync.Mutex
 	parked   bool
 }
@@ -909,16 +911,17 @@ func (r *checkpointParkingRecorder) RecordCapacityCheckpoint(ctx context.Context
 		return
 	}
 	close(r.entered)
-	// Cancellation is the escape hatch: a failing assertion unwinds through the
-	// test's deferred cancel rather than wedging until the package timeout.
 	select {
 	case <-r.released:
 	case <-ctx.Done():
 	}
 }
 
+// Callers release explicitly once the parked state has been observed and defer
+// a second call, so an assertion that fails while the reconcile goroutine is
+// parked unwinds instead of wedging until the package timeout.
 func (r *checkpointParkingRecorder) release() {
-	close(r.released)
+	r.releases.Do(func() { close(r.released) })
 }
 
 // The long-poll checkpoint is the second observed-state writer. An operator
