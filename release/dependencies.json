@@ -22,11 +22,11 @@
     "source": "https://github.com/moby/buildkit/releases/tag/v0.32.2"
   },
   "buildKitSbomScanner": {
-    "version": "1.11.0",
-    "image": "docker/buildkit-syft-scanner:1.11.0",
-    "digest": "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68",
-    "linuxAmd64Digest": "sha256:13864237fb990943433f89d698590aad1de38d4a7e13d38e7b12f2488c1952e7",
-    "source": "https://github.com/docker/buildkit-syft-scanner/releases/tag/v1.11.0"
+    "version": "1.12.0",
+    "image": "docker/buildkit-syft-scanner:1.12.0",
+    "digest": "sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9",
+    "linuxAmd64Digest": "sha256:187e1892a7752c9384c59aba9517dd8e40610b748c72773e87b63720514463c2",
+    "source": "https://github.com/docker/buildkit-syft-scanner/releases/tag/v1.12.0"
   },
   "scaleSetClient": {
     "version": "0.4.0",
