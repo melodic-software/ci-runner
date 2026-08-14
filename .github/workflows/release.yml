@@ -212,13 +212,13 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: mode=max
-          sbom: generator=docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+          sbom: generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
 
       - name: Verify exact registry worker candidate and attestations
         if: ${{ steps.release.outputs.exists != 'true' }}
         env:
           WORKER_CANDIDATE: ghcr.io/${{ github.repository }}@${{ steps.worker.outputs.digest }}
-          SCANNER_MANIFEST_DIGEST: sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+          SCANNER_MANIFEST_DIGEST: sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
         run: |
           set -Eeuo pipefail
           docker pull "$WORKER_CANDIDATE"
