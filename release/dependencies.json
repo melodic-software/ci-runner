@@ -55,8 +55,8 @@
     "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/762deea5bafc5981af76507cbdd88ae20bf191cd/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "govulncheck": {
-    "version": "1.6.0",
-    "source": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.6.0.info"
+    "version": "1.7.0",
+    "source": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.7.0.info"
   },
   "actionlint": {
     "version": "1.7.12",
