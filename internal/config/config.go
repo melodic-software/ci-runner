@@ -333,8 +333,14 @@ type Paths struct {
 // `ci-runner host health-watch check`. Every field is optional; Load applies
 // documented defaults when omitted.
 type HealthWatchdog struct {
-	AlertWebhook             string   `yaml:"alertWebhook"`
-	CheckInterval            Duration `yaml:"checkInterval"`
+	AlertWebhook  string   `yaml:"alertWebhook"`
+	CheckInterval Duration `yaml:"checkInterval"`
+	// HeartbeatStaleMultiplier scales controller.reconcileInterval into the
+	// stale-heartbeat threshold. The effective threshold never drops below
+	// the host's derived observed-state freshness bound — the same bound
+	// doctor's observed-state check uses — because heartbeat age within that
+	// bound is legitimate load, not failure; raise the multiplier only to
+	// tolerate staleness beyond it.
 	HeartbeatStaleMultiplier int      `yaml:"heartbeatStaleMultiplier"`
 	WorkerDivergenceGrace    Duration `yaml:"workerDivergenceGrace"`
 	// JobsSizeWarningPercent thresholds the encoded size of the jobs.json

@@ -47,23 +47,25 @@ func TestHealthWatchCheckJSONReportsUnhealthy(t *testing.T) {
 		HeartbeatAt:   now.Add(-time.Minute),
 	})
 	var out, errOut bytes.Buffer
-	application, err := New(Dependencies{
-		Config: config.Config{
-			Host: config.Host{ID: "melo-desk-001"},
-			Controller: config.Controller{
-				ReconcileInterval: config.Duration{Duration: 5 * time.Second},
-			},
-			HealthWatchdog: config.HealthWatchdog{
-				HeartbeatStaleMultiplier: 3,
-				WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
-				JobsSizeWarningPercent:   90,
-				AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
-			},
-			Paths: config.Paths{State: t.TempDir()},
+	cfg := config.Config{
+		Host: config.Host{ID: "melo-desk-001"},
+		Controller: config.Controller{
+			ReconcileInterval: config.Duration{Duration: 5 * time.Second},
 		},
-		Store: store,
-		Jobs:  newHealthWatchJobsStore(t),
-		Now:   func() time.Time { return now },
+		HealthWatchdog: config.HealthWatchdog{
+			HeartbeatStaleMultiplier: 3,
+			WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
+			JobsSizeWarningPercent:   90,
+			AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
+		},
+		Paths: config.Paths{State: t.TempDir()},
+	}
+	application, err := New(Dependencies{
+		Config: cfg,
+		Store:  store,
+		Jobs:   newHealthWatchJobsStore(t),
+		ACL:    secret.NewAccessController(),
+		Now:    func() time.Time { return now },
 	}, strings.NewReader(""), &out, &errOut)
 	if err != nil {
 		t.Fatal(err)
@@ -71,8 +73,13 @@ func TestHealthWatchCheckJSONReportsUnhealthy(t *testing.T) {
 
 	originalNewChecker := initHealthWatchChecker
 	initHealthWatchChecker = func(deps healthwatch.Dependencies) (*healthwatch.Checker, error) {
+		if deps.HeartbeatFreshnessFloor != observedFreshnessLimit(cfg) {
+			t.Errorf("heartbeat freshness floor = %s, want observedFreshnessLimit %s", deps.HeartbeatFreshnessFloor, observedFreshnessLimit(cfg))
+		}
+		if sidecar, ok := deps.Sidecar.(healthwatch.FileSidecar); !ok || sidecar.ACL == nil {
+			t.Errorf("sidecar = %#v, want a FileSidecar carrying the app's access controller", deps.Sidecar)
+		}
 		deps.Inventory = healthWatchInventory{}
-		deps.Sidecar = healthwatch.NewFileSidecar(deps.Config.Paths.State + "/health-watch.json")
 		return healthwatch.NewChecker(deps)
 	}
 	t.Cleanup(func() { initHealthWatchChecker = originalNewChecker })

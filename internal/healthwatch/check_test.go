@@ -131,6 +131,106 @@ func TestCheckFlagsStaleHeartbeat(t *testing.T) {
 	}
 }
 
+func testCheckerWithHeartbeatFloor(t *testing.T, store state.Store, floor time.Duration, multiplier int, now time.Time) *Checker {
+	t.Helper()
+	checker, err := NewChecker(Dependencies{
+		Now: func() time.Time { return now },
+		Config: config.Config{
+			Host: config.Host{ID: "melo-desk-001"},
+			Controller: config.Controller{
+				ReconcileInterval: config.Duration{Duration: 5 * time.Second},
+			},
+			HealthWatchdog: config.HealthWatchdog{
+				HeartbeatStaleMultiplier: multiplier,
+				WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
+				JobsSizeWarningPercent:   90,
+				AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
+			},
+		},
+		Store:                   store,
+		Inventory:               fakeInventory{},
+		JobsFile:                fakeJobsFile{},
+		Sidecar:                 &memorySidecar{},
+		HeartbeatFreshnessFloor: floor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checker
+}
+
+func observedWithHeartbeatAge(t *testing.T, now time.Time, age time.Duration) state.Store {
+	t.Helper()
+	store := state.NewMemoryStore()
+	if err := store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseReady,
+		HeartbeatAt:   now.Add(-age),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+// TestCheckHeartbeatToleratesLoadStretchedAgeUnderTheFloor pins the #270
+// regression shape: a 24s heartbeat age at a 5s reconcile interval — observed
+// on a healthy host while a job ran — stays healthy because the threshold is
+// floored at the derived freshness bound even though the configured
+// multiplier alone would put it at 15s.
+func TestCheckHeartbeatToleratesLoadStretchedAgeUnderTheFloor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	checker := testCheckerWithHeartbeatFloor(t, observedWithHeartbeatAge(t, now, 24*time.Second), 790*time.Second, 3, now)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || len(result.Findings) != 0 {
+		t.Fatalf("result = %#v, want healthy under load-stretched heartbeat age", result)
+	}
+}
+
+func TestCheckHeartbeatStillFiresPastTheFloor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	checker := testCheckerWithHeartbeatFloor(t, observedWithHeartbeatAge(t, now, 900*time.Second), 790*time.Second, 3, now)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "stale-heartbeat" {
+		t.Fatalf("result = %#v, want stale heartbeat past the floor", result)
+	}
+}
+
+// TestCheckHeartbeatKeepsConfiguredThresholdAboveTheFloor proves the floor is
+// a lower bound, not a replacement: a multiplier whose threshold exceeds the
+// floor keeps that larger threshold.
+func TestCheckHeartbeatKeepsConfiguredThresholdAboveTheFloor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	// multiplier 300 x 5s = 1500s, above the 790s floor.
+	checker := testCheckerWithHeartbeatFloor(t, observedWithHeartbeatAge(t, now, 900*time.Second), 790*time.Second, 300, now)
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || len(result.Findings) != 0 {
+		t.Fatalf("result = %#v, want healthy under the configured threshold", result)
+	}
+
+	checker = testCheckerWithHeartbeatFloor(t, observedWithHeartbeatAge(t, now, 1600*time.Second), 790*time.Second, 300, now)
+	result, err = checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "stale-heartbeat" {
+		t.Fatalf("result = %#v, want stale heartbeat past the configured threshold", result)
+	}
+}
+
 func TestCheckFlagsWorkerDivergenceAfterGrace(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)

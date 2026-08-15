@@ -40,14 +40,24 @@ func (a *Application) healthWatchCheck(ctx context.Context, args []string) int {
 		writeln(a.errOut, "job index store is required for health watch")
 		return ExitRuntime
 	}
+	sidecar, err := healthwatch.NewFileSidecar(filepath.Join(a.dependencies.Config.Paths.State, "health-watch.json"), a.dependencies.ACL)
+	if err != nil {
+		writef(a.errOut, "initialize health watch sidecar: %v\n", err)
+		return ExitRuntime
+	}
+	if err := sidecar.EnsureHardened(ctx); err != nil {
+		writef(a.errOut, "harden health watch sidecar: %v\n", err)
+		return ExitRuntime
+	}
 	checker, err := initHealthWatchChecker(healthwatch.Dependencies{
-		Now:       a.dependencies.Now,
-		Config:    a.dependencies.Config,
-		Store:     a.dependencies.Store,
-		Inventory: healthwatch.NewDockerInventory(buildinfo.Version),
-		JobsFile:  healthwatch.StoreJobsFile{Source: a.dependencies.Jobs},
-		Sidecar:   healthwatch.NewFileSidecar(filepath.Join(a.dependencies.Config.Paths.State, "health-watch.json")),
-		Alert:     healthwatch.NewWebhookAlerter(a.dependencies.Config.HealthWatchdog.AlertWebhook),
+		Now:                     a.dependencies.Now,
+		Config:                  a.dependencies.Config,
+		Store:                   a.dependencies.Store,
+		Inventory:               healthwatch.NewDockerInventory(buildinfo.Version),
+		JobsFile:                healthwatch.StoreJobsFile{Source: a.dependencies.Jobs},
+		Sidecar:                 sidecar,
+		Alert:                   healthwatch.NewWebhookAlerter(a.dependencies.Config.HealthWatchdog.AlertWebhook),
+		HeartbeatFreshnessFloor: observedFreshnessLimit(a.dependencies.Config),
 	})
 	if err != nil {
 		writef(a.errOut, "initialize health watch checker: %v\n", err)

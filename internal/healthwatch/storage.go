@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/melodic-software/ci-runner/internal/jobindex"
+	statefs "github.com/melodic-software/ci-runner/internal/state/fs"
 )
 
 var (
@@ -50,12 +51,50 @@ func (f StoreJobsFile) Snapshot(ctx context.Context) (JobsSnapshot, error) {
 	return JobsSnapshot{SizeBytes: int64(len(contents)), Catalog: catalog}, nil
 }
 
-type FileSidecar struct {
-	Path string
+// AccessController hardens and verifies state-file ACLs. It is the same
+// controller every other state-directory writer uses
+// (secret.NewAccessController): on Windows a protected-inheritance DACL of
+// SYSTEM plus the current user, elsewhere 0700/0600 permissions.
+type AccessController interface {
+	Harden(string) error
+	Verify(string) error
 }
 
-func NewFileSidecar(path string) FileSidecar {
-	return FileSidecar{Path: path}
+type FileSidecar struct {
+	Path string
+	ACL  AccessController
+}
+
+func NewFileSidecar(path string, acl AccessController) (FileSidecar, error) {
+	if acl == nil {
+		return FileSidecar{}, errors.New("health watch sidecar requires an access controller")
+	}
+	return FileSidecar{Path: path, ACL: acl}, nil
+}
+
+// EnsureHardened converges an existing sidecar file onto the ACL a current
+// Save commits. Saves before #269 left the file with unprotected inheritance,
+// and no later save is guaranteed to correct it — the sidecar only changes on
+// divergence transitions and alert receipts — so each check converges the
+// file instead of leaving doctor's acl/state gate failing until an organic
+// save lands. A missing file needs nothing.
+func (s FileSidecar) EnsureHardened(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(s.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect health watch sidecar: %w", err)
+	}
+	if err := s.ACL.Harden(s.Path); err != nil {
+		return fmt.Errorf("secure health watch sidecar ACL: %w", err)
+	}
+	if err := s.ACL.Verify(s.Path); err != nil {
+		return fmt.Errorf("verify health watch sidecar ACL: %w", err)
+	}
+	return nil
 }
 
 func (s FileSidecar) Load(ctx context.Context) (Sidecar, error) {
@@ -79,35 +118,72 @@ func (s FileSidecar) Load(ctx context.Context) (Sidecar, error) {
 	return sidecar, nil
 }
 
+// Save writes the sidecar with the same hardening sequence the jobindex and
+// statefs writers use: the temporary file is chmodded, ACL-hardened, and
+// verified before the atomic replace, so no committed version of the file
+// ever carries unprotected inheritance — a bare rename would replace a
+// hardened file with an inheritance-unprotected one on every save and fail
+// doctor's acl/state check.
 func (s FileSidecar) Save(ctx context.Context, sidecar Sidecar) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+	directory := filepath.Dir(s.Path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create health watch sidecar directory: %w", err)
+	}
+	if err := s.ACL.Harden(directory); err != nil {
+		return fmt.Errorf("secure health watch sidecar directory: %w", err)
+	}
+	if err := s.ACL.Verify(directory); err != nil {
+		return fmt.Errorf("verify health watch sidecar directory ACL: %w", err)
 	}
 	encoded, err := json.Marshal(sidecar)
 	if err != nil {
 		return fmt.Errorf("encode health watch sidecar: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(s.Path), ".health-watch-*")
+	temporary, err := os.CreateTemp(directory, ".health-watch-*")
 	if err != nil {
 		return fmt.Errorf("create temporary health watch sidecar: %w", err)
 	}
-	tempPath := temporary.Name()
-	cleanup := func() { _ = os.Remove(tempPath) }
-	if _, err := temporary.Write(encoded); err != nil {
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
 		_ = temporary.Close()
-		cleanup()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure temporary health watch sidecar: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
 		return fmt.Errorf("write temporary health watch sidecar: %w", err)
 	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("flush temporary health watch sidecar: %w", err)
+	}
 	if err := temporary.Close(); err != nil {
-		cleanup()
 		return fmt.Errorf("close temporary health watch sidecar: %w", err)
 	}
-	if err := os.Rename(tempPath, s.Path); err != nil {
-		cleanup()
+	if err := s.ACL.Harden(temporaryPath); err != nil {
+		return fmt.Errorf("secure temporary health watch sidecar ACL: %w", err)
+	}
+	if err := s.ACL.Verify(temporaryPath); err != nil {
+		return fmt.Errorf("verify temporary health watch sidecar ACL: %w", err)
+	}
+	if err := statefs.ReplaceFileAtomic(temporaryPath, s.Path); err != nil {
 		return fmt.Errorf("replace health watch sidecar atomically: %w", err)
+	}
+	committed = true
+	if err := s.ACL.Harden(s.Path); err != nil {
+		return fmt.Errorf("secure health watch sidecar ACL: %w", err)
+	}
+	if err := s.ACL.Verify(s.Path); err != nil {
+		return fmt.Errorf("verify health watch sidecar ACL: %w", err)
+	}
+	if err := statefs.SyncDirectory(directory); err != nil {
+		return fmt.Errorf("flush health watch sidecar directory: %w", err)
 	}
 	return nil
 }
