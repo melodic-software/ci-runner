@@ -2,6 +2,7 @@ package healthwatch
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,41 @@ func TestFileSidecarSaveHardensEveryPathItWrites(t *testing.T) {
 	}
 	if loaded.WorkerDivergenceSince == nil || !loaded.WorkerDivergenceSince.Equal(saved) {
 		t.Fatalf("loaded = %#v, want the saved divergence timestamp", loaded)
+	}
+}
+
+type failingSidecarACL struct {
+	recordingSidecarACL
+	failPrefix string
+}
+
+func (a *failingSidecarACL) Harden(path string) error {
+	if strings.HasPrefix(filepath.Base(path), a.failPrefix) {
+		return errors.New("harden refused")
+	}
+	return a.recordingSidecarACL.Harden(path)
+}
+
+// TestFileSidecarSaveRemovesTemporaryWhenHardeningFails pins the cleanup
+// contract: a save that cannot harden its temporary file must propagate the
+// error, remove the temporary, and leave the committed file untouched.
+func TestFileSidecarSaveRemovesTemporaryWhenHardeningFails(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "health-watch.json")
+	sidecar, err := NewFileSidecar(path, &failingSidecarACL{failPrefix: ".health-watch-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sidecar.Save(context.Background(), Sidecar{LastAlertFingerprint: "fingerprint"}); err == nil {
+		t.Fatal("expected temporary hardening failure to propagate")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("directory entries = %v, want the temporary removed and no committed file", entries)
 	}
 }
 
