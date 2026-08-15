@@ -18,9 +18,9 @@ script runs inside the worker.
 - The scale-set resource is created with `RunnerSetting.DisableUpdate=true`.
   GitHub requires an update-disabled runner to be refreshed within 30 days and
   may block it sooner for a critical release.
-- PowerShell comes from Microsoft's checksummed `v7.6.3` Linux x64 release
+- PowerShell comes from Microsoft's checksummed `v7.6.4` Linux x64 release
   archive. That is the version in GitHub's Ubuntu 24.04 hosted-image manifest at
-  reviewed commit `f45762e93bedc498afdc31c756e725cc04ee4dee`. The remaining
+  reviewed commit `8926c75ceb03577c5cc94415743a88f548b781ab`. The remaining
   compatibility packages come from Ubuntu 24.04.
 
 The immutable evidence and original source URLs are recorded in
