@@ -36,12 +36,16 @@ func (a *Application) healthWatchCheck(ctx context.Context, args []string) int {
 		return ExitUsage
 	}
 
+	if a.dependencies.Jobs == nil {
+		writeln(a.errOut, "job index store is required for health watch")
+		return ExitRuntime
+	}
 	checker, err := initHealthWatchChecker(healthwatch.Dependencies{
 		Now:       a.dependencies.Now,
 		Config:    a.dependencies.Config,
 		Store:     a.dependencies.Store,
 		Inventory: healthwatch.NewDockerInventory(buildinfo.Version),
-		JobsFile:  healthwatch.OSJobsFile{Path: filepath.Join(a.dependencies.Config.Paths.State, "jobs.json")},
+		JobsFile:  healthwatch.StoreJobsFile{Source: a.dependencies.Jobs},
 		Sidecar:   healthwatch.NewFileSidecar(filepath.Join(a.dependencies.Config.Paths.State, "health-watch.json")),
 		Alert:     healthwatch.NewWebhookAlerter(a.dependencies.Config.HealthWatchdog.AlertWebhook),
 	})

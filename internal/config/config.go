@@ -337,8 +337,12 @@ type HealthWatchdog struct {
 	CheckInterval            Duration `yaml:"checkInterval"`
 	HeartbeatStaleMultiplier int      `yaml:"heartbeatStaleMultiplier"`
 	WorkerDivergenceGrace    Duration `yaml:"workerDivergenceGrace"`
-	JobsSizeWarningPercent   int      `yaml:"jobsSizeWarningPercent"`
-	AlertCooldown            Duration `yaml:"alertCooldown"`
+	// JobsSizeWarningPercent thresholds the encoded size of the jobs.json
+	// records capacity compaction may never reclaim (open, or awaiting a
+	// terminal marker) as a percentage of the save cap — not the total file
+	// size, which the save loop pins at the cap by design at steady state.
+	JobsSizeWarningPercent int      `yaml:"jobsSizeWarningPercent"`
+	AlertCooldown          Duration `yaml:"alertCooldown"`
 }
 
 const (

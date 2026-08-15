@@ -7,29 +7,47 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 )
 
-var ErrJobsFileMissing = errors.New("jobs.json is missing")
+var (
+	ErrJobsFileMissing = errors.New("jobs.json is missing")
+	// ErrJobsFileUndecodable wraps a snapshot that read fine but failed the
+	// strict catalog decode; the checker reports it as a finding rather than
+	// an infrastructure error, because a corrupt index is exactly what the
+	// watchdog exists to surface.
+	ErrJobsFileUndecodable = errors.New("jobs.json is undecodable")
+)
 
-type OSJobsFile struct {
-	Path string
+// JobsBytesSource is the store surface the watchdog reads jobs.json through:
+// one committed document per call, taken under the store's cross-process
+// lock (jobindex.FileStore.SnapshotBytes). The watchdog must never open the
+// file itself — an out-of-lock handle makes the controller's atomic replace
+// fail with a sharing violation on Windows.
+type JobsBytesSource interface {
+	SnapshotBytes(context.Context) ([]byte, error)
 }
 
-func (f OSJobsFile) Size(ctx context.Context) (int64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	info, err := os.Stat(f.Path)
+type StoreJobsFile struct {
+	Source JobsBytesSource
+}
+
+func (f StoreJobsFile) Snapshot(ctx context.Context) (JobsSnapshot, error) {
+	// One locked read yields both size and records, so the two can never
+	// disagree about which committed version of the file was observed.
+	contents, err := f.Source.SnapshotBytes(ctx)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, ErrJobsFileMissing
+		if errors.Is(err, jobindex.ErrNotFound) {
+			return JobsSnapshot{}, ErrJobsFileMissing
 		}
-		return 0, err
+		return JobsSnapshot{}, err
 	}
-	if info.IsDir() {
-		return 0, fmt.Errorf("%q is a directory", f.Path)
+	catalog, err := jobindex.DecodeCatalog(contents)
+	if err != nil {
+		return JobsSnapshot{}, fmt.Errorf("%w: %v", ErrJobsFileUndecodable, err)
 	}
-	return info.Size(), nil
+	return JobsSnapshot{SizeBytes: int64(len(contents)), Catalog: catalog}, nil
 }
 
 type FileSidecar struct {
