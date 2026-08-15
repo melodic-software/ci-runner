@@ -37,7 +37,7 @@ Authoritative references:
 - [`setup-dotnet` v5.4.0 rootless installation guidance](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/README.md#environment-variables)
 - [`setup-dotnet` v5.4.0 install-directory implementation](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/src/installer.ts#L329-L359)
 - [.NET install-script environment contract](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script#set-environment-variables)
-- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/f45762e93bedc498afdc31c756e725cc04ee4dee/images/ubuntu/Ubuntu2404-Readme.md)
+- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md)
 - [PowerShell releases](https://github.com/PowerShell/PowerShell/releases)
 - [Docker image pinning guidance](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
 
