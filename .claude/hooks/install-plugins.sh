@@ -40,4 +40,19 @@ for id in "${wanted[@]}"; do
     echo "install-plugins: install failed: $id" >&2
   fi
 done
-echo "install-plugins: ${#wanted[@]} enabled, $installed newly installed"
+
+# `claude plugin install` does not activate a plugin in the session that runs it,
+# so a first session would otherwise start without the catalog it just installed.
+# reloadSkills re-scans the skill and command directories once SessionStart hooks
+# finish, which activates the skills and commands in this same session. Ask for it
+# only when something was installed; on a warm start the plugins already loaded.
+reload=false
+if [[ $installed -gt 0 ]]; then reload=true; fi
+
+jq -n --argjson reload "$reload" \
+  --arg summary "install-plugins: ${#wanted[@]} enabled, $installed newly installed" \
+  '{hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      reloadSkills: $reload,
+      additionalContext: $summary
+    }}'
