@@ -7,29 +7,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 )
 
-var ErrJobsFileMissing = errors.New("jobs.json is missing")
+var (
+	ErrJobsFileMissing = errors.New("jobs.json is missing")
+	// ErrJobsFileUndecodable wraps a snapshot that read fine but failed the
+	// strict catalog decode; the checker reports it as a finding rather than
+	// an infrastructure error, because a corrupt index is exactly what the
+	// watchdog exists to surface.
+	ErrJobsFileUndecodable = errors.New("jobs.json is undecodable")
+)
 
 type OSJobsFile struct {
 	Path string
 }
 
-func (f OSJobsFile) Size(ctx context.Context) (int64, error) {
+func (f OSJobsFile) Snapshot(ctx context.Context) (JobsSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return JobsSnapshot{}, err
 	}
-	info, err := os.Stat(f.Path)
+	// One read yields both size and records, so the two can never disagree
+	// about which version of the atomically-replaced file was observed.
+	contents, err := os.ReadFile(f.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, ErrJobsFileMissing
+			return JobsSnapshot{}, ErrJobsFileMissing
 		}
-		return 0, err
+		return JobsSnapshot{}, err
 	}
-	if info.IsDir() {
-		return 0, fmt.Errorf("%q is a directory", f.Path)
+	catalog, err := jobindex.DecodeCatalog(contents)
+	if err != nil {
+		return JobsSnapshot{}, fmt.Errorf("%w: %v", ErrJobsFileUndecodable, err)
 	}
-	return info.Size(), nil
+	return JobsSnapshot{SizeBytes: int64(len(contents)), Catalog: catalog}, nil
 }
 
 type FileSidecar struct {

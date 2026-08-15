@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
 )
-
-const jobsFileSafetyCapBytes = 8 << 20
 
 type Finding struct {
 	Code    string `json:"code"`
@@ -28,8 +27,15 @@ type WorkerInventory interface {
 	RunningByPool(context.Context, string) (map[string]int, error)
 }
 
+// JobsSnapshot is one consistent observation of jobs.json: the byte size on
+// disk and the decoded catalog behind it.
+type JobsSnapshot struct {
+	SizeBytes int64
+	Catalog   jobindex.Catalog
+}
+
 type JobsFileStat interface {
-	Size(context.Context) (int64, error)
+	Snapshot(context.Context) (JobsSnapshot, error)
 }
 
 type SidecarStore interface {
@@ -116,7 +122,7 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		result.Findings = append(result.Findings, divergenceFindings...)
 	}
 
-	jobsFindings, err := c.checkJobsFileSize(ctx)
+	jobsFindings, err := c.checkJobsIndex(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -215,28 +221,66 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 	return nil, nil
 }
 
-func (c *Checker) checkJobsFileSize(ctx context.Context) ([]Finding, error) {
-	size, err := c.deps.JobsFile.Size(ctx)
+// checkJobsIndex watches the two jobs.json shapes capacity compaction cannot
+// absorb. Total file size is deliberately not a finding: at steady-state job
+// churn the save loop pins the file at the cap by design, reclaiming
+// tombstoned and terminal records on every write, so a size-keyed warning
+// fires forever on a healthy host. Only records the compaction tiers may
+// never drop — open, or awaiting a terminal marker — can wedge index writes,
+// so the warning threshold applies to their encoded size alone.
+func (c *Checker) checkJobsIndex(ctx context.Context) ([]Finding, error) {
+	snapshot, err := c.deps.JobsFile.Snapshot(ctx)
 	if err != nil {
 		if errors.Is(err, ErrJobsFileMissing) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("stat jobs.json: %w", err)
+		if errors.Is(err, ErrJobsFileUndecodable) {
+			return []Finding{{
+				Code:    "jobs-index-undecodable",
+				Message: err.Error(),
+			}}, nil
+		}
+		return nil, fmt.Errorf("read jobs.json: %w", err)
 	}
-	threshold := int64(c.deps.Config.HealthWatchdog.JobsSizeWarningPercent) * jobsFileSafetyCapBytes / 100
-	if size < threshold {
-		return nil, nil
+
+	var findings []Finding
+	if snapshot.SizeBytes > jobindex.MaximumJobStateBytes {
+		findings = append(findings, Finding{
+			Code: "jobs-size-overflow",
+			Message: fmt.Sprintf(
+				"jobs.json size %d bytes exceeds the %d-byte save cap the store never commits above; the next successful save compacts it, so a persistent overflow means index writes are not landing",
+				snapshot.SizeBytes,
+				jobindex.MaximumJobStateBytes,
+			),
+		})
 	}
-	return []Finding{{
-		Code: "jobs-size-warning",
-		Message: fmt.Sprintf(
-			"jobs.json size %d bytes is at or above the %d%% warning threshold (%d of %d bytes)",
-			size,
-			c.deps.Config.HealthWatchdog.JobsSizeWarningPercent,
-			threshold,
-			jobsFileSafetyCapBytes,
-		),
-	}}, nil
+
+	live := jobindex.Catalog{SchemaVersion: snapshot.Catalog.SchemaVersion}
+	for _, record := range snapshot.Catalog.Records {
+		if !jobindex.CompactableUnderCapacityPressure(record) {
+			live.Records = append(live.Records, record)
+		}
+	}
+	liveBytes, err := jobindex.EncodedCatalogSize(live)
+	if err != nil {
+		return nil, fmt.Errorf("measure non-compactable jobs.json records: %w", err)
+	}
+	threshold := c.deps.Config.HealthWatchdog.JobsSizeWarningPercent * jobindex.MaximumJobStateBytes / 100
+	if liveBytes >= threshold {
+		findings = append(findings, Finding{
+			Code: "jobs-live-size-warning",
+			Message: fmt.Sprintf(
+				"non-compactable jobs.json records (open or awaiting a terminal marker) encode to %d bytes, at or above the %d%% warning threshold (%d of %d bytes); %d of %d records cannot be reclaimed by capacity compaction",
+				liveBytes,
+				c.deps.Config.HealthWatchdog.JobsSizeWarningPercent,
+				threshold,
+				jobindex.MaximumJobStateBytes,
+				len(live.Records),
+				len(snapshot.Catalog.Records),
+			),
+		})
+	}
+	return findings, nil
 }
 
 func expectsRunningWorkers(observed model.ObservedState) bool {

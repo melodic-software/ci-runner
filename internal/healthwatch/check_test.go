@@ -3,11 +3,15 @@ package healthwatch
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
 )
@@ -29,15 +33,15 @@ func (f fakeInventory) RunningByPool(context.Context, string) (map[string]int, e
 }
 
 type fakeJobsFile struct {
-	size int64
-	err  error
+	snapshot JobsSnapshot
+	err      error
 }
 
-func (f fakeJobsFile) Size(context.Context) (int64, error) {
+func (f fakeJobsFile) Snapshot(context.Context) (JobsSnapshot, error) {
 	if f.err != nil {
-		return 0, f.err
+		return JobsSnapshot{}, f.err
 	}
-	return f.size, nil
+	return f.snapshot, nil
 }
 
 type memorySidecar struct {
@@ -97,7 +101,7 @@ func TestCheckHealthyWhenSignalsAreFresh(t *testing.T) {
 			ID: "org", DesiredWorkers: 2,
 		}},
 	})
-	checker := testChecker(t, store, fakeInventory{counts: map[string]int{"org": 2}}, fakeJobsFile{size: 1024}, &memorySidecar{}, now)
+	checker := testChecker(t, store, fakeInventory{counts: map[string]int{"org": 2}}, fakeJobsFile{snapshot: JobsSnapshot{SizeBytes: 1024}}, &memorySidecar{}, now)
 
 	result, err := checker.Check(context.Background())
 	if err != nil {
@@ -152,7 +156,86 @@ func TestCheckFlagsWorkerDivergenceAfterGrace(t *testing.T) {
 	}
 }
 
-func TestCheckFlagsJobsSizeWarning(t *testing.T) {
+// TestCheckHealthyWhenJobsFilePinnedAtCapByCompactableRecords reproduces the
+// designed post-compaction steady state: the file sits at the save cap, but
+// every record is reclaimable, so the watchdog stays quiet.
+func TestCheckHealthyWhenJobsFilePinnedAtCapByCompactableRecords(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseReady,
+		HeartbeatAt:   now,
+	})
+	tombstoned := now.Add(-time.Hour)
+	checker := testChecker(
+		t,
+		store,
+		fakeInventory{},
+		fakeJobsFile{snapshot: JobsSnapshot{
+			SizeBytes: jobindex.MaximumJobStateBytes,
+			Catalog: jobindex.Catalog{SchemaVersion: 1, Records: []jobindex.Record{
+				{PoolID: "org", RunnerName: "runner-a", CompletedAt: now.Add(-2 * time.Hour), UpdatedAt: now},
+				{PoolID: "org", RunnerName: "runner-b", TombstonedAt: &tombstoned, UpdatedAt: now},
+			}},
+		}},
+		&memorySidecar{},
+		now,
+	)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Healthy || len(result.Findings) != 0 {
+		t.Fatalf("result = %#v, want healthy at designed cap saturation", result)
+	}
+}
+
+func TestCheckFlagsJobsLiveSizeWarning(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseReady,
+		HeartbeatAt:   now,
+	})
+	// Open records are never compactable; 80 records carrying 100kB job IDs
+	// encode to ~8MB of live payload, past any threshold up to 95%.
+	records := make([]jobindex.Record, 0, 80)
+	for i := 0; i < 80; i++ {
+		records = append(records, jobindex.Record{
+			PoolID:     "org",
+			RunnerName: fmt.Sprintf("runner-%05d", i),
+			JobID:      fmt.Sprintf("%05d-%s", i, strings.Repeat("x", 100_000)),
+			Open:       true,
+			UpdatedAt:  now,
+		})
+	}
+	checker := testChecker(
+		t,
+		store,
+		fakeInventory{},
+		fakeJobsFile{snapshot: JobsSnapshot{
+			SizeBytes: jobindex.MaximumJobStateBytes,
+			Catalog:   jobindex.Catalog{SchemaVersion: 1, Records: records},
+		}},
+		&memorySidecar{},
+		now,
+	)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "jobs-live-size-warning" {
+		t.Fatalf("result = %#v, want jobs live size warning", result)
+	}
+}
+
+func TestCheckFlagsJobsSizeOverflow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	store := state.NewMemoryStore()
@@ -165,7 +248,10 @@ func TestCheckFlagsJobsSizeWarning(t *testing.T) {
 		t,
 		store,
 		fakeInventory{},
-		fakeJobsFile{size: int64(jobsFileSafetyCapBytes * 90 / 100)},
+		fakeJobsFile{snapshot: JobsSnapshot{
+			SizeBytes: jobindex.MaximumJobStateBytes + 1,
+			Catalog:   jobindex.Catalog{SchemaVersion: 1},
+		}},
 		&memorySidecar{},
 		now,
 	)
@@ -174,8 +260,35 @@ func TestCheckFlagsJobsSizeWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "jobs-size-warning" {
-		t.Fatalf("result = %#v, want jobs size warning", result)
+	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "jobs-size-overflow" {
+		t.Fatalf("result = %#v, want jobs size overflow", result)
+	}
+}
+
+func TestCheckFlagsUndecodableJobsFile(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1,
+		Phase:         model.PhaseReady,
+		HeartbeatAt:   now,
+	})
+	checker := testChecker(
+		t,
+		store,
+		fakeInventory{},
+		fakeJobsFile{err: fmt.Errorf("%w: decode jobs.json: unexpected EOF", ErrJobsFileUndecodable)},
+		&memorySidecar{},
+		now,
+	)
+
+	result, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Healthy || len(result.Findings) != 1 || result.Findings[0].Code != "jobs-index-undecodable" {
+		t.Fatalf("result = %#v, want undecodable jobs index finding", result)
 	}
 }
 
@@ -274,7 +387,34 @@ func TestNewCheckerRequiresDependencies(t *testing.T) {
 func TestOSJobsFileMissingIsIgnored(t *testing.T) {
 	t.Parallel()
 	file := OSJobsFile{Path: t.TempDir() + "/missing-jobs.json"}
-	if _, err := file.Size(context.Background()); !errors.Is(err, ErrJobsFileMissing) {
+	if _, err := file.Snapshot(context.Background()); !errors.Is(err, ErrJobsFileMissing) {
 		t.Fatalf("err = %v, want ErrJobsFileMissing", err)
+	}
+}
+
+func TestOSJobsFileSnapshotDecodesCatalog(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() + "/jobs.json"
+	contents := []byte(`{"schemaVersion":1,"records":[{"poolId":"org","runnerName":"runner-a","updatedAt":"2026-08-12T12:00:00Z","open":true}]}` + "\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := OSJobsFile{Path: path}.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SizeBytes != int64(len(contents)) || len(snapshot.Catalog.Records) != 1 || !snapshot.Catalog.Records[0].Open {
+		t.Fatalf("snapshot = %#v, want one open record and the file size", snapshot)
+	}
+}
+
+func TestOSJobsFileSnapshotWrapsDecodeFailure(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() + "/jobs.json"
+	if err := os.WriteFile(path, []byte("{ not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (OSJobsFile{Path: path}).Snapshot(context.Background()); !errors.Is(err, ErrJobsFileUndecodable) {
+		t.Fatalf("err = %v, want ErrJobsFileUndecodable", err)
 	}
 }
