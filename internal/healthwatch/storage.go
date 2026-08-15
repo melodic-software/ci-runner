@@ -20,19 +20,25 @@ var (
 	ErrJobsFileUndecodable = errors.New("jobs.json is undecodable")
 )
 
-type OSJobsFile struct {
-	Path string
+// JobsBytesSource is the store surface the watchdog reads jobs.json through:
+// one committed document per call, taken under the store's cross-process
+// lock (jobindex.FileStore.SnapshotBytes). The watchdog must never open the
+// file itself — an out-of-lock handle makes the controller's atomic replace
+// fail with a sharing violation on Windows.
+type JobsBytesSource interface {
+	SnapshotBytes(context.Context) ([]byte, error)
 }
 
-func (f OSJobsFile) Snapshot(ctx context.Context) (JobsSnapshot, error) {
-	if err := ctx.Err(); err != nil {
-		return JobsSnapshot{}, err
-	}
-	// One read yields both size and records, so the two can never disagree
-	// about which version of the atomically-replaced file was observed.
-	contents, err := os.ReadFile(f.Path)
+type StoreJobsFile struct {
+	Source JobsBytesSource
+}
+
+func (f StoreJobsFile) Snapshot(ctx context.Context) (JobsSnapshot, error) {
+	// One locked read yields both size and records, so the two can never
+	// disagree about which committed version of the file was observed.
+	contents, err := f.Source.SnapshotBytes(ctx)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, jobindex.ErrNotFound) {
 			return JobsSnapshot{}, ErrJobsFileMissing
 		}
 		return JobsSnapshot{}, err

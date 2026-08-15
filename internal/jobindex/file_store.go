@@ -26,7 +26,8 @@ const (
 
 	// MaximumJobStateBytes exports the save cap for read-only observers
 	// (health watch), which compare record subsets against it rather than
-	// restating the limit.
+	// restating the limit. It is the ceiling saves commit under, not the 4x
+	// load tolerance above.
 	MaximumJobStateBytes = maximumJobState
 )
 
@@ -196,22 +197,35 @@ func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, res
 	return merged, nil
 }
 
-func (s *FileStore) loadUnlocked() (_ Catalog, resultErr error) {
-	file, err := os.Open(filepath.Join(s.directory, jobsFilename))
+// SnapshotBytes returns one committed jobs.json document, taken under the
+// store lock so the read can never collide with a concurrent save's atomic
+// replace (see readCatalogBytes for why out-of-lock reads are unsafe on
+// Windows). A missing file returns ErrNotFound. It is the read surface for
+// out-of-process observers (health watch); the raw bytes carry the on-disk
+// size, and DecodeCatalog turns them into records.
+func (s *FileStore) SnapshotBytes(ctx context.Context) (contents []byte, resultErr error) {
+	unlock, err := s.locker.Lock(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lock jobs index: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
+	contents, err = readCatalogBytes(filepath.Join(s.directory, jobsFilename))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
+
+func (s *FileStore) loadUnlocked() (Catalog, error) {
+	contents, err := readCatalogBytes(filepath.Join(s.directory, jobsFilename))
 	if errors.Is(err, os.ErrNotExist) {
 		return Catalog{}, ErrNotFound
 	}
 	if err != nil {
-		return Catalog{}, fmt.Errorf("open jobs.json: %w", err)
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("close jobs.json: %w", closeErr))
-		}
-	}()
-	contents, err := io.ReadAll(io.LimitReader(file, maximumJobStateLoad+1))
-	if err != nil {
-		return Catalog{}, fmt.Errorf("read jobs.json: %w", err)
+		return Catalog{}, err
 	}
 	catalog, err := DecodeCatalog(contents)
 	if err != nil {
@@ -223,6 +237,33 @@ func (s *FileStore) loadUnlocked() (_ Catalog, resultErr error) {
 	}
 	hydrateAssignTimes(&catalog, times)
 	return catalog, nil
+}
+
+// readCatalogBytes reads a jobs.json bounded by the load safety limit, so a
+// runaway file never fills memory before DecodeCatalog rejects it. The
+// caller must hold the store lock: on Windows any open handle on the file —
+// share mode notwithstanding, verified empirically against MoveFileEx — makes
+// a concurrent save's atomic replace fail with a sharing violation, so an
+// out-of-lock read turns a read-only observer into a writer fault. A missing
+// file surfaces as os.ErrNotExist.
+func readCatalogBytes(path string) (contents []byte, resultErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("open jobs.json: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close jobs.json: %w", closeErr))
+		}
+	}()
+	contents, err = io.ReadAll(io.LimitReader(file, maximumJobStateLoad+1))
+	if err != nil {
+		return nil, fmt.Errorf("read jobs.json: %w", err)
+	}
+	return contents, nil
 }
 
 // DecodeCatalog strictly decodes one jobs.json document and validates it,

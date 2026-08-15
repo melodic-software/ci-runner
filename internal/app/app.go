@@ -20,6 +20,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/host"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/secret"
 	"github.com/melodic-software/ci-runner/internal/state"
@@ -71,6 +72,7 @@ type Dependencies struct {
 	Secrets         SecretImporter
 	ForceStop       ForceStopper
 	Logs            *FileLogs
+	Jobs            *jobindex.FileStore
 	Control         ControllerControl
 	Doctor          DoctorInspector
 	Processes       host.ProcessObserver

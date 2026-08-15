@@ -9,8 +9,11 @@ import (
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/healthwatch"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
+	"github.com/melodic-software/ci-runner/internal/secret"
 	"github.com/melodic-software/ci-runner/internal/state"
+	statefs "github.com/melodic-software/ci-runner/internal/state/fs"
 )
 
 type healthWatchInventory struct {
@@ -19,6 +22,20 @@ type healthWatchInventory struct {
 
 func (h healthWatchInventory) RunningByPool(context.Context, string) (map[string]int, error) {
 	return h.counts, nil
+}
+
+func newHealthWatchJobsStore(t *testing.T) *jobindex.FileStore {
+	t.Helper()
+	directory := t.TempDir()
+	locker, err := statefs.NewPlatformLocker(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := jobindex.NewFileStore(directory, locker, secret.NewAccessController())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func TestHealthWatchCheckJSONReportsUnhealthy(t *testing.T) {
@@ -45,6 +62,7 @@ func TestHealthWatchCheckJSONReportsUnhealthy(t *testing.T) {
 			Paths: config.Paths{State: t.TempDir()},
 		},
 		Store: store,
+		Jobs:  newHealthWatchJobsStore(t),
 		Now:   func() time.Time { return now },
 	}, strings.NewReader(""), &out, &errOut)
 	if err != nil {
@@ -54,7 +72,6 @@ func TestHealthWatchCheckJSONReportsUnhealthy(t *testing.T) {
 	originalNewChecker := initHealthWatchChecker
 	initHealthWatchChecker = func(deps healthwatch.Dependencies) (*healthwatch.Checker, error) {
 		deps.Inventory = healthWatchInventory{}
-		deps.JobsFile = healthwatch.OSJobsFile{Path: t.TempDir() + "/missing-jobs.json"}
 		deps.Sidecar = healthwatch.NewFileSidecar(deps.Config.Paths.State + "/health-watch.json")
 		return healthwatch.NewChecker(deps)
 	}

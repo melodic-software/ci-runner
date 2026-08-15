@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+func TestDecodeCatalogRejectsOversizedDocument(t *testing.T) {
+	t.Parallel()
+	if _, err := DecodeCatalog(make([]byte, maximumJobStateLoad+1)); err == nil {
+		t.Fatal("expected the load safety limit to reject the document")
+	}
+}
+
 func TestCompactableUnderCapacityPressure(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)

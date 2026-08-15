@@ -91,6 +91,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 			Jobs:                jobs,
 			Cleaner:             newWorkerArtifactMaintenance(cfg, acl, jobs),
 		},
+		Jobs: jobs,
 		Doctor: NewLocalDoctorInspector(cfg, acl, bitLocker, secretStore, func(ctx context.Context) (string, string, error) {
 			return dockerruntime.ProbeLocal(ctx, buildinfo.Version)
 		}),

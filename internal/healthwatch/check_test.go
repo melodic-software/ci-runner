@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -384,37 +383,42 @@ func TestNewCheckerRequiresDependencies(t *testing.T) {
 	}
 }
 
-func TestOSJobsFileMissingIsIgnored(t *testing.T) {
+type fakeJobsBytes struct {
+	contents []byte
+	err      error
+}
+
+func (f fakeJobsBytes) SnapshotBytes(context.Context) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.contents, nil
+}
+
+func TestStoreJobsFileMissingIsIgnored(t *testing.T) {
 	t.Parallel()
-	file := OSJobsFile{Path: t.TempDir() + "/missing-jobs.json"}
+	file := StoreJobsFile{Source: fakeJobsBytes{err: jobindex.ErrNotFound}}
 	if _, err := file.Snapshot(context.Background()); !errors.Is(err, ErrJobsFileMissing) {
 		t.Fatalf("err = %v, want ErrJobsFileMissing", err)
 	}
 }
 
-func TestOSJobsFileSnapshotDecodesCatalog(t *testing.T) {
+func TestStoreJobsFileSnapshotDecodesCatalog(t *testing.T) {
 	t.Parallel()
-	path := t.TempDir() + "/jobs.json"
 	contents := []byte(`{"schemaVersion":1,"records":[{"poolId":"org","runnerName":"runner-a","updatedAt":"2026-08-12T12:00:00Z","open":true}]}` + "\n")
-	if err := os.WriteFile(path, contents, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := OSJobsFile{Path: path}.Snapshot(context.Background())
+	snapshot, err := StoreJobsFile{Source: fakeJobsBytes{contents: contents}}.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snapshot.SizeBytes != int64(len(contents)) || len(snapshot.Catalog.Records) != 1 || !snapshot.Catalog.Records[0].Open {
-		t.Fatalf("snapshot = %#v, want one open record and the file size", snapshot)
+		t.Fatalf("snapshot = %#v, want one open record and the document size", snapshot)
 	}
 }
 
-func TestOSJobsFileSnapshotWrapsDecodeFailure(t *testing.T) {
+func TestStoreJobsFileSnapshotWrapsDecodeFailure(t *testing.T) {
 	t.Parallel()
-	path := t.TempDir() + "/jobs.json"
-	if err := os.WriteFile(path, []byte("{ not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := (OSJobsFile{Path: path}).Snapshot(context.Background()); !errors.Is(err, ErrJobsFileUndecodable) {
+	file := StoreJobsFile{Source: fakeJobsBytes{contents: []byte("{ not json")}}
+	if _, err := file.Snapshot(context.Background()); !errors.Is(err, ErrJobsFileUndecodable) {
 		t.Fatalf("err = %v, want ErrJobsFileUndecodable", err)
 	}
 }
