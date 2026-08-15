@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# SessionStart: install the plugin catalog this repo enables.
+# Cloud bootstrap: install the plugin catalog this repo enables. Two callers:
+#   1. The account environment's setup script, after clone and before the
+#      session process launches. Claude Code builds its plugin registry at
+#      process start and never re-reads it, so this pre-launch call is the
+#      only path that gets plugins loaded at turn one.
+#   2. The SessionStart hook (startup|resume), as per-session drift repair —
+#      the environment cache can be ~7 days stale. Plugins the hook installs
+#      go live at the next resume.
 # Declaring a marketplace is gated on workspace trust and cloud sessions arrive
 # untrusted, so the declaration alone can load nothing there. Hooks run untrusted.
 # Idempotent and best effort: a failed plugin costs its skills, not the session.
 set -Eeuo pipefail
 
-repo_root="${CLAUDE_PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# Cloud sessions only: local sessions load plugins through workspace trust and
+# the marketplace declaration in settings.json, so there is nothing to do.
+[[ "${CLAUDE_CODE_REMOTE:-}" == "true" ]] || exit 0
+
+repo_root="${CLAUDE_PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd -- "$repo_root"
 
 command -v claude >/dev/null 2>&1 || exit 0
@@ -17,7 +28,7 @@ source_repo="melodic-software/claude-code-plugins"
 if ! claude plugin marketplace list --json 2>/dev/null |
   jq -e --arg n "$marketplace" 'any(.[]; .name == $n)' >/dev/null; then
   claude plugin marketplace add "$source_repo" --scope user >/dev/null || {
-    echo "install-plugins: could not add the $marketplace marketplace" >&2
+    echo "cloud-bootstrap: could not add the $marketplace marketplace" >&2
     exit 0
   }
 fi
@@ -37,7 +48,7 @@ for id in "${wanted[@]}"; do
   if claude plugin install "$id" --scope user -y >/dev/null 2>&1; then
     installed=$((installed + 1))
   else
-    echo "install-plugins: install failed: $id" >&2
+    echo "cloud-bootstrap: install failed: $id" >&2
   fi
 done
 
@@ -50,7 +61,7 @@ reload=false
 if [[ $installed -gt 0 ]]; then reload=true; fi
 
 jq -n --argjson reload "$reload" \
-  --arg summary "install-plugins: ${#wanted[@]} enabled, $installed newly installed" \
+  --arg summary "cloud-bootstrap: ${#wanted[@]} enabled, $installed newly installed" \
   '{hookSpecificOutput: {
       hookEventName: "SessionStart",
       reloadSkills: $reload,
