@@ -61,6 +61,12 @@ type Dependencies struct {
 	JobsFile  JobsFileStat
 	Sidecar   SidecarStore
 	Alert     Alerter
+	// HeartbeatFreshnessFloor is the derived bound on how stale the observed
+	// heartbeat may legitimately be on a healthy host; the app wires it from
+	// the same derivation doctor's observed-state check uses, so the two
+	// monitors can never disagree about what "legitimately fresh" means. The
+	// stale-heartbeat threshold never drops below it (see checkHeartbeat).
+	HeartbeatFreshnessFloor time.Duration
 }
 
 type Checker struct {
@@ -134,6 +140,15 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
+// checkHeartbeat thresholds heartbeat age at reconcileInterval times
+// heartbeatStaleMultiplier, floored at the host's derived freshness bound.
+// Heartbeat age scales with load, not just the reconcile cadence: reconcile
+// passes legitimately stretch under CPU contention and GitHub retries (24s
+// observed at a 5s interval while a job ran, #270), so a threshold keyed to
+// the idle cadence alone alarms exactly when the host is doing its job — the
+// same chronic-false-alarm class #262 removed from the jobs-size signal. The
+// floor shifts detection latency, not detection: a wedged controller never
+// heartbeats again, so its age grows monotonically past any bounded threshold.
 func (c *Checker) checkHeartbeat(now time.Time, observed model.ObservedState) []Finding {
 	settings := c.deps.Config.HealthWatchdog
 	if observed.HeartbeatAt.IsZero() {
@@ -143,6 +158,7 @@ func (c *Checker) checkHeartbeat(now time.Time, observed model.ObservedState) []
 		}}
 	}
 	threshold := c.deps.Config.Controller.ReconcileInterval.Duration * time.Duration(settings.HeartbeatStaleMultiplier)
+	threshold = max(threshold, c.deps.HeartbeatFreshnessFloor)
 	age := now.Sub(observed.HeartbeatAt)
 	if age <= threshold {
 		return nil

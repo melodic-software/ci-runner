@@ -19,6 +19,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/controller"
+	"github.com/melodic-software/ci-runner/internal/healthwatch"
 	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -73,6 +74,7 @@ type Dependencies struct {
 	ForceStop       ForceStopper
 	Logs            *FileLogs
 	Jobs            *jobindex.FileStore
+	ACL             healthwatch.AccessController
 	Control         ControllerControl
 	Doctor          DoctorInspector
 	Processes       host.ProcessObserver

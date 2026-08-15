@@ -261,6 +261,12 @@ func validPhase(phase model.Phase) bool {
 	}
 }
 
+// observedFreshnessLimit bounds how stale the observed heartbeat may
+// legitimately be on a healthy host: one full retry envelope per configured
+// target plus two reconcile intervals. It is the one definition of
+// "legitimately fresh" for that signal — the doctor's observed-state check
+// uses it directly, and health-watch floors its stale-heartbeat threshold at
+// it (wired in healthWatchCheck), so the two monitors cannot drift.
 func observedFreshnessLimit(cfg config.Config) time.Duration {
 	return saturatingFreshnessDuration(
 		cfg.GitHub.RequestTimeout.Duration,
