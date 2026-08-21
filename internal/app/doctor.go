@@ -87,17 +87,23 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		detail := fmt.Sprintf("phase=%s version=%s heartbeat=%s age=%s maximumAge=%s", observed.Phase, displayValue(observed.Version), observed.HeartbeatAt.Format(time.RFC3339), age.Round(time.Second), maximumAge)
 		checks = append(checks, DoctorCheck{Name: "observed-state", Healthy: healthy, Detail: detail})
 		// desired=disabled with observed disabled is a legitimate idle host.
-		// desired=enabled while observed is still disabled or starting is the
-		// #277 never-ready wedge: the control plane answers, so
+		// desired=enabled while observed is still disabled is the #277
+		// never-ready wedge: the control plane answers, so
 		// controller-control-plane PASSes, but reconcile has never reached a
-		// serving phase.
-		if desiredValid && desired.Mode == model.ModeEnabled && liveStatus != nil && !liveStatus.ShuttingDown &&
-			(observed.Phase == model.PhaseDisabled || observed.Phase == model.PhaseStarting) {
-			checks = append(checks, DoctorCheck{
-				Name:    "controller-reconcile-progress",
-				Healthy: false,
-				Detail:  fmt.Sprintf("desired=%s observedPhase=%s; live controller has not reached a serving phase", desired.Mode, observed.Phase),
-			})
+		// serving phase. PhaseStarting is a normal enable/bootstrap window;
+		// fail only after the configured startup budget.
+		if desiredValid && desired.Mode == model.ModeEnabled && liveStatus != nil && !liveStatus.ShuttingDown {
+			startupGrace := a.dependencies.Config.Controller.StartupTimeout.Duration
+			neverReady := observed.Phase == model.PhaseDisabled
+			startupWedged := observed.Phase == model.PhaseStarting && startupGrace > 0 &&
+				!desired.UpdatedAt.IsZero() && now.Sub(desired.UpdatedAt) > startupGrace
+			if neverReady || startupWedged {
+				checks = append(checks, DoctorCheck{
+					Name:    "controller-reconcile-progress",
+					Healthy: false,
+					Detail:  fmt.Sprintf("desired=%s observedPhase=%s; live controller has not reached a serving phase", desired.Mode, observed.Phase),
+				})
+			}
 		}
 		pools := make(map[string]model.PoolObservation, len(observed.Pools))
 		for _, pool := range observed.Pools {
@@ -112,7 +118,10 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 			// Acknowledged zero while the planner still wants workers is the
 			// #281 handshake wedge: GitHub accepted the advertisement, so the
 			// acknowledgement bit PASSes, but the fleet is starved.
+			// Planned quiesce/drain advertises zero while DesiredWorkers is
+			// still positive; only a serving-ready pool is a handshake wedge.
 			acknowledgedZeroStarved := desiredValid && desired.Mode == model.ModeEnabled &&
+				observed.Phase == model.PhaseReady &&
 				pool.CapacityAcknowledged && pool.DesiredWorkers > 0 && pool.MaxCapacity == 0
 			listenerHealthy := found && pool.ScaleSetID > 0 && pool.ListenerID != "" &&
 				(pool.CapacityAcknowledged || acknowledgementPendingWithinGrace) &&
@@ -131,7 +140,13 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		if desiredValid && desired.Mode == model.ModeEnabled && observed.Phase == model.PhaseResourceConstrained {
 			starved := true
 			for _, pool := range observed.Pools {
-				if pool.MaxCapacity > 0 {
+				if pool.MaxCapacity > 0 || pool.TotalAssignedJobs > 0 {
+					starved = false
+					break
+				}
+			}
+			for _, worker := range observed.Workers {
+				if worker.State == model.WorkerBusy || worker.State == model.WorkerStarting {
 					starved = false
 					break
 				}
@@ -140,7 +155,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 				checks = append(checks, DoctorCheck{
 					Name:    "capacity-starved",
 					Healthy: false,
-					Detail:  fmt.Sprintf("phase=%s; every pool advertised capacity 0", observed.Phase),
+					Detail:  fmt.Sprintf("phase=%s; every pool advertised capacity 0 and no work is active", observed.Phase),
 				})
 			}
 		}

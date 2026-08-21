@@ -508,6 +508,48 @@ func TestDoctorFailsNeverReadyControllerWhenEnabledAndObservedDisabled(t *testin
 	}
 }
 
+func TestDoctorAllowsStartingPhaseWithinStartupGrace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now.Add(-500 * time.Millisecond)})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseStarting))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseStarting, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want %d during startup grace\n%s", code, ExitOK, out.String())
+	}
+	if strings.Contains(out.String(), "[FAIL] controller-reconcile-progress") {
+		t.Fatalf("doctor failed a still-legal startup window:\n%s", out.String())
+	}
+}
+
+func TestDoctorFailsStartingPhaseAfterStartupGrace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now.Add(-2 * time.Second)})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseStarting))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseStarting, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitDegraded {
+		t.Fatalf("doctor exit code = %d, want %d after startup grace\n%s", code, ExitDegraded, out.String())
+	}
+	if !strings.Contains(out.String(), "[FAIL] controller-reconcile-progress") {
+		t.Fatalf("doctor missed a wedged startup:\n%s", out.String())
+	}
+}
+
 func TestDoctorFailsGitHubListenerWhenAcknowledgedCapacityIsZeroWithDesiredWorkers(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -536,6 +578,31 @@ func TestDoctorFailsGitHubListenerWhenAcknowledgedCapacityIsZeroWithDesiredWorke
 	}
 }
 
+func TestDoctorAllowsAcknowledgedZeroDuringPlannedDrain(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+	observed := healthyDoctorObserved(now, model.PhaseDraining)
+	observed.Pools[0].CapacityAcknowledged = true
+	observed.Pools[0].DesiredWorkers = 3
+	observed.Pools[0].MaxCapacity = 0
+	_ = store.SaveObserved(context.Background(), observed)
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDraining, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want %d during planned drain\n%s", code, ExitOK, out.String())
+	}
+	if strings.Contains(out.String(), "[FAIL] github-listener/organization") {
+		t.Fatalf("doctor treated planned quiesce as a starved listener:\n%s", out.String())
+	}
+}
+
 func TestDoctorFailsCapacityStarvedWhenResourceConstrainedAndAllPoolsZero(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -554,6 +621,29 @@ func TestDoctorFailsCapacityStarvedWhenResourceConstrainedAndAllPoolsZero(t *tes
 	}
 	if !strings.Contains(out.String(), "[FAIL] capacity-starved") {
 		t.Fatalf("doctor did not expose resource-constrained total starvation:\n%s", out.String())
+	}
+}
+
+func TestDoctorDoesNotReportCapacityStarvedWhileWorkIsActive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+	observed := healthyDoctorObserved(now, model.PhaseResourceConstrained)
+	observed.Workers = []model.Worker{{ID: "busy", PoolID: "organization", State: model.WorkerBusy}}
+	_ = store.SaveObserved(context.Background(), observed)
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseResourceConstrained, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want %d while busy work is preserved\n%s", code, ExitOK, out.String())
+	}
+	if strings.Contains(out.String(), "[FAIL] capacity-starved") {
+		t.Fatalf("doctor reported starvation while a busy worker is active:\n%s", out.String())
 	}
 }
 
