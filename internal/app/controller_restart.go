@@ -198,6 +198,7 @@ func (a *Application) startControllerTaskAndWait(ctx context.Context, expectedVe
 			}
 			if !status.ShuttingDown {
 				writef(a.out, "Controller is running (pid %d, version %s, phase %s).\n", status.ProcessID, displayValue(status.Version), status.Phase)
+				writeln(a.out, "Desired mode is unchanged. An observed disabled phase on the replacement is transient until the first successful reconcile.")
 				return ExitOK
 			}
 		}
