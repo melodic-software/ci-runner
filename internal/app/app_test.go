@@ -439,7 +439,8 @@ func TestControllerRestartExplicitlyStartsCanonicalTaskAfterCleanHandshake(t *te
 		t.Fatalf("canonical task starts = %#v, want [%q]", tasks.names, controllerTaskName)
 	}
 	if !strings.Contains(out.String(), "exact durable completion receipt verified") ||
-		!strings.Contains(out.String(), "Starting canonical scheduled task") || !strings.Contains(out.String(), "pid 200") {
+		!strings.Contains(out.String(), "Starting canonical scheduled task") || !strings.Contains(out.String(), "pid 200") ||
+		!strings.Contains(out.String(), "Desired mode is unchanged") {
 		t.Fatalf("restart did not report explicit verified task recovery:\n%s", out.String())
 	}
 }

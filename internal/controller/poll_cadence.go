@@ -27,6 +27,9 @@ type pollCadenceState struct {
 type pollCadenceResult struct {
 	observed      model.ObservedState
 	checkpointErr error
+	// superseded is true when this watcher canceled the open listener poll
+	// because advertised capacity had to be withdrawn or restored from zero.
+	superseded bool
 }
 
 // pollCheckpoint persists local liveness and gate progress without claiming
@@ -215,6 +218,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 						r.seedPendingCapacity(memoryAffordableAdvertisedCapacity(state.advertised, resources, workers, r.config, state.engineMemoryTotal))
 					}
 					r.writeLog(ctx, LogEvent{At: now, Code: "listener-poll-superseded", Message: message})
+					result.superseded = true
 					cancel(errReconcileInputsChanged)
 					return result
 				}
