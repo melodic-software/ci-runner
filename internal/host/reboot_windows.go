@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 )
 
@@ -21,17 +20,13 @@ func (s ShutdownReboot) Reboot(ctx context.Context, delay time.Duration, comment
 	if delay < 0 {
 		return errors.New("reboot delay must be non-negative")
 	}
-	seconds := int(delay / time.Second)
 	executable, err := resolveExecutable(s.executablePath, func() (string, error) {
 		return trustedSystemExecutable("shutdown.exe")
 	})
 	if err != nil {
 		return err
 	}
-	args := []string{"/r", "/t", strconv.Itoa(seconds)}
-	if comment != "" {
-		args = append(args, "/c", comment)
-	}
+	args := rebootArgs(delay, comment)
 	if _, err := resolvedCommandRunner(s.Runner).Run(ctx, executable, args...); err != nil {
 		return fmt.Errorf("restart machine: %w", err)
 	}
