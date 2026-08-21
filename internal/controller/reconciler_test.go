@@ -271,6 +271,47 @@ func TestCanceledStartupInventoryPersistsDegradedAndBlocksNewWork(t *testing.T) 
 	assertProblemCode(t, stored.Problems, "worker-inventory-error")
 }
 
+func TestCanceledReadyPollPersistsDegradedCheckpoint(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	now := harness.now
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseReady, HeartbeatAt: now, Version: "test-version",
+		Pools: []model.PoolObservation{{
+			ID: "org", ScaleSetID: 1, ListenerID: "listener-org", MaxCapacity: 3, CapacityAcknowledged: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		waitForSignal(t, blocking.entered, "ready listener poll did not begin")
+		cancel()
+	}()
+	result, err := harness.controller.Step(ctx)
+	<-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("step error = %v, want context.Canceled", err)
+	}
+	if result.Observed.Phase != model.PhaseDegraded {
+		t.Fatalf("result phase = %q, want %q; problems=%#v", result.Observed.Phase, model.PhaseDegraded, result.Observed.Problems)
+	}
+	assertProblemCode(t, result.Observed.Problems, "reconcile-canceled")
+	stored, loadErr := harness.store.LoadObserved(context.Background())
+	if loadErr != nil {
+		t.Fatalf("load persisted observed state: %v", loadErr)
+	}
+	if stored.Phase != model.PhaseDegraded {
+		t.Fatalf("persisted phase = %q, want degraded so a wedged poll cannot look healthy", stored.Phase)
+	}
+	assertProblemCode(t, stored.Problems, "reconcile-canceled")
+}
+
 func TestStoppedDesktopIsHealthyWhenModeDoesNotRequireEngine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

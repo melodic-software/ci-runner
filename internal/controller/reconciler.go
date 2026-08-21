@@ -633,8 +633,13 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 		// No ready pool means persistPollCheckpoint never ran, so a canceled
 		// ensure/inventory left observed.json frozen at the previous process's
-		// last write. Persist a detached degraded checkpoint and surface
-		// NewWorkBlocked so Task Scheduler restart-on-failure can fire.
+		// last write. A canceled ready-pool poll can also land here with an
+		// empty problem list and a still-ready pollPlan; persist that as
+		// degraded so a wedged Statistics call cannot keep observed.json
+		// looking healthy.
+		if len(operationProblems) == 0 {
+			operationProblems = append(operationProblems, problem(time.Now().UTC(), "reconcile-canceled", "reconciliation was canceled before a serving checkpoint; new work is blocked", "", true))
+		}
 		canceledObserved := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)
 		if saveErr := r.persistObserved(ctx, canceledObserved); saveErr != nil {
 			operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
