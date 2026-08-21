@@ -75,7 +75,11 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
     echo ".NET SDK/runtime must come from the workflow setup action" >&2
     exit 1
   fi
-  for toolchain in node npm npx python python3 pip pip3; do
+  # Node is deliberately absent from workflow PATH (the runner's
+  # externals/node* trees are not a job toolchain). Ubuntu 24.04 on the
+  # official actions-runner base already ships python3 as an OS package;
+  # that is not a versioned Actions toolchain and is out of this assertion.
+  for toolchain in node npm npx; do
     if command -v "$toolchain" >/dev/null; then
       echo "$toolchain must come from the workflow setup action, not the worker image PATH" >&2
       exit 1
