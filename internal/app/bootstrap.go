@@ -100,6 +100,7 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		Processes:       host.WindowsProcessObserver{},
 		Tasks:           host.ScheduledTaskCLI{},
 		RestartReceipts: store,
+		Reboot:          host.ShutdownReboot{},
 	}, in, out, errOut)
 	if err != nil {
 		writef(errOut, "initialize application: %v\n", err)

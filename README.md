@@ -111,6 +111,7 @@ ci-runner host logs [--follow|--job ID|--cleanup]
 ci-runner host force-stop
 ci-runner host controller restart
 ci-runner host controller stop-for-update
+ci-runner host reboot [--timeout DURATION] [--force] [--dry-run]
 ci-runner secret import --file PATH
 ```
 
@@ -140,6 +141,15 @@ Update). Because updates auto-install but the host never auto-reboots while a
 session exists, a pending reboot is expected operational state the operator
 finishes during a deliberate drain window: the check is advisory, renders as
 `WARN`, and never degrades the doctor exit code.
+
+`host reboot` is the operator command that finishes that drain window: it
+reuses the `stop-for-update` capacity-zero drain so desired mode is untouched,
+then restarts the machine through trusted `shutdown.exe /r`. `--timeout` bounds
+the drain wait; on expiry the controller keeps draining on its own. The command
+refuses to restart after an unclean drain unless `--force` is passed.
+`--dry-run` drains and reports without requesting a restart. The command does
+not pass `shutdown.exe /f`; `--force` means "reboot after an unclean drain",
+not "forcibly close applications".
 
 The windowless `ci-runner-controller.exe` runs from a current-user logon task
 because Docker Desktop is user-session software. A controller restart first

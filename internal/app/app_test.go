@@ -753,3 +753,100 @@ func TestControllerStopForUpdateDrainsAndDoesNotRestartTask(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
+
+type fakeRebootInitiator struct {
+	calls   int
+	delay   time.Duration
+	comment string
+	err     error
+}
+
+func (f *fakeRebootInitiator) Reboot(_ context.Context, delay time.Duration, comment string) error {
+	f.calls++
+	f.delay = delay
+	f.comment = comment
+	return f.err
+}
+
+func TestHostRebootDrainsThenRestartsWithoutStartingTask(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, out, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{statuses: []control.Status{{
+		ProcessID: 100, AssignedJobCount: 2, ActiveJobCount: 1, ActiveWorkerCount: 2,
+	}}}
+	tasks := &fakeTaskStarter{}
+	reboot := &fakeRebootInitiator{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Reboot = reboot
+	if code := application.Run(context.Background(), []string{"host", "reboot"}); code != ExitOK {
+		t.Fatalf("exit code %d", code)
+	}
+	if controlClient.shutdownCalls != 1 || len(tasks.names) != 0 {
+		t.Fatalf("shutdown=%d task starts=%#v", controlClient.shutdownCalls, tasks.names)
+	}
+	if reboot.calls != 1 || reboot.delay != 0 || reboot.comment != "ci-runner host reboot" {
+		t.Fatalf("reboot calls=%d delay=%s comment=%q", reboot.calls, reboot.delay, reboot.comment)
+	}
+	if !strings.Contains(out.String(), "finish naturally") || !strings.Contains(out.String(), "Machine restart requested") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestHostRebootDryRunDrainsWithoutRestarting(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, out, _ := newTestApplication(t, "", store, nil)
+	controlClient := &fakeControllerControl{statuses: []control.Status{{ProcessID: 100}}}
+	tasks := &fakeTaskStarter{}
+	reboot := &fakeRebootInitiator{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{}}
+	application.dependencies.Tasks = tasks
+	application.dependencies.Reboot = reboot
+	if code := application.Run(context.Background(), []string{"host", "reboot", "--dry-run"}); code != ExitOK {
+		t.Fatalf("exit code %d", code)
+	}
+	if controlClient.shutdownCalls != 1 || reboot.calls != 0 || len(tasks.names) != 0 {
+		t.Fatalf("shutdown=%d reboots=%d task starts=%#v", controlClient.shutdownCalls, reboot.calls, tasks.names)
+	}
+	if !strings.Contains(out.String(), "Dry run") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestHostRebootRefusesUncleanDrainWithoutForce(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	reboot := &fakeRebootInitiator{}
+	application.dependencies.Control = &fakeControllerControl{statusErrors: []error{control.ErrUnavailable}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{}}
+	application.dependencies.Reboot = reboot
+	if code := application.Run(context.Background(), []string{"host", "reboot"}); code != ExitDegraded {
+		t.Fatalf("exit code %d", code)
+	}
+	if reboot.calls != 0 {
+		t.Fatalf("reboot calls=%d", reboot.calls)
+	}
+	if !strings.Contains(errOut.String(), "pass --force") {
+		t.Fatalf("unexpected error output: %s", errOut.String())
+	}
+}
+
+func TestHostRebootForceContinuesAfterUncleanDrain(t *testing.T) {
+	store := state.NewMemoryStore()
+	application, _, errOut := newTestApplication(t, "", store, nil)
+	reboot := &fakeRebootInitiator{}
+	application.dependencies.Control = &fakeControllerControl{statusErrors: []error{control.ErrUnavailable}}
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{}}
+	application.dependencies.Reboot = reboot
+	if code := application.Run(context.Background(), []string{"host", "reboot", "--force"}); code != ExitOK {
+		t.Fatalf("exit code %d", code)
+	}
+	if reboot.calls != 1 {
+		t.Fatalf("reboot calls=%d", reboot.calls)
+	}
+	if !strings.Contains(errOut.String(), "--force continues to reboot") {
+		t.Fatalf("unexpected error output: %s", errOut.String())
+	}
+}
