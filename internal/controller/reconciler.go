@@ -81,7 +81,17 @@ type Reconciler struct {
 	// worker behind it in plan.Remove. Like registrationCheckCursor, it is
 	// only ever read and written from within step() while stepMu is held.
 	retirementCursor uint64
+
+	// staleHandshakeCycles counts consecutive inner step() outcomes that
+	// superseded an open listener poll or deferred retirement as
+	// worker-removal-capacity-stale. After handshakeStaleCycleLimit the next
+	// ensure passes a nil prior so OfficialClient opens a new message session
+	// without deleting the scale set.
+	staleHandshakeCycles int
+	reregisterListeners  bool
 }
+
+const handshakeStaleCycleLimit = 3
 
 type ReconcileResult struct {
 	Observed           model.ObservedState
@@ -434,11 +444,22 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 	identities := make(map[string]scaleset.Identity, len(r.config.GitHub.Targets))
 	pools := make([]PoolSnapshot, 0, len(r.config.GitHub.Targets))
+	reregister := r.reregisterListeners
+	if reregister {
+		r.writeLog(ctx, LogEvent{
+			At: now, Code: "listener-handshake-reregister",
+			Message: "repeated stale capacity handshake; opening a new listener session",
+		})
+		r.clearStaleHandshake()
+	}
 	for _, target := range r.config.GitHub.Targets {
 		var prior *scaleset.Identity
 		if saved, ok := previousPools[target.ID]; ok && saved.ScaleSetID > 0 && saved.ListenerID != "" {
 			value := scaleset.Identity{ScaleSetID: saved.ScaleSetID, ListenerID: saved.ListenerID}
 			prior = &value
+		}
+		if reregister {
+			prior = nil
 		}
 		identity, ensureErr := r.ensure(ctx, target, prior)
 		if ensureErr != nil {
@@ -579,6 +600,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		stopPollWatch()
 		cadenceResult = <-pollWatchDone
 	}
+	staleThisStep := cadenceResult.superseded
 	resources = cadenceResult.observed.Resources
 	power = cadenceResult.observed.Power
 	previous.ResourceGate = cadenceResult.observed.ResourceGate
@@ -626,6 +648,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 	if cause := context.Cause(ctx); cause != nil {
+		if staleThisStep {
+			r.noteStaleHandshake()
+		}
 		if errors.Is(cause, errReconcileInputsChanged) {
 			// Step reruns immediately; a checkpoint here would overwrite the
 			// in-flight advertised/pending capacity the rerun is meant to carry.
@@ -730,10 +755,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 
 	plan := BuildPlan(PlanInput{
-		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
+		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: acknowledgedCapacity, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
 		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
+	alignAdvertisedCapacity(plan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
 	if recoveryOnly {
 		plan.Start = nil
 		plan.Remove = nil
@@ -819,6 +845,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 		if configuredPool && acknowledgedCapacity[worker.PoolID] != requiredCapacity {
 			record("worker-removal-capacity-stale", "idle worker removal was deferred until the listener acknowledges the current planned capacity", worker.PoolID, true, nil)
+			staleThisStep = true
 			continue
 		}
 		if worker.State != model.WorkerExited && configuredPool && requiredCapacity != 0 {
@@ -919,10 +946,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 
 	postPlan := BuildPlan(PlanInput{
-		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
+		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: acknowledgedCapacity, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
 		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
 	})
+	alignAdvertisedCapacity(postPlan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
 		pool := findPool(pools, target.ID)
@@ -979,11 +1007,36 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
+	if staleThisStep {
+		r.noteStaleHandshake()
+	} else if containsReadyPool(pools) {
+		r.clearStaleHandshake()
+	}
 	return ReconcileResult{
 		Observed: observed, Plan: postPlan,
 		CheckpointAge: checkpointAge, CheckpointAgeValid: checkpointAgeValid,
 		NewWorkBlocked: observationFailed || desiredLoadErr != nil,
 	}, errors.Join(operationErrors...)
+}
+
+func (r *Reconciler) noteStaleHandshake() {
+	r.staleHandshakeCycles++
+	if r.staleHandshakeCycles >= handshakeStaleCycleLimit {
+		r.reregisterListeners = true
+	}
+}
+
+func (r *Reconciler) clearStaleHandshake() {
+	r.staleHandshakeCycles = 0
+	r.reregisterListeners = false
+}
+
+func alignAdvertisedCapacity(planned map[string]int, acknowledged map[string]int, acked map[string]bool) {
+	for poolID, capacity := range acknowledged {
+		if acked[poolID] {
+			planned[poolID] = capacity
+		}
+	}
 }
 
 // probeEngineMemory maintains the cached engine VM MemTotal that cross-checks

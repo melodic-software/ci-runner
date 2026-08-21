@@ -18,6 +18,7 @@ type Fake struct {
 	RemoveErr      error
 	MissingRunners map[int64]bool
 	RunnerErrors   map[int64]error
+	sessionSeq     int
 }
 
 type Call struct {
@@ -63,6 +64,13 @@ func (f *Fake) Ensure(ctx context.Context, definition Definition, previous *Iden
 		return Identity{}, err
 	}
 	if identity, ok := f.Identities[definition.TargetID]; ok {
+		if previous == nil {
+			// Match OfficialClient: a nil prior with an existing session opens a
+			// new message session without deleting the scale set.
+			f.sessionSeq++
+			identity.ListenerID = fmt.Sprintf("listener-%s-%d", definition.TargetID, f.sessionSeq)
+			f.Identities[definition.TargetID] = identity
+		}
 		return identity, nil
 	}
 	if previous != nil {
