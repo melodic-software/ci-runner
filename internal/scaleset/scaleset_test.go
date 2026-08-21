@@ -1,6 +1,7 @@
 package scaleset
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -28,5 +29,32 @@ func TestRetryableClassification(t *testing.T) {
 	}
 	if Retryable(&Error{Kind: ErrorUnauthorized}) || Retryable(errors.New("plain")) {
 		t.Fatal("non-retryable error classified as retryable")
+	}
+}
+
+func TestFakeEnsureNilPriorRotatesListenerID(t *testing.T) {
+	t.Parallel()
+	fake := NewFake()
+	definition := Definition{TargetID: "org"}
+	first, err := fake.Ensure(context.Background(), definition, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fake.Ensure(context.Background(), definition, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ListenerID != first.ListenerID || second.ScaleSetID != first.ScaleSetID {
+		t.Fatalf("reuse with prior changed identity: first=%#v second=%#v", first, second)
+	}
+	rotated, err := fake.Ensure(context.Background(), definition, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.ScaleSetID != first.ScaleSetID {
+		t.Fatalf("nil prior deleted the scale set: %#v", rotated)
+	}
+	if rotated.ListenerID == first.ListenerID {
+		t.Fatalf("nil prior did not open a new session: %#v", rotated)
 	}
 }

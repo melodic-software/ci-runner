@@ -38,6 +38,27 @@ func TestAlignAdvertisedCapacityHoldsAckedPools(t *testing.T) {
 	}
 }
 
+func TestSuccessfulPollKeepsPlanAlignedWithAckedCapacity(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Observed.Pools) != 1 || !result.Observed.Pools[0].CapacityAcknowledged {
+		t.Fatalf("expected one acknowledged pool: %#v", result.Observed.Pools)
+	}
+	acked := result.Observed.Pools[0].MaxCapacity
+	if result.Plan.AdvertisedCapacity["org"] != acked {
+		t.Fatalf("post-poll plan %d forked from acknowledged %d", result.Plan.AdvertisedCapacity["org"], acked)
+	}
+	if logs.contains("worker-removal-capacity-stale") {
+		t.Fatalf("successful poll still recorded a capacity-stale retirement: %s", logs)
+	}
+}
+
 func TestStaleHandshakeReregistersListenerSession(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
