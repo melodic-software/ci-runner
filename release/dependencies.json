@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-08-12T00:20:00.0000000Z",
+  "resolvedAt": "2026-08-21T07:40:00.0000000Z",
   "go": {
     "version": "1.26.6",
     "source": "https://go.dev/dl/?mode=json"
@@ -125,8 +125,8 @@
     },
     {
       "repository": "docker/setup-buildx-action",
-      "version": "4.2.0",
-      "commit": "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c"
+      "version": "4.3.0",
+      "commit": "37fe631027851001ddb9b187196cc803df7f5f0e"
     },
     {
       "repository": "zizmorcore/zizmor-action",
@@ -137,8 +137,8 @@
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/7107b34832a7b6db5d08d3b132621c599fbe5e50"
+      "commit": "d26c750691b5498fab529d115b63f84aa7aecebe",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/d26c750691b5498fab529d115b63f84aa7aecebe"
     }
   ],
   "reusableWorkflows": []
