@@ -75,6 +75,12 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
     echo ".NET SDK/runtime must come from the workflow setup action" >&2
     exit 1
   fi
+  for toolchain in node npm npx python python3 pip pip3; do
+    if command -v "$toolchain" >/dev/null; then
+      echo "$toolchain must come from the workflow setup action, not the worker image PATH" >&2
+      exit 1
+    fi
+  done
   for directory in \
     "$DOTNET_INSTALL_DIR" \
     "$DOTNET_INSTALL_DIR/tools" \
