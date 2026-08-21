@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -86,5 +87,20 @@ func TestStaleHandshakeReregistersListenerSession(t *testing.T) {
 	}
 	if harness.controller.reregisterListeners || harness.controller.staleHandshakeCycles != 0 {
 		t.Fatalf("handshake flags were not cleared: cycles=%d reregister=%t", harness.controller.staleHandshakeCycles, harness.controller.reregisterListeners)
+	}
+}
+
+func TestFailedHandshakeReregisterStaysArmed(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	harness.controller.staleHandshakeCycles = handshakeStaleCycleLimit
+	harness.controller.reregisterListeners = true
+	harness.scaleSets.Errors["ensure:org"] = errors.New("replacement session failed")
+	_, _ = harness.controller.Step(context.Background())
+	if !harness.controller.reregisterListeners {
+		t.Fatal("failed listener re-registration cleared the recovery flag")
 	}
 }

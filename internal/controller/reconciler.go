@@ -450,8 +450,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			At: now, Code: "listener-handshake-reregister",
 			Message: "repeated stale capacity handshake; opening a new listener session",
 		})
-		r.clearStaleHandshake()
 	}
+	reregisterFailed := false
 	for _, target := range r.config.GitHub.Targets {
 		var prior *scaleset.Identity
 		if saved, ok := previousPools[target.ID]; ok && saved.ScaleSetID > 0 && saved.ListenerID != "" {
@@ -463,6 +463,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 		identity, ensureErr := r.ensure(ctx, target, prior)
 		if ensureErr != nil {
+			if reregister {
+				reregisterFailed = true
+			}
 			record("scale-set-ensure-error", safeScaleSetMessage("ensure", ensureErr), target.ID, scaleset.Retryable(ensureErr), ensureErr)
 			pools = append(pools, PoolSnapshot{TargetID: target.ID})
 			continue
@@ -480,6 +483,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			TargetID: target.ID, Identity: identity, TotalAssignedJobs: assigned,
 			DrainServiceCapacity: drainCapacity, Ready: true,
 		})
+	}
+	if reregister && !reregisterFailed {
+		r.clearStaleHandshake()
 	}
 
 	// Compute capacity from the last authoritative statistics, then send that
