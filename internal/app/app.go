@@ -80,6 +80,7 @@ type Dependencies struct {
 	Processes       host.ProcessObserver
 	Tasks           host.ScheduledTaskStarter
 	RestartReceipts RestartReceiptReader
+	Reboot          host.RebootInitiator
 	Now             func() time.Time
 	PollInterval    time.Duration
 }
@@ -153,6 +154,8 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 		return a.forceStop(ctx, args[1:])
 	case "controller":
 		return a.controllerCommand(ctx, args[1:])
+	case "reboot":
+		return a.reboot(ctx, args[1:])
 	case "health-watch":
 		return a.healthWatch(ctx, args[1:])
 	default:
@@ -604,6 +607,7 @@ func (a *Application) usage() {
   ci-runner host force-stop
   ci-runner host controller restart
 	ci-runner host controller stop-for-update
+  ci-runner host reboot [--timeout DURATION] [--force] [--dry-run]
   ci-runner host health-watch check [--json] [--no-alert]
   ci-runner host health-watch install-task --config PATH [--executable PATH]
   ci-runner secret import --file PATH
