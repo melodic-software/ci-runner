@@ -86,6 +86,19 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		}
 		detail := fmt.Sprintf("phase=%s version=%s heartbeat=%s age=%s maximumAge=%s", observed.Phase, displayValue(observed.Version), observed.HeartbeatAt.Format(time.RFC3339), age.Round(time.Second), maximumAge)
 		checks = append(checks, DoctorCheck{Name: "observed-state", Healthy: healthy, Detail: detail})
+		// desired=disabled with observed disabled is a legitimate idle host.
+		// desired=enabled while observed is still disabled or starting is the
+		// #277 never-ready wedge: the control plane answers, so
+		// controller-control-plane PASSes, but reconcile has never reached a
+		// serving phase.
+		if desiredValid && desired.Mode == model.ModeEnabled && liveStatus != nil && !liveStatus.ShuttingDown &&
+			(observed.Phase == model.PhaseDisabled || observed.Phase == model.PhaseStarting) {
+			checks = append(checks, DoctorCheck{
+				Name:    "controller-reconcile-progress",
+				Healthy: false,
+				Detail:  fmt.Sprintf("desired=%s observedPhase=%s; live controller has not reached a serving phase", desired.Mode, observed.Phase),
+			})
+		}
 		pools := make(map[string]model.PoolObservation, len(observed.Pools))
 		for _, pool := range observed.Pools {
 			pools[pool.ID] = pool
@@ -96,16 +109,40 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 			acknowledgementGrace := listenerAcknowledgementGrace(a.dependencies.Config)
 			acknowledgementPendingWithinGrace := found && !pool.CapacityAcknowledged && !pool.UpdatedAt.IsZero() &&
 				acknowledgementAge >= 0 && acknowledgementAge <= acknowledgementGrace
+			// Acknowledged zero while the planner still wants workers is the
+			// #281 handshake wedge: GitHub accepted the advertisement, so the
+			// acknowledgement bit PASSes, but the fleet is starved.
+			acknowledgedZeroStarved := desiredValid && desired.Mode == model.ModeEnabled &&
+				pool.CapacityAcknowledged && pool.DesiredWorkers > 0 && pool.MaxCapacity == 0
 			listenerHealthy := found && pool.ScaleSetID > 0 && pool.ListenerID != "" &&
-				(pool.CapacityAcknowledged || acknowledgementPendingWithinGrace)
+				(pool.CapacityAcknowledged || acknowledgementPendingWithinGrace) &&
+				!acknowledgedZeroStarved
 			listenerDetail := "no current listener observation"
 			if found {
-				listenerDetail = fmt.Sprintf("scaleSetId=%d listenerId=%s capacity=%d assigned=%d acknowledged=%t transitionAge=%s grace=%s", pool.ScaleSetID, displayValue(pool.ListenerID), pool.MaxCapacity, pool.TotalAssignedJobs, pool.CapacityAcknowledged, acknowledgementAge.Round(time.Second), acknowledgementGrace)
+				listenerDetail = fmt.Sprintf("scaleSetId=%d listenerId=%s desiredWorkers=%d capacity=%d assigned=%d acknowledged=%t transitionAge=%s grace=%s", pool.ScaleSetID, displayValue(pool.ListenerID), pool.DesiredWorkers, pool.MaxCapacity, pool.TotalAssignedJobs, pool.CapacityAcknowledged, acknowledgementAge.Round(time.Second), acknowledgementGrace)
 			}
 			checks = append(checks, DoctorCheck{Name: "github-listener/" + target.ID, Healthy: listenerHealthy, Detail: listenerDetail})
 		}
 		for _, problem := range observed.Problems {
 			checks = append(checks, DoctorCheck{Name: "problem/" + problem.Code, Healthy: false, Detail: problem.Message})
+		}
+		// resource-constrained with every pool at zero is total starvation —
+		// the #281 recurrence that sat all-PASS while the fleet served nothing.
+		if desiredValid && desired.Mode == model.ModeEnabled && observed.Phase == model.PhaseResourceConstrained {
+			starved := true
+			for _, pool := range observed.Pools {
+				if pool.MaxCapacity > 0 {
+					starved = false
+					break
+				}
+			}
+			if starved {
+				checks = append(checks, DoctorCheck{
+					Name:    "capacity-starved",
+					Healthy: false,
+					Detail:  fmt.Sprintf("phase=%s; every pool advertised capacity 0", observed.Phase),
+				})
+			}
 		}
 	}
 
