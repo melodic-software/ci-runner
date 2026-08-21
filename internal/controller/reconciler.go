@@ -202,7 +202,11 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 			continue
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ReconcileResult{}, ctxErr
+			// Keep any NewWorkBlocked / observed checkpoint the inner step
+			// already produced. Dropping the result here is what left the
+			// controller-main failure streak unable to restart a wedged
+			// process after a canceled startup inventory (#277).
+			return result, ctxErr
 		}
 		if cause != nil && err == nil {
 			err = cause
@@ -622,7 +626,23 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 	if cause := context.Cause(ctx); cause != nil {
-		return ReconcileResult{}, cause
+		if errors.Is(cause, errReconcileInputsChanged) {
+			// Step reruns immediately; a checkpoint here would overwrite the
+			// in-flight advertised/pending capacity the rerun is meant to carry.
+			return ReconcileResult{}, cause
+		}
+		// No ready pool means persistPollCheckpoint never ran, so a canceled
+		// ensure/inventory left observed.json frozen at the previous process's
+		// last write. Persist a detached degraded checkpoint and surface
+		// NewWorkBlocked so Task Scheduler restart-on-failure can fire.
+		canceledObserved := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)
+		if saveErr := r.persistObserved(ctx, canceledObserved); saveErr != nil {
+			operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
+		}
+		return ReconcileResult{
+			Observed:       canceledObserved,
+			NewWorkBlocked: observationFailed || desiredLoadErr != nil,
+		}, errors.Join(cause, errors.Join(operationErrors...))
 	}
 	if cadenceResult.checkpointErr != nil {
 		record("reconcile-checkpoint-error", "controller heartbeat checkpoint failed during the listener poll", "", true, cadenceResult.checkpointErr)

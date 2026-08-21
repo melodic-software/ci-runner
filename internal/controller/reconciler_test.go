@@ -232,6 +232,45 @@ func TestAmbiguousWorkerInventoryFailureFailsClosedWithoutDesktopRestart(t *test
 	assertProblemCode(t, result.Observed.Problems, "worker-inventory-error")
 }
 
+func TestCanceledStartupInventoryPersistsDegradedAndBlocksNewWork(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	priorHeartbeat := time.Date(2026, 8, 16, 18, 44, 0, 0, time.UTC)
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseDisabled, HeartbeatAt: priorHeartbeat, Version: "previous-process",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	harness.runtime.listAfter = cancel
+	harness.runtime.listErr = context.Canceled
+
+	result, err := harness.controller.Step(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("step error = %v, want context.Canceled", err)
+	}
+	if !result.NewWorkBlocked {
+		t.Fatal("canceled startup inventory must set NewWorkBlocked so the failure streak can restart the process")
+	}
+	if result.Observed.Phase != model.PhaseDegraded {
+		t.Fatalf("result phase = %q, want %q", result.Observed.Phase, model.PhaseDegraded)
+	}
+	assertProblemCode(t, result.Observed.Problems, "worker-inventory-error")
+
+	stored, loadErr := harness.store.LoadObserved(context.Background())
+	if loadErr != nil {
+		t.Fatalf("load persisted observed state: %v", loadErr)
+	}
+	if stored.Phase != model.PhaseDegraded {
+		t.Fatalf("persisted phase = %q, want %q (previous process left phase=disabled)", stored.Phase, model.PhaseDegraded)
+	}
+	if !stored.HeartbeatAt.After(priorHeartbeat) {
+		t.Fatalf("persisted heartbeat %s did not advance past the previous process heartbeat %s", stored.HeartbeatAt, priorHeartbeat)
+	}
+	assertProblemCode(t, stored.Problems, "worker-inventory-error")
+}
+
 func TestStoppedDesktopIsHealthyWhenModeDoesNotRequireEngine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1951,6 +1990,7 @@ type testRuntime struct {
 	lists           int
 	listErr         error
 	listErrAt       int
+	listAfter       func()
 	forced          []string
 	acquireOnRemove string
 	removeErr       error
@@ -1968,6 +2008,9 @@ func (r *testRuntime) List(ctx context.Context) ([]model.Worker, error) {
 	r.lists++
 	if r.trace != nil {
 		r.trace.add("workers:list")
+	}
+	if r.listAfter != nil {
+		r.listAfter()
 	}
 	if r.listErr != nil && (r.listErrAt == 0 || r.lists == r.listErrAt) {
 		return nil, r.listErr
