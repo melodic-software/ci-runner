@@ -226,7 +226,13 @@ same trust as the sidecar, not a security attestation.
 tool surface, exact runner version, non-root identity, rootless .NET/NuGet
 environment and directory ownership, absence of runner toolcache overrides,
 absence of baked JIT or credential variables, required stdin handoff,
-passwordless sudo, and the exact `idle → busy → completed` hook sequence.
+passwordless sudo, the exact `idle → busy → completed` hook sequence, and that
+versioned language toolchains installed by this derived layer (`dotnet`,
+`node`, `npm`, `npx`) are absent from PATH so workflows must install them
+with their official setup actions. The runner's internal `externals/node*`
+runtimes are not a workflow `node` on PATH. Ubuntu 24.04's `python3` OS
+package may exist on the official actions-runner base; that is not a
+versioned Actions toolchain and is not a substitute for `actions/setup-python`.
 Runtime isolation is verified in the controller adapter tests and observed
 live during each release's first rolling-host rollout because it is a
 container-create contract rather than an image property.
