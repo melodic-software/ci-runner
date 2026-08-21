@@ -1,32 +1,33 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-14T22:42:00.0000000Z",
-  "issue": 252,
-  "cycle": "2026-08-14",
+  "reviewedAt": "2026-08-21T07:40:00.0000000Z",
+  "issue": 283,
+  "cycle": "2026-08-21",
   "held": [
     {
-      "dependency": "repository-pin:melodic-software/ci-workflows",
-      "pinned": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
-      "pinnedVersion": "v0.14.2",
-      "latestObservedAtReview": "b2a9199e86f03e2ceca82f6b2ee9890e6425347b",
+      "dependency": "go",
+      "pinned": "1.26.6",
+      "latestObservedAtReview": "1.27.0",
       "decision": "no-bump-this-cycle",
-      "rationale": "Tip b2a9199 has no published Release (latest remains v0.14.2 @ 7107b34). The two-commit delta (claude-code-action 1.0.191→1.0.192; claude-review declared outputs) touches only claude-* workflow_call lanes with no caller in this repository. Gate reusable permissions (semantic-pr, do-not-merge-gate, pr-issue-linkage) are unchanged vs v0.14.2. Hold until the next published Release; then move every uses: reference together in a dedicated compatibility PR. Frontier consensus (Fable + Sol) unanimously chose HOLD_WITH_RECORD_PR."
+      "rationale": "Go 1.27.0 is a one-day-old minor, not a security patch. The lint contract in AGENTS.md builds golangci-lint v2.6.0 with GOTOOLCHAIN matching go.mod; golangci-lint binaries built with go1.26 do not support go1.27 (golangci/golangci-lint#6643). go1.27 support landed in golangci-lint v2.13.0, which also carries a large linter delta (errcheck 1.10→1.20, exhaustruct deprecation). A Go bump is therefore a coupled go.mod + AGENTS.md + lint-pin qualification, not a mechanical pin. Freshness policy targets validation within 7 days and hard-fails at 14; holding a 1-day-old x.27.0 is inside the window. Frontier consensus (Fable + Sol) unanimously chose HOLD_GO."
     }
   ],
   "bumped": [
     {
-      "dependency": "govulncheck",
-      "from": "1.6.0",
-      "to": "1.7.0",
+      "dependency": "github-action:docker/setup-buildx-action",
+      "from": "4.2.0",
+      "to": "4.3.0",
       "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. Verified clean with GOTOOLCHAIN=go1.26.6 go run …@v1.7.0 ./.... Shipped in #256."
+      "rationale": "Mechanical publication-toolchain pin. v4.3.0 (2026-08-19) is JS dependency updates only (@docker/actions-toolkit 0.92.0→0.95.0, brace-expansion, js-yaml, postcss, undici) with no input/behavior changes. Tag v4.3.0 resolves to commit 37fe631027851001ddb9b187196cc803df7f5f0e. Frontier consensus (Fable + Sol) unanimously chose BUMP_BUILDX."
     },
     {
-      "dependency": "buildkit-syft-scanner",
-      "from": "1.11.0",
-      "to": "1.12.0",
+      "dependency": "repository-pin:melodic-software/ci-workflows",
+      "from": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
+      "fromVersion": "v0.14.2",
+      "to": "d26c750691b5498fab529d115b63f84aa7aecebe",
+      "toVersion": "v0.17.0",
       "decision": "bump",
-      "rationale": "Mechanical SBOM generator pin. Index and linux/amd64 digests resolved via crane against docker.io; Test-ReleasePins.ps1 green. Shipped in #257."
+      "rationale": "The 2026-08-14 hold's recorded exit condition is met: ci-workflows published v0.17.0 targeting exactly d26c750691b5498fab529d115b63f84aa7aecebe. Every uses: reference moves together in this dedicated compatibility PR. Gate reusables (semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor) are unchanged vs v0.14.2; go-quality.yml carries the already-reviewed govulncheck update. Frontier consensus (Fable + Sol) unanimously chose BUMP_CI_WORKFLOWS."
     }
   ]
 }
