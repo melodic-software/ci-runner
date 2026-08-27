@@ -1,33 +1,38 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-21T07:40:00.0000000Z",
+  "reviewedAt": "2026-08-27T08:00:00.0000000Z",
   "issue": 283,
-  "cycle": "2026-08-21",
-  "held": [
-    {
-      "dependency": "go",
-      "pinned": "1.26.6",
-      "latestObservedAtReview": "1.27.0",
-      "decision": "no-bump-this-cycle",
-      "rationale": "Go 1.27.0 is a one-day-old minor, not a security patch. The lint contract in AGENTS.md builds golangci-lint v2.6.0 with GOTOOLCHAIN matching go.mod; golangci-lint binaries built with go1.26 do not support go1.27 (golangci/golangci-lint#6643). go1.27 support landed in golangci-lint v2.13.0, which also carries a large linter delta (errcheck 1.10→1.20, exhaustruct deprecation). A Go bump is therefore a coupled go.mod + AGENTS.md + lint-pin qualification, not a mechanical pin. Freshness policy targets validation within 7 days and hard-fails at 14; holding a 1-day-old x.27.0 is inside the window. Frontier consensus (Fable + Sol) unanimously chose HOLD_GO."
-    }
-  ],
+  "cycle": "2026-08-27",
+  "held": [],
   "bumped": [
     {
-      "dependency": "github-action:docker/setup-buildx-action",
-      "from": "4.2.0",
-      "to": "4.3.0",
+      "dependency": "go",
+      "from": "1.26.6",
+      "to": "1.27.0",
       "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. v4.3.0 (2026-08-19) is JS dependency updates only (@docker/actions-toolkit 0.92.0→0.95.0, brace-expansion, js-yaml, postcss, undici) with no input/behavior changes. Tag v4.3.0 resolves to commit 37fe631027851001ddb9b187196cc803df7f5f0e. Frontier consensus (Fable + Sol) unanimously chose BUMP_BUILDX."
+      "rationale": "The 2026-08-21 hold's recorded exit condition is met: golangci-lint v2.13.0 (go1.27 support, golangci/golangci-lint#6643) shipped 2026-08-19 and v2.13.1 on 2026-08-20, and ci-workflows v0.17.2 absorbs 2.13.1 into the shared go-quality reusable, so CI and the AGENTS.md local contract can both lint a go1.27 module. The coupled qualification the hold called for was performed rather than assumed: go1.27.0 build, vet, and the full test suite (15/15 packages) pass, the CGO_ENABLED=0 GOOS=windows cross-compile of ./cmd/... succeeds, and golangci-lint v2.13.1 built with GOTOOLCHAIN=go1.27.0 reports 0 issues, matching the v2.12.2/go1.26.6 baseline — the feared errcheck 1.10->1.20 and exhaustruct-deprecation delta surfaces no findings on this codebase. Go 1.27's encoding/json v2 switch (rejects invalid UTF-8 and duplicate object names) is the one behavior change with real exposure here, since the module parses compatibility manifests, Docker API responses, and runner job JSON; the existing suite, including the internal/control transport fuzz corpus, passes unchanged. This bump also relieves freshness pressure: go1.26.7 and go1.27.0 both published 2026-08-19, so the drift row's 14-day hard-fail window closes on 2026-09-02 whether or not 1.27.0 is adopted, and 1.26.7 alone would not move it.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "Go is a compatibility-pair input (release/dependencies.json go.version flows into compatibility.json). Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
     },
     {
       "dependency": "repository-pin:melodic-software/ci-workflows",
-      "from": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
-      "fromVersion": "v0.14.2",
-      "to": "d26c750691b5498fab529d115b63f84aa7aecebe",
-      "toVersion": "v0.17.0",
+      "from": "d26c750691b5498fab529d115b63f84aa7aecebe",
+      "fromVersion": "v0.17.0",
+      "to": "0f8176e87e0be518f382664779655011bf95784a",
+      "toVersion": "v0.17.2",
       "decision": "bump",
-      "rationale": "The 2026-08-14 hold's recorded exit condition is met: ci-workflows published v0.17.0 targeting exactly d26c750691b5498fab529d115b63f84aa7aecebe. Every uses: reference moves together in this dedicated compatibility PR. Gate reusables (semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor) are unchanged vs v0.14.2; go-quality.yml carries the already-reviewed govulncheck update. Frontier consensus (Fable + Sol) unanimously chose BUMP_CI_WORKFLOWS."
+      "rationale": "Prerequisite for the Go bump above: v0.17.2 is what raises the shared go-quality reusable's GOLANGCI_LINT_VERSION from 2.12.2 to 2.13.1. The freshness check reports this row's 'latest' as the ci-workflows default-branch HEAD, which is untagged; the reviewed-pin contract targets published releases, so the target is the newest release tag v0.17.2, and the row will keep reporting drift until a later cycle catches up. Across d26c750...0f8176e only two consumed reusables change: go-quality.yml (golangci-lint 2.12.2 -> 2.13.1 with new checksums for the Linux and Windows lanes) and the check-jsonschema action (astral-sh/setup-uv v9.0.0 -> v10.0.0). Every gate reusable this repo calls — semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor, ci-status — is byte-identical to v0.17.0. All 21 uses: references move together.",
+      "requiresFleetRollout": false
     }
-  ]
+  ],
+  "pending": [
+    {
+      "dependency": "github-hosted-powershell",
+      "pinned": "7.6.4",
+      "proposed": "7.6.5",
+      "decision": "proposed-in-separate-pr",
+      "rationale": "Reviewed in this cycle but carried in its own pull request so it keeps an independent revert boundary; its reviewed-decision record is appended by that PR."
+    }
+  ],
+  "reviewNote": "Recorded by an automated drain lane. Every row above is proposed, not promoted: each ships as its own review-only pull request carrying the do-not-merge label, per the docs/releases.md rule that controller, runner, image, toolchain, Scale Set Client, Action, and release changes are never auto-merged. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
 }
