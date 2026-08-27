@@ -21,4 +21,4 @@ jobs:
       # `prerequisite-result`, so the resolver never runs, but the grant is
       # still mandatory for the reusable to start at all.
       actions: read # Mandatory match for the reusable's own grant; see above.
-    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@d26c750691b5498fab529d115b63f84aa7aecebe # v0.17.0
+    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@0f8176e87e0be518f382664779655011bf95784a # v0.17.2

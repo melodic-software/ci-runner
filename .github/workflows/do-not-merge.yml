@@ -24,4 +24,4 @@ jobs:
     permissions:
       pull-requests: read # the reusable gate reads the PR's labels only
       actions: read # mandatory to start the reusable; see pr-title.yml for why
-    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@d26c750691b5498fab529d115b63f84aa7aecebe # v0.17.0
+    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@0f8176e87e0be518f382664779655011bf95784a # v0.17.2
