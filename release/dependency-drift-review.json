@@ -28,6 +28,18 @@
       "toVersion": "v0.17.0",
       "decision": "bump",
       "rationale": "The 2026-08-14 hold's recorded exit condition is met: ci-workflows published v0.17.0 targeting exactly d26c750691b5498fab529d115b63f84aa7aecebe. Every uses: reference moves together in this dedicated compatibility PR. Gate reusables (semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor) are unchanged vs v0.14.2; go-quality.yml carries the already-reviewed govulncheck update. Frontier consensus (Fable + Sol) unanimously chose BUMP_CI_WORKFLOWS."
+    },
+    {
+      "dependency": "github-hosted-powershell",
+      "from": "7.6.4",
+      "to": "7.6.5",
+      "reviewedAt": "2026-08-27T08:00:00.0000000Z",
+      "cycle": "2026-08-27",
+      "decision": "bump",
+      "rationale": "PowerShell tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity. The manifest at commit c5170d2845dc0eb0f22853ec70bd4f1c891112ca (2026-08-21) lists PowerShell 7.6.5, so adopting 7.6.5 restores parity rather than leading it. v7.6.5 is a servicing patch over v7.6.4: one engine fix (dot-sourcing behavior of `pwsh -file` for advanced-function scripts), .NET SDK 10.0.302, Microsoft.PowerShell.Archive 1.2.6, and packaging changes; the release notes document no breaking change and no security fix. The archive checksum was verified independently by downloading the asset and hashing it, not only by reading the release metadata. The same manifest still lists GitHub CLI 2.97.0, so the gh version pin is unchanged and only its hostedImageManifestCommit evidence reference moves to the manifest actually consulted.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "PowerShell is baked into the worker image (Dockerfile POWERSHELL_VERSION / POWERSHELL_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Recorded by an automated drain lane and proposed, not promoted: it ships as a review-only pull request carrying the do-not-merge label, per the docs/releases.md rule that controller, runner, image, toolchain, Scale Set Client, Action, and release changes are never auto-merged. The go hold above is unchanged by this row and is addressed in its own pull request. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
     }
   ]
 }
