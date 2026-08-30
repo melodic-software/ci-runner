@@ -51,10 +51,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G8 | go-state | 14 | 2 | delivered (wave 2) |
 | G9 | go-control | 8 | 2 | delivered (wave 2; refuter note — WaitGroup.Go skips Done on panic unwind, observable only during process death, accepted) |
 | G10 | go-secret | 15 | 2 | delivered (wave 2) |
-| G11 | go-jobindex | 8 | 3 | in-flight |
-| G12 | go-controller-src | 9 | 3 | in-flight |
-| G13 | go-controller-tests | 11 | 3 (after G12) | pending |
-| G14 | go-healthwatch | 7 | 3 (after G11) | pending |
+| G11 | go-jobindex | 8 | 3 | verified (refuter: NOT REFUTED) |
+| G12 | go-controller-src | 9 | 3 | verified (refuter: NOT REFUTED) |
+| G13 | go-controller-tests | 11 | 3 (after G12) | simplified (verifier running) |
+| G14 | go-healthwatch | 7 | 3 (after G11) | verified (refuter: NOT REFUTED) |
 | G15 | go-host-core | 19 | 4 | pending |
 | G16 | go-host-probes | 10 | 4 (after G15) | pending |
 | G17 | go-host-tests | 8 | 4 (after G15+G16) | pending |
