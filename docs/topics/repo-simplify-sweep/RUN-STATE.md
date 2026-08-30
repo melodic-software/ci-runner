@@ -55,10 +55,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G12 | go-controller-src | 9 | 3 | delivered (wave 3) |
 | G13 | go-controller-tests | 11 | 3 | delivered (wave 3; one unreproduced full-suite flake disclosed by refuter — 42+ clean runs since incl. 4 orchestrator race-double-runs; differential baseline showed no stability difference) |
 | G14 | go-healthwatch | 7 | 3 | delivered (wave 3) |
-| G15 | go-host-core | 19 | 4 | in-flight |
-| G16 | go-host-probes | 10 | 4 (after G15) | pending |
+| G15 | go-host-core | 19 | 4 | verified (refuter: NOT REFUTED) |
+| G16 | go-host-probes | 10 | 4 (after G15) | in-flight |
 | G17 | go-host-tests | 8 | 4 (after G15+G16) | pending |
-| G18 | go-runtime-docker | 13 | 4 | in-flight |
+| G18 | go-runtime-docker | 13 | 4 | verified (refuter: NOT REFUTED) |
 | G19 | go-app-src | 23 | 5 | pending |
 | G20 | go-app-tests | 11 | 5 (after G19) | pending |
 
