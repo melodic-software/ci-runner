@@ -1,7 +1,6 @@
 package jobindex
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,17 +52,8 @@ func loadAssignTimes(directory string) (AssignTimesCatalog, error) {
 		return AssignTimesCatalog{}, fmt.Errorf("assign-times sidecar exceeds the %d-byte cap", maximumJobState)
 	}
 	var catalog AssignTimesCatalog
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&catalog); err != nil {
-		return AssignTimesCatalog{}, fmt.Errorf("decode assign-times sidecar: %w", err)
-	}
-	var trailer any
-	if err := decoder.Decode(&trailer); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return AssignTimesCatalog{}, errors.New("decode assign-times sidecar: multiple JSON values are not allowed")
-		}
-		return AssignTimesCatalog{}, fmt.Errorf("decode assign-times sidecar trailer: %w", err)
+	if err := decodeStrictJSON(contents, "assign-times sidecar", &catalog); err != nil {
+		return AssignTimesCatalog{}, err
 	}
 	if catalog.SchemaVersion != assignTimesSchemaVersion {
 		return AssignTimesCatalog{}, fmt.Errorf("unsupported assign-times schemaVersion %d", catalog.SchemaVersion)
@@ -93,16 +83,14 @@ func hydrateAssignTimes(catalog *Catalog, times AssignTimesCatalog) {
 			continue
 		}
 		if assigned, ok := byKey[record.PoolID+"\x00"+record.RunnerName]; ok {
-			value := assigned
-			record.RunnerAssignedAt = &value
+			record.RunnerAssignedAt = &assigned
 			continue
 		}
 		if record.JobID == "" {
 			continue
 		}
 		if assigned, ok := byJob[record.JobID]; ok {
-			value := assigned
-			record.RunnerAssignedAt = &value
+			record.RunnerAssignedAt = &assigned
 		}
 	}
 }

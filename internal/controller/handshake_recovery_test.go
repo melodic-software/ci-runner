@@ -11,7 +11,7 @@ import (
 func TestNoteStaleHandshakeArmsListenerReregisterAtLimit(t *testing.T) {
 	t.Parallel()
 	reconciler := &Reconciler{}
-	for i := 0; i < handshakeStaleCycleLimit-1; i++ {
+	for i := range handshakeStaleCycleLimit - 1 {
 		reconciler.noteStaleHandshake()
 		if reconciler.reregisterListeners {
 			t.Fatalf("reregister armed after %d stale cycles", i+1)

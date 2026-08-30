@@ -51,10 +51,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G8 | go-state | 14 | 2 | delivered (wave 2) |
 | G9 | go-control | 8 | 2 | delivered (wave 2; refuter note — WaitGroup.Go skips Done on panic unwind, observable only during process death, accepted) |
 | G10 | go-secret | 15 | 2 | delivered (wave 2) |
-| G11 | go-jobindex | 8 | 3 | verified (refuter: NOT REFUTED) |
-| G12 | go-controller-src | 9 | 3 | verified (refuter: NOT REFUTED) |
-| G13 | go-controller-tests | 11 | 3 (after G12) | simplified (verifier running) |
-| G14 | go-healthwatch | 7 | 3 (after G11) | verified (refuter: NOT REFUTED) |
+| G11 | go-jobindex | 8 | 3 | delivered (wave 3) |
+| G12 | go-controller-src | 9 | 3 | delivered (wave 3) |
+| G13 | go-controller-tests | 11 | 3 | delivered (wave 3; one unreproduced full-suite flake disclosed by refuter — 42+ clean runs since incl. 4 orchestrator race-double-runs; differential baseline showed no stability difference) |
+| G14 | go-healthwatch | 7 | 3 | delivered (wave 3) |
 | G15 | go-host-core | 19 | 4 | pending |
 | G16 | go-host-probes | 10 | 4 (after G15) | pending |
 | G17 | go-host-tests | 8 | 4 (after G15+G16) | pending |
@@ -383,6 +383,79 @@ File lists: deterministic mapping mirrored below from the refined grouping
   Reason: security-critical path, marginal 4-line dedup. Scope: small.
   Category: dedup.
 
+- G11: assign_times.go:38-63 + drop_journal.go:58-83 — full dedup of the two
+  sidecar loaders into one generic function. Reason: per-step error strings
+  diverge inconsistently, forcing string plumbing that adds indirection; only
+  the decode core was safely shareable. Scope: medium. Category: dedup.
+- G11: assign_times.go:152-193 + drop_journal.go:128-166 + file_store.go:
+  310-358 — dedup the triplicated temp-file write→chmod→sync→close→ACL→
+  atomic-replace sequence. Reason: the three differ materially (error
+  swallowing per livelock comment, ACL ordering, distinct error strings) —
+  high refutation risk. Scope: large. Category: dedup.
+- G11: catalog.go:156-160 — unroll map-range in Validate into two explicit
+  checks. Reason: would make the both-invalid error message deterministic —
+  an observable narrowing. Scope: trivial. Category: cleanup.
+- G11: file_store.go:101-131 — FindByJobID/FindByRunner near-duplicate scans
+  could share a predicate scan. Reason: indirection for ~8 lines. Scope:
+  small. Category: refactor.
+- G11: drop_journal_test.go:186 — os.IsNotExist → errors.Is(os.ErrNotExist).
+  Reason: repo convention mixed; repo-wide decision. Scope: trivial.
+  Category: modernize.
+- G11: catalog.go:180-187, assign_times.go:118-124, file_store.go:427-437,
+  487-497 — sort.Slice → slices.SortFunc. Reason: not endorsed for struct
+  comparators; rewrite risk, no clarity gain. Scope: small.
+  Category: modernize.
+- G11: assign_times.go:187-188 + file_store.go saveUnlocked — "verify ... ACL"
+  error text on a Harden failure (copy-paste inconsistency). Reason: fixing
+  changes error strings (forbidden). Scope: trivial. Category: cleanup.
+- G12: reconciler.go:590-601 — polls Add/go/Done → WaitGroup.Go. Reason:
+  requires switching from pass-snapshots-as-arguments convention to closure
+  capture; structural change in reconciler-core concurrency. Scope: small.
+  Category: modernize.
+- G12: force_stop.go:75,86-87 — sort.Slice → slices.SortFunc. Reason:
+  duplicate-WorkerID tie order is observable preview output. Scope: trivial.
+  Category: modernize.
+- G12: plan.go:638-647 — append(nil,...) → slices.Clone and sort.SliceStable →
+  SortStableFunc. Reason: appendclipped forbidden; SortStableFunc not
+  endorsed. Scope: trivial. Category: modernize.
+- G12: plan.go:680-702,834-838 + poll_cadence.go:85-88 + reconciler.go:
+  992-996 — `value := now; ptr = &value` copies could be &now. Reason:
+  aliasing subtle, copy arguably deliberate. Scope: trivial.
+  Category: cleanup.
+- G12: plan.go:783-800 — hostMemoryAtFloor/availableMemoryHeadroom duplicate
+  validity+reserved-bytes computation. Reason: invalid-observation results
+  differ (false vs 0); indirection in highest-risk admission math. Scope:
+  small. Category: dedup.
+- G12: poll_cadence.go:355 — `return len(workers) == 0` provably always true.
+  Reason: defensive check, removal rests on subtle proof. Scope: trivial.
+  Category: cleanup.
+- G12: control_handler.go:148-166 — mirror to/from force-stop converters.
+  Reason: distinct struct types make a generic helper no simpler. Scope:
+  small. Category: dedup.
+- G12: retry.go:44 — `for i := 1; i < attempt; i++` (i unused) → range form.
+  Reason: obscures "attempts after the first". Scope: trivial.
+  Category: modernize.
+- G13: control_handler_test.go:171-222 — two force-stop tests duplicate a
+  draining fixture; could share a NEW helper. Reason: new fixture helper adds
+  indirection for 2 sites in safety-net tests. Scope: small. Category: dedup.
+- G13: control_handler_test.go:108,182,209,234,252 — NewControlHandler error
+  inconsistently discarded vs checked. Reason: either direction changes
+  assertion surface. Scope: trivial. Category: cleanup.
+- G13: reconciler_test.go:2603 — missing t.Parallel() on one test. Reason:
+  changes scheduling the test itself observes. Scope: trivial.
+  Category: cleanup.
+- G13: reconciler_test.go:2628-2632 — testLogSink.String() declared away from
+  its type. Reason: churn-only move. Scope: trivial. Category: cleanup.
+- G14: alert.go:19-29 — collapse DefaultClient nil-check/clone to plain
+  &http.Client{Timeout: 15s}. Reason: current code inherits operator-installed
+  Transport/proxy from the mutable global at construction — collapse changes
+  observable behavior under global mutation. Scope: small. Category: cleanup.
+- G14: alert.go:118 — errors.Join → fmt.Errorf %w style alignment. Reason:
+  rendering differs ("\n" vs ": ") — error bytes change. Scope: trivial.
+  Category: cleanup.
+- G14: check.go:204-207 — `started := now; ... = &started` → &now. Reason:
+  named copy documents intent; nil gain. Scope: trivial. Category: cleanup.
+
 (further items populated as waves complete)
 
 ## Wave delivery log
@@ -400,3 +473,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
   verification: go build/vet, GOOS=windows build/vet, golangci-lint 0 issues,
   go test -race for telemetry/state/control/secret — green except exactly the
   known-red environmental state/fs subtest. Deferrals recorded below.
+- Wave 3 (G11-G14): delivered as one code commit. All four groups
+  refutation-verified NOT REFUTED. Wave verification: go build/vet,
+  GOOS=windows build/vet, golangci-lint 0 issues, go test -race for
+  jobindex/controller/healthwatch all ok. G13's refuter disclosed one
+  unreproduced full-suite flake (name lost to output truncation; 42+
+  clean runs since, differential baseline clean) — recorded, not
+  attributed to the diff.

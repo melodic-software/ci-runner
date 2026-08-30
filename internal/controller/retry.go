@@ -55,8 +55,7 @@ func (p BackoffPolicy) delay(attempt int, err error) time.Duration {
 	if p.Jitter != nil && p.JitterRatio > 0 {
 		base = p.Jitter(base, p.JitterRatio)
 	}
-	var scaleErr *scaleset.Error
-	if errors.As(err, &scaleErr) && scaleErr.RetryAfterSeconds > 0 {
+	if scaleErr, ok := errors.AsType[*scaleset.Error](err); ok && scaleErr.RetryAfterSeconds > 0 {
 		retryAfter := p.Maximum
 		if scaleErr.RetryAfterSeconds <= int(p.Maximum/time.Second) {
 			retryAfter = time.Duration(scaleErr.RetryAfterSeconds) * time.Second

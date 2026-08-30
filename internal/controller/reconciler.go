@@ -281,7 +281,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		desiredLoadErr = fmt.Errorf("load desired state: %w", err)
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now}
 	}
-	if r.isShuttingDown() {
+	if r.ShuttingDown() {
 		// Process replacement drains transiently without changing the user's
 		// persisted intent. The replacement process can resume that intent.
 		desired.Mode = model.ModeDisabled
@@ -362,7 +362,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
 		defer close(watchDone)
 		r.watchSafetyInputs(watchContext, watchedDesired, watchedPower, cancel, forcedZero)
-	}(desired, power, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.isShuttingDown())
+	}(desired, power, recoveryOnly || desiredLoadErr != nil || powerErr != nil || r.ShuttingDown())
 	defer func() {
 		stopWatch()
 		<-watchDone
@@ -567,7 +567,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			desired: desired, observed: checkpoint, pools: pools, workers: workers, desktop: desktop,
 			advertised: pollPlan.AdvertisedCapacity, operationProblems: operationProblems,
 			engineMemoryTotal: r.engineMemoryTotal,
-			forcedZero:        recoveryOnly || desiredLoadErr != nil || observationFailed || r.isShuttingDown() || desired.Mode != model.ModeEnabled,
+			forcedZero:        recoveryOnly || desiredLoadErr != nil || observationFailed || r.ShuttingDown() || desired.Mode != model.ModeEnabled,
 			checkpointErr:     checkpointErr,
 		}
 		go func() {
@@ -587,8 +587,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	zeroAcknowledged := make(map[string]bool, len(pools))
 	zeroConfirmations := make(map[string]int, len(pools))
 	var polls sync.WaitGroup
-	for index := range pools {
-		pool := pools[index]
+	for index, pool := range pools {
 		if !pool.Ready {
 			continue
 		}
@@ -739,7 +738,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if n := len(candidates); n > 0 {
 			start := int(r.registrationCheckCursor % uint64(n))
 			checked := 0
-			for i := 0; i < n; i++ {
+			for i := range n {
 				worker := &workers[candidates[(start+i)%n]]
 				if checked >= registrationCheckCap {
 					note("worker-registration-check-deferred-step-budget", "registration verification was deferred to a later reconcile step because this step already reached its per-step registration-check budget", worker.PoolID)
@@ -1206,10 +1205,7 @@ func (r *Reconciler) seedPendingCapacity(capacity map[string]int) {
 		r.pendingCapacity = make(map[string]int, len(capacity))
 	}
 	for poolID, value := range capacity {
-		if value < 0 {
-			value = 0
-		}
-		r.pendingCapacity[poolID] = value
+		r.pendingCapacity[poolID] = max(value, 0)
 	}
 }
 
@@ -1269,7 +1265,7 @@ func (r *Reconciler) executePlannedStarts(
 			record("worker-profile-missing", "planned worker target has no configured resource profile", decision.PoolID, false, nil)
 			continue
 		}
-		for count := 0; count < decision.Count; count++ {
+		for range decision.Count {
 			if err := ctx.Err(); err != nil {
 				*operationErrors = append(*operationErrors, err)
 				break
@@ -1358,7 +1354,7 @@ func (r *Reconciler) freshStartAllowed(
 	if err != nil {
 		return false, true, err
 	}
-	if r.isShuttingDown() {
+	if r.ShuttingDown() {
 		desired.Mode = model.ModeDisabled
 		desired.TemporaryCapacityOverride = nil
 	}
@@ -1525,8 +1521,7 @@ func pollSuperseded(err error) bool {
 }
 
 func safeScaleSetMessage(operation string, err error) string {
-	var typed *scaleset.Error
-	if errors.As(err, &typed) {
+	if typed, ok := errors.AsType[*scaleset.Error](err); ok {
 		if typed.StatusCode > 0 {
 			return fmt.Sprintf("scale-set %s failed (%s, HTTP %d)", operation, typed.Kind, typed.StatusCode)
 		}

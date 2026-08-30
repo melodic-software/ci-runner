@@ -275,22 +275,31 @@ func DecodeCatalog(contents []byte) (Catalog, error) {
 		return Catalog{}, fmt.Errorf("jobs.json exceeds the %d-byte load safety limit", maximumJobStateLoad)
 	}
 	var catalog Catalog
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&catalog); err != nil {
-		return Catalog{}, fmt.Errorf("decode jobs.json: %w", err)
-	}
-	var trailer any
-	if err := decoder.Decode(&trailer); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return Catalog{}, errors.New("decode jobs.json: multiple JSON values are not allowed")
-		}
-		return Catalog{}, fmt.Errorf("decode jobs.json trailer: %w", err)
+	if err := decodeStrictJSON(contents, "jobs.json", &catalog); err != nil {
+		return Catalog{}, err
 	}
 	if err := Validate(catalog); err != nil {
 		return Catalog{}, fmt.Errorf("invalid jobs.json: %w", err)
 	}
 	return catalog, nil
+}
+
+// decodeStrictJSON decodes exactly one JSON document into value, rejecting
+// unknown fields and trailing values; name labels errors ("decode <name>: ...").
+func decodeStrictJSON(contents []byte, name string, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return fmt.Errorf("decode %s: %w", name, err)
+	}
+	var trailer any
+	if err := decoder.Decode(&trailer); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("decode %s: multiple JSON values are not allowed", name)
+		}
+		return fmt.Errorf("decode %s trailer: %w", name, err)
+	}
+	return nil
 }
 
 func (s *FileStore) saveUnlocked(catalog Catalog) error {
@@ -417,9 +426,6 @@ func EncodedCatalogSize(catalog Catalog) (int, error) {
 // the average encoded record so one pass usually suffices; the caller's
 // re-encode loop guarantees convergence regardless.
 func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int) (removed int) {
-	if len(catalog.Records) == 0 {
-		return 0
-	}
 	tombstoned := make([]int, 0, len(catalog.Records))
 	for i, record := range catalog.Records {
 		if record.TombstonedAt != nil {
@@ -476,9 +482,6 @@ func CompactableUnderCapacityPressure(record Record) bool {
 // accepted trade against livelocking the index. Open records and records
 // without a terminal marker are never touched here.
 func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) (removed []Record) {
-	if len(catalog.Records) == 0 {
-		return nil
-	}
 	completed := make([]int, 0, len(catalog.Records))
 	for i, record := range catalog.Records {
 		if record.TombstonedAt != nil || !CompactableUnderCapacityPressure(record) {

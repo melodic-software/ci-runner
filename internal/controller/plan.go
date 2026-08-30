@@ -301,7 +301,7 @@ func BuildPlan(input PlanInput) Plan {
 		}
 		need := requested - current
 		availableExisting := nonbusyByPool[target.ID] - countedNonbusy[target.ID]
-		existing := min(need, min(availableExisting, remaining))
+		existing := min(need, availableExisting, remaining)
 		plan.DesiredWorkers[target.ID] += existing
 		countedNonbusy[target.ID] += existing
 		remaining -= existing
@@ -344,7 +344,7 @@ func BuildPlan(input PlanInput) Plan {
 		}
 		assigned := assignmentReservations[target.ID]
 		requested := min(target.MaxCapacity, assigned+target.WarmIdle)
-		requested = max(requested, max(assigned, busyByPool[target.ID]))
+		requested = max(requested, assigned, busyByPool[target.ID])
 		allocate(target, requested)
 	}
 
@@ -420,9 +420,7 @@ func BuildPlan(input PlanInput) Plan {
 	for _, capacity := range plan.AdvertisedCapacity {
 		advertisedBudget -= capacity
 	}
-	if advertisedBudget < 0 {
-		advertisedBudget = 0
-	}
+	advertisedBudget = max(advertisedBudget, 0)
 	sort.SliceStable(burstCandidates, func(i, j int) bool {
 		leftZero := plan.AdvertisedCapacity[burstCandidates[i].poolID] == 0
 		rightZero := plan.AdvertisedCapacity[burstCandidates[j].poolID] == 0
@@ -457,9 +455,7 @@ func BuildPlan(input PlanInput) Plan {
 		for _, decision := range plan.Start {
 			serviceSlots -= decision.Count
 		}
-		if serviceSlots < 0 {
-			serviceSlots = 0
-		}
+		serviceSlots = max(serviceSlots, 0)
 		for _, target := range targets {
 			if !advertisable[target.ID] || serviceSlots == 0 {
 				continue
@@ -546,10 +542,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	}
 	appendSafeRemovals(plan, workersByPool, known, reservations)
 
-	remaining := input.Config.Resources.MaximumConcurrentWorkers - activeWorkers
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(input.Config.Resources.MaximumConcurrentWorkers-activeWorkers, 0)
 	gate := evaluateMemoryBasis(input)
 	memoryRemaining := gate.remaining
 	// The static budget stays authoritative even when the host observation is
@@ -571,7 +564,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 				nonbusy++
 			}
 		}
-		serviceable := min(uncovered, min(pool.DrainServiceCapacity, target.MaxCapacity))
+		serviceable := min(uncovered, pool.DrainServiceCapacity, target.MaxCapacity)
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		start := min(max(0, serviceable-nonbusy), remaining)
 		// An assignment can win the race with a fail-closed poll cancellation.

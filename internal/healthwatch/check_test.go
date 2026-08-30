@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -25,9 +26,7 @@ func (f fakeInventory) RunningByPool(context.Context, string) (map[string]int, e
 		return nil, f.err
 	}
 	out := make(map[string]int, len(f.counts))
-	for key, value := range f.counts {
-		out[key] = value
-	}
+	maps.Copy(out, f.counts)
 	return out, nil
 }
 
@@ -61,22 +60,28 @@ func (m *memorySidecar) Save(_ context.Context, sidecar Sidecar) error {
 	return nil
 }
 
+// testConfig is the watchdog configuration every checker test uses; the
+// heartbeat multiplier varies per test.
+func testConfig(heartbeatStaleMultiplier int) config.Config {
+	return config.Config{
+		Host: config.Host{ID: "melo-desk-001"},
+		Controller: config.Controller{
+			ReconcileInterval: config.Duration{Duration: 5 * time.Second},
+		},
+		HealthWatchdog: config.HealthWatchdog{
+			HeartbeatStaleMultiplier: heartbeatStaleMultiplier,
+			WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
+			JobsSizeWarningPercent:   90,
+			AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
+		},
+	}
+}
+
 func testChecker(t *testing.T, store state.Store, inventory WorkerInventory, jobs JobsFileStat, sidecar SidecarStore, now time.Time) *Checker {
 	t.Helper()
 	checker, err := NewChecker(Dependencies{
-		Now: func() time.Time { return now },
-		Config: config.Config{
-			Host: config.Host{ID: "melo-desk-001"},
-			Controller: config.Controller{
-				ReconcileInterval: config.Duration{Duration: 5 * time.Second},
-			},
-			HealthWatchdog: config.HealthWatchdog{
-				HeartbeatStaleMultiplier: 3,
-				WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
-				JobsSizeWarningPercent:   90,
-				AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
-			},
-		},
+		Now:       func() time.Time { return now },
+		Config:    testConfig(3),
 		Store:     store,
 		Inventory: inventory,
 		JobsFile:  jobs,
@@ -134,19 +139,8 @@ func TestCheckFlagsStaleHeartbeat(t *testing.T) {
 func testCheckerWithHeartbeatFloor(t *testing.T, store state.Store, floor time.Duration, multiplier int, now time.Time) *Checker {
 	t.Helper()
 	checker, err := NewChecker(Dependencies{
-		Now: func() time.Time { return now },
-		Config: config.Config{
-			Host: config.Host{ID: "melo-desk-001"},
-			Controller: config.Controller{
-				ReconcileInterval: config.Duration{Duration: 5 * time.Second},
-			},
-			HealthWatchdog: config.HealthWatchdog{
-				HeartbeatStaleMultiplier: multiplier,
-				WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
-				JobsSizeWarningPercent:   90,
-				AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
-			},
-		},
+		Now:                     func() time.Time { return now },
+		Config:                  testConfig(multiplier),
 		Store:                   store,
 		Inventory:               fakeInventory{},
 		JobsFile:                fakeJobsFile{},
@@ -304,7 +298,7 @@ func TestCheckFlagsJobsLiveSizeWarning(t *testing.T) {
 	// Open records are never compactable; 80 records carrying 100kB job IDs
 	// encode to ~8MB of live payload, past any threshold up to 95%.
 	records := make([]jobindex.Record, 0, 80)
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		records = append(records, jobindex.Record{
 			PoolID:     "org",
 			RunnerName: fmt.Sprintf("runner-%05d", i),
@@ -433,19 +427,8 @@ func TestCheckAndAlertDedupesRepeatedFindings(t *testing.T) {
 	sidecar := &memorySidecar{}
 	var alerts int
 	checker, err := NewChecker(Dependencies{
-		Now: func() time.Time { return now },
-		Config: config.Config{
-			Host: config.Host{ID: "melo-desk-001"},
-			Controller: config.Controller{
-				ReconcileInterval: config.Duration{Duration: 5 * time.Second},
-			},
-			HealthWatchdog: config.HealthWatchdog{
-				HeartbeatStaleMultiplier: 3,
-				WorkerDivergenceGrace:    config.Duration{Duration: time.Minute},
-				JobsSizeWarningPercent:   90,
-				AlertCooldown:            config.Duration{Duration: 15 * time.Minute},
-			},
-		},
+		Now:       func() time.Time { return now },
+		Config:    testConfig(3),
 		Store:     store,
 		Inventory: fakeInventory{},
 		JobsFile:  fakeJobsFile{},
