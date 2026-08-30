@@ -4,7 +4,6 @@ const {
   boundBodyLength,
   escapeMarkdownTableCell,
   findOpenIncident,
-  MAX_BODY_LENGTH,
 } = require('./incident-issue.cjs');
 
 const nonterminalRunStatuses = Object.freeze([
@@ -32,7 +31,6 @@ const MAX_STUCK_TABLE_ROWS = 50;
 function splitList(value) {
   return (value || '')
     .split(/[\s,]+/)
-    .map(item => item.trim())
     .filter(Boolean);
 }
 

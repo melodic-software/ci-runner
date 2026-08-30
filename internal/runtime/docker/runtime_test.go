@@ -1794,12 +1794,7 @@ func (a testAddress) Network() string { return string(a) }
 func (a testAddress) String() string  { return string(a) }
 
 func containsCall(calls []string, expected string) bool {
-	for _, call := range calls {
-		if call == expected {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(calls, expected)
 }
 
 func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {

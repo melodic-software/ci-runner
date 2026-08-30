@@ -175,16 +175,11 @@ func TestPurgeDryRunSkipsInFlightTemporaryFiles(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	orphan := filepath.Join(root, "logs", "purge-me.log")
 	inFlight := filepath.Join(root, "logs", ".ci-runner-diag-live.tmp")
-	for _, spec := range []struct {
-		path string
-	}{
-		{path: orphan},
-		{path: inFlight},
-	} {
-		if err := os.WriteFile(spec.path, []byte("evidence"), 0o600); err != nil {
+	for _, path := range []string{orphan, inFlight} {
+		if err := os.WriteFile(path, []byte("evidence"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chtimes(spec.path, old, old); err != nil {
+		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
 	}

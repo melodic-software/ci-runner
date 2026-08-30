@@ -733,7 +733,7 @@ func TestReconcileFailureStreakResetsOnAnyCleanStep(t *testing.T) {
 	t.Parallel()
 	var streak reconcileFailureStreak
 	blocked := stepOutcome{err: errors.New("worker inventory failed"), newWorkBlocked: true}
-	for i := 0; i < maxConsecutiveReconcileStepErrors-1; i++ {
+	for range maxConsecutiveReconcileStepErrors - 1 {
 		streak.observe(blocked)
 	}
 	if streak.observe(stepOutcome{}) {
@@ -755,7 +755,7 @@ func TestReconcileFailureStreakIgnoresPartialPerTargetFailures(t *testing.T) {
 	t.Parallel()
 	var streak reconcileFailureStreak
 	partial := stepOutcome{err: errors.New("ensure scale set: credentials rejected")}
-	for i := 0; i < maxConsecutiveReconcileStepErrors*2; i++ {
+	for range maxConsecutiveReconcileStepErrors * 2 {
 		if streak.observe(partial) {
 			t.Fatal("partial per-target failure escalated")
 		}
@@ -764,7 +764,7 @@ func TestReconcileFailureStreakIgnoresPartialPerTargetFailures(t *testing.T) {
 		t.Fatalf("partial failures accumulated streak count %d, want 0", streak.count)
 	}
 	blocked := stepOutcome{err: errors.New("worker inventory failed"), newWorkBlocked: true}
-	for i := 0; i < maxConsecutiveReconcileStepErrors-1; i++ {
+	for range maxConsecutiveReconcileStepErrors - 1 {
 		streak.observe(blocked)
 	}
 	if streak.observe(partial) {

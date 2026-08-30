@@ -178,7 +178,8 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		_ = scaleSets.Close(context.Background())
 		return fail("controller-construction-error", err)
 	}
-	handler, err := controller.NewControlHandler(reconciler, uint32(os.Getpid()))
+	processID := uint32(os.Getpid())
+	handler, err := controller.NewControlHandler(reconciler, processID)
 	if err != nil {
 		_ = workers.Close()
 		_ = scaleSets.Close(context.Background())
@@ -191,7 +192,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		return fail("control-server-error", err)
 	}
 	logEvent("controller-started", fmt.Sprintf("version=%s host=%s worker=%s", buildinfo.Version, cfg.Host.ID, manifest.WorkerReference()))
-	err = runControllerLoop(ctx, cfg, reconciler, handler, server, logs, store, uint32(os.Getpid()), buildinfo.Version)
+	err = runControllerLoop(ctx, cfg, reconciler, handler, server, logs, store, processID, buildinfo.Version)
 	if err != nil {
 		return fail("controller-stopped-with-error", err)
 	}

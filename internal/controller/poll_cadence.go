@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
@@ -110,11 +111,7 @@ func (r *Reconciler) pendingCapacitySnapshot() map[string]int {
 	if len(r.pendingCapacity) == 0 {
 		return nil
 	}
-	snapshot := make(map[string]int, len(r.pendingCapacity))
-	for targetID, capacity := range r.pendingCapacity {
-		snapshot[targetID] = capacity
-	}
-	return snapshot
+	return maps.Clone(r.pendingCapacity)
 }
 
 func poolAcknowledgementTransitionAt(prior model.PoolObservation, scaleSetID int64, listenerID string, capacity int, acknowledged bool, now time.Time) time.Time {

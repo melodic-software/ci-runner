@@ -105,9 +105,9 @@ foreach ($fragment in $rootlessDotnetContract) {
     }
 }
 foreach ($fragment in @(
-        "image_env DOTNET_INSTALL_DIR",
-        "image_env DOTNET_ROOT",
-        "image_env NUGET_PACKAGES",
+        'image_env DOTNET_INSTALL_DIR',
+        'image_env DOTNET_ROOT',
+        'image_env NUGET_PACKAGES',
         'RUNNER_TOOL_CACHE RUNNER_TOOLSDIRECTORY AGENT_TOOLSDIRECTORY')) {
     if (-not $workerVerifier.Contains($fragment)) {
         throw "Worker image verifier is missing the rootless .NET/toolcache contract: $fragment"

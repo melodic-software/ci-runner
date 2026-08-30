@@ -509,7 +509,7 @@ func validateTargetResourceSyntax(document *yaml.Node) error {
 	if !ok {
 		return nil
 	}
-	targets, ok := yamlMappingValue(dereferenceYAMLNode(github), "targets")
+	targets, ok := yamlMappingValue(github, "targets")
 	if !ok {
 		return nil
 	}

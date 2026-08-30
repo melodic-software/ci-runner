@@ -8,35 +8,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
+// legacyRecord and legacyCatalog mirror the schema-version-1 shapes v0.1.9
+// decodes with DisallowUnknownFields; rollback-readability tests decode
+// current jobs.json bytes through them.
+type legacyRecord struct {
+	PoolID            string     `json:"poolId"`
+	RunnerName        string     `json:"runnerName"`
+	ContainerID       string     `json:"containerId,omitempty"`
+	JobID             string     `json:"jobId,omitempty"`
+	Result            string     `json:"result,omitempty"`
+	LogPath           string     `json:"logPath,omitempty"`
+	DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
+	ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
+	JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
+	CompletedAt       time.Time  `json:"completedAt,omitempty"`
+	FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	Open              bool       `json:"open"`
+	TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
+}
+
+type legacyCatalog struct {
+	SchemaVersion int            `json:"schemaVersion"`
+	Records       []legacyRecord `json:"records"`
+}
+
 func TestSchemaVersionOneEncodingRemainsStrictlyReadableByV019(t *testing.T) {
 	t.Parallel()
-	type legacyRecord struct {
-		PoolID            string     `json:"poolId"`
-		RunnerName        string     `json:"runnerName"`
-		ContainerID       string     `json:"containerId,omitempty"`
-		JobID             string     `json:"jobId,omitempty"`
-		Result            string     `json:"result,omitempty"`
-		LogPath           string     `json:"logPath,omitempty"`
-		DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
-		ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
-		JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
-		CompletedAt       time.Time  `json:"completedAt,omitempty"`
-		FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
-		UpdatedAt         time.Time  `json:"updatedAt"`
-		Open              bool       `json:"open"`
-		TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
-	}
-	type legacyCatalog struct {
-		SchemaVersion int            `json:"schemaVersion"`
-		Records       []legacyRecord `json:"records"`
-	}
-
 	now := time.Unix(500, 0).UTC()
 	tombstonedAt := now.Add(time.Minute)
 	assignedAt := now.Add(-time.Second)
@@ -239,26 +244,6 @@ func TestAssignedJobJobsJSONRemainsStrictlyReadableByV019(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	type legacyRecord struct {
-		PoolID            string     `json:"poolId"`
-		RunnerName        string     `json:"runnerName"`
-		ContainerID       string     `json:"containerId,omitempty"`
-		JobID             string     `json:"jobId,omitempty"`
-		Result            string     `json:"result,omitempty"`
-		LogPath           string     `json:"logPath,omitempty"`
-		DiagnosticPath    string     `json:"diagnosticPath,omitempty"`
-		ArtifactStartedAt time.Time  `json:"artifactStartedAt,omitempty"`
-		JobStartedAt      time.Time  `json:"jobStartedAt,omitempty"`
-		CompletedAt       time.Time  `json:"completedAt,omitempty"`
-		FinalizedAt       time.Time  `json:"finalizedAt,omitempty"`
-		UpdatedAt         time.Time  `json:"updatedAt"`
-		Open              bool       `json:"open"`
-		TombstonedAt      *time.Time `json:"tombstonedAt,omitempty"`
-	}
-	type legacyCatalog struct {
-		SchemaVersion int            `json:"schemaVersion"`
-		Records       []legacyRecord `json:"records"`
-	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	var decoded legacyCatalog
@@ -457,22 +442,13 @@ func (a *recordingIndexACL) sawBoth(path string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	path = filepath.Clean(path)
-	return containsPath(a.hardened, path) && containsPath(a.verified, path)
+	return slices.Contains(a.hardened, path) && slices.Contains(a.verified, path)
 }
 func (a *recordingIndexACL) sawTemporary() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, path := range a.hardened {
-		if strings.HasPrefix(filepath.Base(path), ".jobs.json-") && containsPath(a.verified, path) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsPath(paths []string, expected string) bool {
-	for _, path := range paths {
-		if path == expected {
+		if strings.HasPrefix(filepath.Base(path), ".jobs.json-") && slices.Contains(a.verified, path) {
 			return true
 		}
 	}

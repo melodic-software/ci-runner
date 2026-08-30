@@ -41,7 +41,7 @@ func NewDockerInventory(controllerVersion string) DockerInventory {
 
 func (d DockerInventory) RunningByPool(ctx context.Context, hostID string) (map[string]int, error) {
 	if strings.TrimSpace(hostID) == "" {
-		return nil, fmt.Errorf("host ID is required")
+		return nil, errors.New("host ID is required")
 	}
 	apiClient, err := d.NewClient(d.Version)
 	if err != nil {

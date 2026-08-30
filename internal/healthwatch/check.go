@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
@@ -104,7 +105,6 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("load observed state: %w", observedErr)
 	}
 	if observedErr != nil {
-		result.Healthy = false
 		result.Findings = append(result.Findings, Finding{
 			Code:    "observed-missing",
 			Message: "observed.json is missing",
@@ -115,7 +115,6 @@ func (c *Checker) Check(ctx context.Context) (Result, error) {
 
 	running, inventoryErr := c.deps.Inventory.RunningByPool(ctx, c.deps.Config.Host.ID)
 	if inventoryErr != nil {
-		result.Healthy = false
 		result.Findings = append(result.Findings, Finding{
 			Code:    "inventory-unavailable",
 			Message: fmt.Sprintf("worker inventory unavailable: %v", inventoryErr),
@@ -181,13 +180,7 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 		if err != nil {
 			return nil, fmt.Errorf("load health watch sidecar: %w", err)
 		}
-		if sidecar.WorkerDivergenceSince != nil {
-			sidecar.WorkerDivergenceSince = nil
-			if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
-				return nil, fmt.Errorf("clear health watch sidecar: %w", err)
-			}
-		}
-		return nil, nil
+		return nil, c.clearWorkerDivergence(ctx, sidecar)
 	}
 
 	diverged := false
@@ -205,13 +198,7 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 		return nil, fmt.Errorf("load health watch sidecar: %w", err)
 	}
 	if !diverged {
-		if sidecar.WorkerDivergenceSince != nil {
-			sidecar.WorkerDivergenceSince = nil
-			if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
-				return nil, fmt.Errorf("clear health watch sidecar: %w", err)
-			}
-		}
-		return nil, nil
+		return nil, c.clearWorkerDivergence(ctx, sidecar)
 	}
 
 	if sidecar.WorkerDivergenceSince == nil {
@@ -223,7 +210,7 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 	}
 
 	grace := c.deps.Config.HealthWatchdog.WorkerDivergenceGrace.Duration
-	if sidecar.WorkerDivergenceSince != nil && now.Sub(*sidecar.WorkerDivergenceSince) >= grace {
+	if now.Sub(*sidecar.WorkerDivergenceSince) >= grace {
 		return []Finding{{
 			Code: "worker-divergence",
 			Message: fmt.Sprintf(
@@ -235,6 +222,19 @@ func (c *Checker) checkWorkerDivergence(ctx context.Context, now time.Time, obse
 		}}, nil
 	}
 	return nil, nil
+}
+
+// clearWorkerDivergence resets the sidecar's divergence timer, saving only
+// when there is a timer to clear.
+func (c *Checker) clearWorkerDivergence(ctx context.Context, sidecar Sidecar) error {
+	if sidecar.WorkerDivergenceSince == nil {
+		return nil
+	}
+	sidecar.WorkerDivergenceSince = nil
+	if err := c.deps.Sidecar.Save(ctx, sidecar); err != nil {
+		return fmt.Errorf("clear health watch sidecar: %w", err)
+	}
+	return nil
 }
 
 // checkJobsIndex watches the two jobs.json shapes capacity compaction cannot
@@ -317,14 +317,7 @@ func joinDetails(details []string) string {
 	if len(details) == 0 {
 		return "no pools"
 	}
-	if len(details) == 1 {
-		return details[0]
-	}
-	out := details[0]
-	for _, detail := range details[1:] {
-		out += "; " + detail
-	}
-	return out
+	return strings.Join(details, "; ")
 }
 
 type NoopAlerter struct{}

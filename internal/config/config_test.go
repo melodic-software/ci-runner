@@ -111,13 +111,6 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 }
 
-// TestLoadDefaultsOmittedWorkerImagePullTimeout proves WorkerImage.PullTimeout
-// is the one deliberate exception to this schema's otherwise-universal
-// "every Duration is explicit/required" convention (see WorkerImage's doc
-// comment): a host YAML that omits workerImage entirely must still load
-// successfully, with PullTimeout defaulted to defaultWorkerImagePullTimeout,
-// rather than failing Validate the way an omitted dockerDesktop.startTimeout
-// or drain.warningAfter would.
 func TestLoadDefaultsHealthWatchdog(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(strings.NewReader(validYAML))
@@ -138,6 +131,13 @@ func TestLoadDefaultsHealthWatchdog(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultsOmittedWorkerImagePullTimeout proves WorkerImage.PullTimeout
+// is the one deliberate exception to this schema's otherwise-universal
+// "every Duration is explicit/required" convention (see WorkerImage's doc
+// comment): a host YAML that omits workerImage entirely must still load
+// successfully, with PullTimeout defaulted to defaultWorkerImagePullTimeout,
+// rather than failing Validate the way an omitted dockerDesktop.startTimeout
+// or drain.warningAfter would.
 func TestLoadDefaultsOmittedWorkerImagePullTimeout(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "workerImage:\n  pullTimeout: 20m\n", "", 1)

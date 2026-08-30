@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -84,10 +85,5 @@ func sameForceStopTargets(a, b []ForceStopTarget) bool {
 	b = append([]ForceStopTarget(nil), b...)
 	sort.Slice(a, func(i, j int) bool { return a[i].WorkerID < a[j].WorkerID })
 	sort.Slice(b, func(i, j int) bool { return b[i].WorkerID < b[j].WorkerID })
-	for index := range a {
-		if a[index] != b[index] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a, b)
 }

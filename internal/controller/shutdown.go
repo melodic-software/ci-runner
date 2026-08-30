@@ -25,10 +25,6 @@ func (r *Reconciler) BeginShutdown() {
 }
 
 func (r *Reconciler) ShuttingDown() bool {
-	return r.isShuttingDown()
-}
-
-func (r *Reconciler) isShuttingDown() bool {
 	r.stateMu.Lock()
 	defer r.stateMu.Unlock()
 	return r.shuttingDown

@@ -12,11 +12,7 @@ import "github.com/melodic-software/ci-runner/internal/model"
 func sequenceCapacityTransfer(previous model.ObservedState, planned map[string]int) map[string]int {
 	current := make(map[string]int, len(previous.Pools))
 	for _, pool := range previous.Pools {
-		capacity := pool.MaxCapacity
-		if capacity < 0 {
-			capacity = 0
-		}
-		current[pool.ID] = capacity
+		current[pool.ID] = max(pool.MaxCapacity, 0)
 	}
 
 	hasDecrease := false
@@ -28,9 +24,7 @@ func sequenceCapacityTransfer(previous model.ObservedState, planned map[string]i
 	}
 	result := make(map[string]int, len(planned))
 	for poolID, capacity := range planned {
-		if capacity < 0 {
-			capacity = 0
-		}
+		capacity = max(capacity, 0)
 		if hasDecrease && capacity > current[poolID] {
 			capacity = current[poolID]
 		}

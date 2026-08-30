@@ -406,7 +406,7 @@ func TestStoreMapsMissingFileToStateNotFound(t *testing.T) {
 func TestStoreNeverLeavesTemporaryStateFiles(t *testing.T) {
 	store, directory := newTestStore(t)
 	desired := model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: time.Now().UTC()}
-	for index := 0; index < 5; index++ {
+	for range 5 {
 		if err := store.SaveDesired(context.Background(), desired); err != nil {
 			t.Fatal(err)
 		}

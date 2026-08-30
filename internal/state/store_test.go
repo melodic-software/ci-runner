@@ -37,13 +37,13 @@ func TestMemoryStoreConcurrentAccess(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for value := range 32 {
 		wg.Add(1)
-		go func(value int) {
+		go func() {
 			defer wg.Done()
 			_ = store.SaveObserved(ctx, model.ObservedState{SchemaVersion: 1, Pools: []model.PoolObservation{{MaxCapacity: value}}})
 			_, _ = store.LoadObserved(ctx)
-		}(i)
+		}()
 	}
 	wg.Wait()
 	if _, err := store.LoadObserved(ctx); err != nil {

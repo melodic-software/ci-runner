@@ -283,7 +283,7 @@ func (s *JSONLogSink) rotateLocked(now time.Time) error {
 	base := "controller-" + now.UTC().Format("20060102T150405.000000000Z")
 	var file *os.File
 	var path string
-	for suffix := 0; suffix < 1000; suffix++ {
+	for suffix := range 1000 {
 		name := base + ".jsonl"
 		if suffix > 0 {
 			name = fmt.Sprintf("%s-%03d.jsonl", base, suffix)

@@ -78,23 +78,20 @@ func TestSnapshotBytesSerializesWithConcurrentSaves(t *testing.T) {
 	const iterations = 100
 	var group sync.WaitGroup
 	failures := make(chan error, 2*iterations)
-	group.Add(2)
-	go func() {
-		defer group.Done()
-		for i := 0; i < iterations; i++ {
+	group.Go(func() {
+		for i := range iterations {
 			if _, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: fmt.Sprintf("runner-%03d", i)}); err != nil {
 				failures <- fmt.Errorf("upsert %d: %w", i, err)
 			}
 		}
-	}()
-	go func() {
-		defer group.Done()
-		for i := 0; i < iterations; i++ {
+	})
+	group.Go(func() {
+		for i := range iterations {
 			if _, err := store.SnapshotBytes(context.Background()); err != nil && !errors.Is(err, ErrNotFound) {
 				failures <- fmt.Errorf("snapshot %d: %w", i, err)
 			}
 		}
-	}()
+	})
 	group.Wait()
 	close(failures)
 	for failure := range failures {

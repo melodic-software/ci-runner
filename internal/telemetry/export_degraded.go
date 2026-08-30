@@ -119,7 +119,7 @@ func (s *exportDegradedSink) handle(err error) {
 	if s.lastErr == nil {
 		s.lastErr = err
 	}
-	if s.suppressed > 0 && s.now().Sub(s.lastSummaryAt) >= s.summaryInterval {
+	if s.now().Sub(s.lastSummaryAt) >= s.summaryInterval {
 		s.emitSummaryLocked()
 	}
 }
@@ -206,7 +206,7 @@ func probeEndpointReachable(endpoint, protocol string) error {
 		return err
 	}
 	dialer := net.Dialer{Timeout: 2 * time.Second}
-	conn, err := dialer.DialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return err
 	}
@@ -299,10 +299,7 @@ func (e *instrumentedMetricExporter) Export(ctx context.Context, metrics *metric
 }
 
 func (e *instrumentedMetricExporter) ForceFlush(ctx context.Context) error {
-	if flusher, ok := e.inner.(interface{ ForceFlush(context.Context) error }); ok {
-		return flusher.ForceFlush(ctx)
-	}
-	return nil
+	return e.inner.ForceFlush(ctx)
 }
 
 func (e *instrumentedMetricExporter) Shutdown(ctx context.Context) error {

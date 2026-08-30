@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,23 +36,14 @@ func (a *recordingSidecarACL) sawBoth(path string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	path = filepath.Clean(path)
-	return containsSidecarPath(a.hardened, path) && containsSidecarPath(a.verified, path)
+	return slices.Contains(a.hardened, path) && slices.Contains(a.verified, path)
 }
 
 func (a *recordingSidecarACL) sawTemporary() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, path := range a.hardened {
-		if strings.HasPrefix(filepath.Base(path), ".health-watch-") && containsSidecarPath(a.verified, path) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsSidecarPath(paths []string, expected string) bool {
-	for _, path := range paths {
-		if path == expected {
+		if strings.HasPrefix(filepath.Base(path), ".health-watch-") && slices.Contains(a.verified, path) {
 			return true
 		}
 	}

@@ -36,8 +36,8 @@ func (e *WorkerStartError) Unwrap() error { return e.Err }
 
 // RunnerStartMayBeActive fails closed for untyped runtime errors.
 func RunnerStartMayBeActive(err error) bool {
-	var typed *WorkerStartError
-	return !errors.As(err, &typed) || typed.RunnerMayBeActive
+	typed, ok := errors.AsType[*WorkerStartError](err)
+	return !ok || typed.RunnerMayBeActive
 }
 
 type WorkerRuntime interface {

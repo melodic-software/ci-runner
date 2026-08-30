@@ -197,10 +197,7 @@ func ProbeLocal(ctx context.Context, controllerVersion string) (string, string, 
 	if closeErr != nil {
 		return result.Info.OSType, result.Info.Architecture, fmt.Errorf("close local Docker Engine client: %w", closeErr)
 	}
-	if err := validateEngineInfo(result.Info.OSType, result.Info.Architecture); err != nil {
-		return result.Info.OSType, result.Info.Architecture, err
-	}
-	return result.Info.OSType, result.Info.Architecture, nil
+	return result.Info.OSType, result.Info.Architecture, validateEngineInfo(result.Info.OSType, result.Info.Architecture)
 }
 
 // InventoryLocalArtifacts returns only managed containers belonging to this
@@ -261,7 +258,6 @@ func (r *Runtime) List(ctx context.Context) ([]model.Worker, error) {
 	}
 	workers := make([]model.Worker, 0, len(result.Items))
 	adopted := make([]ArtifactMetadata, 0, len(result.Items))
-	containerIDs := make([]string, 0, len(result.Items))
 	for _, item := range result.Items {
 		worker, inspectErr := r.workerFromContainer(ctx, item.ID, item.Labels, string(item.State), item.Created)
 		if inspectErr != nil {
@@ -270,15 +266,14 @@ func (r *Runtime) List(ctx context.Context) ([]model.Worker, error) {
 		}
 		workers = append(workers, worker)
 		adopted = append(adopted, metadataFromLabels(item.ID, item.Labels))
-		containerIDs = append(containerIDs, item.ID)
 	}
 	// Persist every active/exited managed container as adopted before retention
 	// is allowed to inspect the catalog or any watcher can finalize a container.
 	if err := r.opts.Artifacts.AdoptAndCleanup(ctx, adopted); err != nil {
 		return nil, fmt.Errorf("adopt workers before artifact cleanup: %w", err)
 	}
-	for _, id := range containerIDs {
-		r.ensureWatch(id, nil)
+	for _, metadata := range adopted {
+		r.ensureWatch(metadata.ContainerID, nil)
 	}
 	return workers, nil
 }
@@ -814,10 +809,7 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr 
 	defer func() {
 		resultErr = errors.Join(resultErr, wrapIfError("close worker diagnostics archive", result.Content.Close()))
 	}()
-	if err := r.opts.Artifacts.WriteDiagnostics(ctx, r.metadata(ctx, id), result.Content); err != nil {
-		return err
-	}
-	return nil
+	return r.opts.Artifacts.WriteDiagnostics(ctx, r.metadata(ctx, id), result.Content)
 }
 
 func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata, marker *ResourceEvidence) (ResourceEvidence, bool, error) {

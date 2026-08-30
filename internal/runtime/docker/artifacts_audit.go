@@ -12,11 +12,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/jobindex"
 )
 
-var (
-	inFlightLogTempPattern       = regexp.MustCompile(`^\.ci-runner-log-.*\.tmp$`)
-	inFlightDiagTempPattern      = regexp.MustCompile(`^\.ci-runner-diag-.*\.tmp$`)
-	inFlightResourcesTempPattern = regexp.MustCompile(`^\.ci-runner-resources-.*\.tmp$`)
-)
+var inFlightTempPattern = regexp.MustCompile(`^\.ci-runner-(?:log|diag|resources)-.*\.tmp$`)
 
 // ArtifactFileClass is the disk-vs-catalog classification for one artifact path.
 type ArtifactFileClass string
@@ -79,9 +75,7 @@ type ArtifactPurgeResult struct {
 }
 
 func isInFlightTemporary(name string) bool {
-	return inFlightLogTempPattern.MatchString(name) ||
-		inFlightDiagTempPattern.MatchString(name) ||
-		inFlightResourcesTempPattern.MatchString(name)
+	return inFlightTempPattern.MatchString(name)
 }
 
 func (s *FileArtifactSink) Audit(ctx context.Context, adopted []ArtifactMetadata, inventoryAvailable bool, inventoryError string) (ArtifactAuditReport, error) {
@@ -130,14 +124,10 @@ func (s *FileArtifactSink) purgeUnreferenced(ctx context.Context, catalog jobind
 				result.Skipped = append(result.Skipped, file)
 				continue
 			}
-			if dryRun {
-				result.Deleted = append(result.Deleted, file)
-				result.TotalBytes += file.SizeBytes
-				result.DeleteCount++
-				continue
-			}
-			if err := removeRegularArtifact(file.Path); err != nil {
-				return result, err
+			if !dryRun {
+				if err := removeRegularArtifact(file.Path); err != nil {
+					return result, err
+				}
 			}
 			result.Deleted = append(result.Deleted, file)
 			result.TotalBytes += file.SizeBytes
@@ -188,21 +178,21 @@ func (s *FileArtifactSink) buildAuditReport(
 		report.Directories = append(report.Directories, directory)
 	}
 
-	for _, pathEntry := range catalogPaths {
-		info, err := os.Lstat(pathEntry.path)
+	for _, path := range catalogPaths {
+		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
 			report.ReferencedMissing = append(report.ReferencedMissing, ArtifactAuditFile{
-				Path:           pathEntry.path,
+				Path:           path,
 				Classification: ArtifactReferencedMissing,
 			})
 			continue
 		}
 		if err != nil {
-			return report, fmt.Errorf("inspect referenced artifact %q: %w", pathEntry.path, err)
+			return report, fmt.Errorf("inspect referenced artifact %q: %w", path, err)
 		}
 		if !info.Mode().IsRegular() {
 			report.ReferencedMissing = append(report.ReferencedMissing, ArtifactAuditFile{
-				Path:           pathEntry.path,
+				Path:           path,
 				Classification: ArtifactReferencedMissing,
 			})
 		}
@@ -249,13 +239,9 @@ func referencedFromDropJournal(journal jobindex.DropJournal) map[string]struct{}
 	return referenced
 }
 
-type catalogPathEntry struct {
-	path string
-}
-
-func buildReferencedFromCatalog(logDirectory, diagnosticDirectory string, catalog jobindex.Catalog) (map[string]struct{}, []catalogPathEntry) {
+func buildReferencedFromCatalog(logDirectory, diagnosticDirectory string, catalog jobindex.Catalog) (map[string]struct{}, []string) {
 	referenced := make(map[string]struct{}, len(catalog.Records)*3)
-	var catalogPaths []catalogPathEntry
+	var catalogPaths []string
 	for _, record := range catalog.Records {
 		if record.TombstonedAt != nil {
 			continue
@@ -263,20 +249,20 @@ func buildReferencedFromCatalog(logDirectory, diagnosticDirectory string, catalo
 		if record.LogPath != "" {
 			if err := validateArtifactPath(logDirectory, record.LogPath); err == nil {
 				referenced[canonicalPath(record.LogPath)] = struct{}{}
-				catalogPaths = append(catalogPaths, catalogPathEntry{path: record.LogPath})
+				catalogPaths = append(catalogPaths, record.LogPath)
 			}
 		}
 		if record.DiagnosticPath != "" {
 			if err := validateArtifactPath(diagnosticDirectory, record.DiagnosticPath); err == nil {
 				referenced[canonicalPath(record.DiagnosticPath)] = struct{}{}
-				catalogPaths = append(catalogPaths, catalogPathEntry{path: record.DiagnosticPath})
+				catalogPaths = append(catalogPaths, record.DiagnosticPath)
 			}
 		}
 		resourcePath, resourcePathErr := jobindex.ResourceEvidencePath(record)
 		if resourcePathErr == nil && resourcePath != "" {
 			if err := validateArtifactPath(diagnosticDirectory, resourcePath); err == nil {
 				referenced[canonicalPath(resourcePath)] = struct{}{}
-				catalogPaths = append(catalogPaths, catalogPathEntry{path: resourcePath})
+				catalogPaths = append(catalogPaths, resourcePath)
 			}
 		}
 	}
@@ -333,7 +319,7 @@ func auditArtifactDirectory(root string, referenced map[string]struct{}, cutoff 
 		}
 		path := filepath.Join(root, entry.Name())
 		size := uint64(info.Size())
-		classification := classifyOnDiskArtifact(entry.Name(), path, referenced, info.ModTime(), cutoff)
+		classification := classifyOnDiskArtifact(path, referenced, info.ModTime(), cutoff)
 		file := ArtifactAuditFile{
 			Path:              path,
 			SizeBytes:         size,
@@ -349,7 +335,7 @@ func auditArtifactDirectory(root string, referenced map[string]struct{}, cutoff 
 	return directory, nil
 }
 
-func classifyOnDiskArtifact(name, path string, referenced map[string]struct{}, modifiedAt, cutoff time.Time) ArtifactFileClass {
+func classifyOnDiskArtifact(path string, referenced map[string]struct{}, modifiedAt, cutoff time.Time) ArtifactFileClass {
 	if _, known := referenced[canonicalPath(path)]; known {
 		return ArtifactReferencedPresent
 	}

@@ -598,7 +598,7 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 	const maxAdditionalSteps = 6
 	previousRemovals := countRemovals()
 	converged := false
-	for i := 0; i < maxAdditionalSteps; i++ {
+	for i := range maxAdditionalSteps {
 		if _, err := harness.controller.Step(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -655,7 +655,7 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 
 	const maxSteps = 8
 	idle2Removed := false
-	for step := 0; step < maxSteps; step++ {
+	for range maxSteps {
 		// A Step that attempts idle-1's deregistration surfaces the injected
 		// persistentErr through record()'s operationErrors (Step() joins and
 		// returns them), exactly like a real retryable GitHub error would. That
@@ -761,7 +761,7 @@ func TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates(t *testing.T) {
 
 	const maxSteps = 8
 	previousChecks := 0
-	for step := 0; step < maxSteps; step++ {
+	for step := range maxSteps {
 		if _, err := harness.controller.Step(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -1112,13 +1112,11 @@ func TestConcurrentStepsAreSerializedAndIdempotent(t *testing.T) {
 	harness := newHarness(t, model.ModeEnabled)
 	var wg sync.WaitGroup
 	errorsSeen := make(chan error, 16)
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 16 {
+		wg.Go(func() {
 			_, err := harness.controller.Step(context.Background())
 			errorsSeen <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(errorsSeen)

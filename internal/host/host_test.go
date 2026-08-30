@@ -38,9 +38,7 @@ func TestParseWSLDistributionsUTF16(t *testing.T) {
 	units := utf16.Encode([]rune(text))
 	encoded := []byte{0xff, 0xfe}
 	for _, unit := range units {
-		pair := make([]byte, 2)
-		binary.LittleEndian.PutUint16(pair, unit)
-		encoded = append(encoded, pair...)
+		encoded = binary.LittleEndian.AppendUint16(encoded, unit)
 	}
 	want := []string{"Ubuntu-24.04", "docker-desktop"}
 	if got := parseWSLDistributions(encoded); !reflect.DeepEqual(got, want) {

@@ -217,127 +217,78 @@ func newRecorder(tracerProvider trace.TracerProvider, meterProvider metric.Meter
 	meter := meterProvider.Meter(instrumentationName)
 	r := &recorder{tracer: tracerProvider.Tracer(instrumentationName)}
 	var err error
-	if r.reconcileDuration, err = meter.Float64Histogram("ci_runner.controller.reconcile.duration", metric.WithUnit("s"), metric.WithDescription("Controller reconciliation duration.")); err != nil {
-		return nil, err
+	float64Histogram := func(name, unit, description string) (instrument metric.Float64Histogram) {
+		if err == nil {
+			instrument, err = meter.Float64Histogram(name, metric.WithUnit(unit), metric.WithDescription(description))
+		}
+		return instrument
 	}
-	if r.reconcileErrors, err = meter.Int64Counter("ci_runner.controller.reconcile.errors", metric.WithUnit("{error}"), metric.WithDescription("Unexpected reconciliation errors.")); err != nil {
-		return nil, err
+	float64Gauge := func(name, unit, description string) (instrument metric.Float64Gauge) {
+		if err == nil {
+			instrument, err = meter.Float64Gauge(name, metric.WithUnit(unit), metric.WithDescription(description))
+		}
+		return instrument
 	}
-	if r.checkpointAge, err = meter.Float64Gauge("ci_runner.controller.observed.checkpoint.age", metric.WithUnit("s"), metric.WithDescription("Age of the prior durable observed checkpoint when reconciliation began.")); err != nil {
-		return nil, err
+	int64Counter := func(name, unit, description string) (instrument metric.Int64Counter) {
+		if err == nil {
+			instrument, err = meter.Int64Counter(name, metric.WithUnit(unit), metric.WithDescription(description))
+		}
+		return instrument
 	}
-	if r.advertised, err = meter.Int64Gauge("ci_runner.capacity.advertised", metric.WithUnit("{worker}"), metric.WithDescription("Capacity acknowledged to GitHub by target pool.")); err != nil {
-		return nil, err
+	int64Gauge := func(name, unit, description string) (instrument metric.Int64Gauge) {
+		if err == nil {
+			instrument, err = meter.Int64Gauge(name, metric.WithUnit(unit), metric.WithDescription(description))
+		}
+		return instrument
 	}
-	if r.capacityAcknowledged, err = meter.Int64Gauge("ci_runner.capacity.acknowledged", metric.WithUnit("1"), metric.WithDescription("Whether the latest target capacity is acknowledged by the GitHub listener.")); err != nil {
-		return nil, err
+	int64Histogram := func(name, unit, description string) (instrument metric.Int64Histogram) {
+		if err == nil {
+			instrument, err = meter.Int64Histogram(name, metric.WithUnit(unit), metric.WithDescription(description))
+		}
+		return instrument
 	}
-	if r.acknowledgementPendingAge, err = meter.Float64Gauge("ci_runner.capacity.acknowledgement.pending.age", metric.WithUnit("s"), metric.WithDescription("Age of the current unacknowledged capacity transition; omitted when acknowledged or unavailable.")); err != nil {
-		return nil, err
-	}
-	if r.assigned, err = meter.Int64Gauge("ci_runner.capacity.assigned", metric.WithUnit("{job}"), metric.WithDescription("Authoritative assigned jobs by target pool.")); err != nil {
-		return nil, err
-	}
-	if r.desired, err = meter.Int64Gauge("ci_runner.capacity.desired", metric.WithUnit("{worker}"), metric.WithDescription("Desired workers by target pool.")); err != nil {
-		return nil, err
-	}
-	if r.workers, err = meter.Int64Gauge("ci_runner.workers", metric.WithUnit("{worker}"), metric.WithDescription("Managed workers by target pool and bounded lifecycle state.")); err != nil {
-		return nil, err
-	}
-	if r.activeJobs, err = meter.Int64Gauge("ci_runner.jobs.active", metric.WithUnit("{job}"), metric.WithDescription("Active jobs by target pool.")); err != nil {
-		return nil, err
-	}
-	if r.inventoryWorkers, err = meter.Int64Gauge("ci_runner.docker.inventory.workers", metric.WithUnit("{worker}"), metric.WithDescription("Workers present in the reconciled Docker inventory by target pool.")); err != nil {
-		return nil, err
-	}
-	if r.assignmentGap, err = meter.Int64Gauge("ci_runner.accounting.assignment.gap", metric.WithUnit("{job}"), metric.WithDescription("GitHub assigned jobs minus locally visible busy or starting workers, floored at zero.")); err != nil {
-		return nil, err
-	}
-	if r.transientLag, err = meter.Int64Gauge("ci_runner.accounting.transient_lag", metric.WithUnit("1"), metric.WithDescription("Whether short-job timing creates transientAccountingLag for a target pool.")); err != nil {
-		return nil, err
-	}
-	if r.cpuPercent, err = meter.Float64Gauge("ci_runner.host.cpu.utilization", metric.WithUnit("%"), metric.WithDescription("Host CPU utilization percentage.")); err != nil {
-		return nil, err
-	}
-	if r.availableMemory, err = meter.Int64Gauge("ci_runner.host.memory.available", metric.WithUnit("By"), metric.WithDescription("Available host physical memory.")); err != nil {
-		return nil, err
-	}
-	if r.memoryHeadroom, err = meter.Int64Gauge("ci_runner.capacity.memory.headroom", metric.WithUnit("By"), metric.WithDescription("Memory headroom left unspent by the last plan under the active basis (static worker budget, or legacy host headroom).")); err != nil {
-		return nil, err
-	}
-	if r.memoryAffordable, err = meter.Int64Gauge("ci_runner.capacity.memory.affordable", metric.WithUnit("{worker}"), metric.WithDescription("Additional workers the remaining memory headroom funds at the pool's effective worker profile.")); err != nil {
-		return nil, err
-	}
-	if r.resourceGate, err = meter.Int64Gauge("ci_runner.gate.resource.blocked", metric.WithUnit("1"), metric.WithDescription("Whether resource admission is blocked.")); err != nil {
-		return nil, err
-	}
-	if r.powerGate, err = meter.Int64Gauge("ci_runner.gate.power.blocked", metric.WithUnit("1"), metric.WithDescription("Whether power policy blocks admission.")); err != nil {
-		return nil, err
-	}
-	if r.workerStarts, err = meter.Int64Counter("ci_runner.worker.starts", metric.WithUnit("{worker}"), metric.WithDescription("Worker start attempts by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.workerStartTime, err = meter.Float64Histogram("ci_runner.worker.start.duration", metric.WithUnit("s"), metric.WithDescription("Docker worker start duration by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.workerRegisters, err = meter.Int64Counter("ci_runner.worker.registrations", metric.WithUnit("{worker}"), metric.WithDescription("GitHub JIT worker registrations by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.workerRegisterTime, err = meter.Float64Histogram("ci_runner.worker.registration.duration", metric.WithUnit("s"), metric.WithDescription("GitHub JIT worker registration duration by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.workerFinalizes, err = meter.Int64Counter("ci_runner.worker.finalizations", metric.WithUnit("{worker}"), metric.WithDescription("Worker container finalizations by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.workerFinalizeTime, err = meter.Float64Histogram("ci_runner.worker.finalization.duration", metric.WithUnit("s"), metric.WithDescription("Worker artifact and container finalization duration by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.jobsStarted, err = meter.Int64Counter("ci_runner.jobs.started", metric.WithUnit("{job}"), metric.WithDescription("Durably indexed GitHub job-start events.")); err != nil {
-		return nil, err
-	}
-	if r.jobStartLag, err = meter.Float64Histogram("ci_runner.jobs.start.visibility_lag", metric.WithUnit("s"), metric.WithDescription("Runner assignment to durable job-start observation lag.")); err != nil {
-		return nil, err
-	}
-	if r.lifecycleEventTime, err = meter.Float64Gauge("ci_runner.worker.lifecycle.event.time", metric.WithUnit("s"), metric.WithDescription("Unix timestamp of the latest bounded worker lifecycle event.")); err != nil {
-		return nil, err
-	}
-	if r.jobsCompleted, err = meter.Int64Counter("ci_runner.jobs.completed", metric.WithUnit("{job}"), metric.WithDescription("GitHub job completion events by bounded result.")); err != nil {
-		return nil, err
-	}
-	if r.cancellations, err = meter.Int64Counter("ci_runner.cancellations", metric.WithUnit("{cancellation}"), metric.WithDescription("Expected cancellations by bounded source and classification.")); err != nil {
-		return nil, err
-	}
-	if r.resourceEvidence, err = meter.Int64Counter("ci_runner.worker.resource.evidence", metric.WithUnit("{worker}"), metric.WithDescription("Terminal worker resource evidence records by bounded outcome.")); err != nil {
-		return nil, err
-	}
-	if r.memoryPeak, err = meter.Int64Histogram("ci_runner.worker.memory.peak", metric.WithUnit("By"), metric.WithDescription("Terminal cgroup-v2 memory.peak by worker.")); err != nil {
-		return nil, err
-	}
-	if r.memorySwapPeak, err = meter.Int64Histogram("ci_runner.worker.memory.swap.peak", metric.WithUnit("By"), metric.WithDescription("Terminal cgroup-v2 memory.swap.peak by worker.")); err != nil {
-		return nil, err
-	}
-	if r.oomEvents, err = meter.Int64Counter("ci_runner.worker.memory.oom.events", metric.WithUnit("{event}"), metric.WithDescription("Terminal cgroup-v2 memory.events oom count.")); err != nil {
-		return nil, err
-	}
-	if r.oomKillEvents, err = meter.Int64Counter("ci_runner.worker.memory.oom_kill.events", metric.WithUnit("{event}"), metric.WithDescription("Terminal cgroup-v2 memory.events oom_kill count.")); err != nil {
-		return nil, err
-	}
-	if r.cpuPeriods, err = meter.Int64Histogram("ci_runner.worker.cpu.periods", metric.WithUnit("{period}"), metric.WithDescription("Terminal cgroup-v2 cpu.stat period count by worker.")); err != nil {
-		return nil, err
-	}
-	if r.cpuThrottled, err = meter.Int64Histogram("ci_runner.worker.cpu.throttled.periods", metric.WithUnit("{period}"), metric.WithDescription("Terminal cgroup-v2 cpu.stat throttled period count by worker.")); err != nil {
-		return nil, err
-	}
-	if r.cpuThrottledTime, err = meter.Float64Histogram("ci_runner.worker.cpu.throttled.duration", metric.WithUnit("s"), metric.WithDescription("Terminal cgroup-v2 cpu.stat throttled duration by worker.")); err != nil {
-		return nil, err
-	}
-	if r.pidsPeak, err = meter.Int64Histogram("ci_runner.worker.pids.peak", metric.WithUnit("{process}"), metric.WithDescription("Terminal cgroup-v2 pids.peak by worker.")); err != nil {
-		return nil, err
-	}
-	if r.ioRead, err = meter.Int64Histogram("ci_runner.worker.io.read", metric.WithUnit("By"), metric.WithDescription("Terminal aggregate cgroup-v2 io.stat read bytes by worker.")); err != nil {
-		return nil, err
-	}
-	if r.ioWrite, err = meter.Int64Histogram("ci_runner.worker.io.write", metric.WithUnit("By"), metric.WithDescription("Terminal aggregate cgroup-v2 io.stat write bytes by worker.")); err != nil {
+	r.reconcileDuration = float64Histogram("ci_runner.controller.reconcile.duration", "s", "Controller reconciliation duration.")
+	r.reconcileErrors = int64Counter("ci_runner.controller.reconcile.errors", "{error}", "Unexpected reconciliation errors.")
+	r.checkpointAge = float64Gauge("ci_runner.controller.observed.checkpoint.age", "s", "Age of the prior durable observed checkpoint when reconciliation began.")
+	r.advertised = int64Gauge("ci_runner.capacity.advertised", "{worker}", "Capacity acknowledged to GitHub by target pool.")
+	r.capacityAcknowledged = int64Gauge("ci_runner.capacity.acknowledged", "1", "Whether the latest target capacity is acknowledged by the GitHub listener.")
+	r.acknowledgementPendingAge = float64Gauge("ci_runner.capacity.acknowledgement.pending.age", "s", "Age of the current unacknowledged capacity transition; omitted when acknowledged or unavailable.")
+	r.assigned = int64Gauge("ci_runner.capacity.assigned", "{job}", "Authoritative assigned jobs by target pool.")
+	r.desired = int64Gauge("ci_runner.capacity.desired", "{worker}", "Desired workers by target pool.")
+	r.workers = int64Gauge("ci_runner.workers", "{worker}", "Managed workers by target pool and bounded lifecycle state.")
+	r.activeJobs = int64Gauge("ci_runner.jobs.active", "{job}", "Active jobs by target pool.")
+	r.inventoryWorkers = int64Gauge("ci_runner.docker.inventory.workers", "{worker}", "Workers present in the reconciled Docker inventory by target pool.")
+	r.assignmentGap = int64Gauge("ci_runner.accounting.assignment.gap", "{job}", "GitHub assigned jobs minus locally visible busy or starting workers, floored at zero.")
+	r.transientLag = int64Gauge("ci_runner.accounting.transient_lag", "1", "Whether short-job timing creates transientAccountingLag for a target pool.")
+	r.cpuPercent = float64Gauge("ci_runner.host.cpu.utilization", "%", "Host CPU utilization percentage.")
+	r.availableMemory = int64Gauge("ci_runner.host.memory.available", "By", "Available host physical memory.")
+	r.memoryHeadroom = int64Gauge("ci_runner.capacity.memory.headroom", "By", "Memory headroom left unspent by the last plan under the active basis (static worker budget, or legacy host headroom).")
+	r.memoryAffordable = int64Gauge("ci_runner.capacity.memory.affordable", "{worker}", "Additional workers the remaining memory headroom funds at the pool's effective worker profile.")
+	r.resourceGate = int64Gauge("ci_runner.gate.resource.blocked", "1", "Whether resource admission is blocked.")
+	r.powerGate = int64Gauge("ci_runner.gate.power.blocked", "1", "Whether power policy blocks admission.")
+	r.workerStarts = int64Counter("ci_runner.worker.starts", "{worker}", "Worker start attempts by bounded outcome.")
+	r.workerStartTime = float64Histogram("ci_runner.worker.start.duration", "s", "Docker worker start duration by bounded outcome.")
+	r.workerRegisters = int64Counter("ci_runner.worker.registrations", "{worker}", "GitHub JIT worker registrations by bounded outcome.")
+	r.workerRegisterTime = float64Histogram("ci_runner.worker.registration.duration", "s", "GitHub JIT worker registration duration by bounded outcome.")
+	r.workerFinalizes = int64Counter("ci_runner.worker.finalizations", "{worker}", "Worker container finalizations by bounded outcome.")
+	r.workerFinalizeTime = float64Histogram("ci_runner.worker.finalization.duration", "s", "Worker artifact and container finalization duration by bounded outcome.")
+	r.jobsStarted = int64Counter("ci_runner.jobs.started", "{job}", "Durably indexed GitHub job-start events.")
+	r.jobStartLag = float64Histogram("ci_runner.jobs.start.visibility_lag", "s", "Runner assignment to durable job-start observation lag.")
+	r.lifecycleEventTime = float64Gauge("ci_runner.worker.lifecycle.event.time", "s", "Unix timestamp of the latest bounded worker lifecycle event.")
+	r.jobsCompleted = int64Counter("ci_runner.jobs.completed", "{job}", "GitHub job completion events by bounded result.")
+	r.cancellations = int64Counter("ci_runner.cancellations", "{cancellation}", "Expected cancellations by bounded source and classification.")
+	r.resourceEvidence = int64Counter("ci_runner.worker.resource.evidence", "{worker}", "Terminal worker resource evidence records by bounded outcome.")
+	r.memoryPeak = int64Histogram("ci_runner.worker.memory.peak", "By", "Terminal cgroup-v2 memory.peak by worker.")
+	r.memorySwapPeak = int64Histogram("ci_runner.worker.memory.swap.peak", "By", "Terminal cgroup-v2 memory.swap.peak by worker.")
+	r.oomEvents = int64Counter("ci_runner.worker.memory.oom.events", "{event}", "Terminal cgroup-v2 memory.events oom count.")
+	r.oomKillEvents = int64Counter("ci_runner.worker.memory.oom_kill.events", "{event}", "Terminal cgroup-v2 memory.events oom_kill count.")
+	r.cpuPeriods = int64Histogram("ci_runner.worker.cpu.periods", "{period}", "Terminal cgroup-v2 cpu.stat period count by worker.")
+	r.cpuThrottled = int64Histogram("ci_runner.worker.cpu.throttled.periods", "{period}", "Terminal cgroup-v2 cpu.stat throttled period count by worker.")
+	r.cpuThrottledTime = float64Histogram("ci_runner.worker.cpu.throttled.duration", "s", "Terminal cgroup-v2 cpu.stat throttled duration by worker.")
+	r.pidsPeak = int64Histogram("ci_runner.worker.pids.peak", "{process}", "Terminal cgroup-v2 pids.peak by worker.")
+	r.ioRead = int64Histogram("ci_runner.worker.io.read", "By", "Terminal aggregate cgroup-v2 io.stat read bytes by worker.")
+	r.ioWrite = int64Histogram("ci_runner.worker.io.write", "By", "Terminal aggregate cgroup-v2 io.stat write bytes by worker.")
+	if err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -448,19 +399,12 @@ func (r *recorder) recordSnapshot(ctx context.Context, snapshot ReconcileSnapsho
 		attrs := metric.WithAttributes(attribute.String("ci_runner.pool.id", pool.ID))
 		r.inventoryWorkers.Record(ctx, inventory, attrs)
 		locallyVisible := active[pool.ID] + counts[pool.ID]["starting"]
-		gap := int64(pool.Assigned) - locallyVisible
-		if gap < 0 {
-			gap = 0
-		}
+		gap := max(0, int64(pool.Assigned)-locallyVisible)
 		r.assignmentGap.Record(ctx, gap, attrs)
 		r.transientLag.Record(ctx, boolInt64(gap > 0), attrs)
 	}
 	r.cpuPercent.Record(ctx, snapshot.CPUPercent)
-	available := snapshot.AvailableMemoryBytes
-	if available > math.MaxInt64 {
-		available = math.MaxInt64
-	}
-	r.availableMemory.Record(ctx, int64(available))
+	r.availableMemory.Record(ctx, clampUint64(snapshot.AvailableMemoryBytes))
 	r.memoryHeadroom.Record(ctx, clampUint64(snapshot.MemoryHeadroomBytes))
 	r.resourceGate.Record(ctx, boolInt64(snapshot.ResourceGateBlocked))
 	r.powerGate.Record(ctx, boolInt64(snapshot.PowerGateBlocked))

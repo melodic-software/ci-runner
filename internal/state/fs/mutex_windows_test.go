@@ -44,7 +44,7 @@ func TestWindowsMutexRepeatedReleaseFromDifferentGoroutine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for iteration := 0; iteration < 128; iteration++ {
+	for iteration := range 128 {
 		unlock, err := locker.Lock(context.Background())
 		if err != nil {
 			t.Fatalf("iteration %d lock: %v", iteration, err)

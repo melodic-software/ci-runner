@@ -1,7 +1,6 @@
 package jobindex
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,17 +72,8 @@ func LoadDropJournal(directory string) (DropJournal, error) {
 		return DropJournal{}, fmt.Errorf("drop journal exceeds the %d-byte cap", maximumJobState)
 	}
 	var journal DropJournal
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&journal); err != nil {
-		return DropJournal{}, fmt.Errorf("decode drop journal: %w", err)
-	}
-	var trailer any
-	if err := decoder.Decode(&trailer); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return DropJournal{}, errors.New("decode drop journal: multiple JSON values are not allowed")
-		}
-		return DropJournal{}, fmt.Errorf("decode drop journal trailer: %w", err)
+	if err := decodeStrictJSON(contents, "drop journal", &journal); err != nil {
+		return DropJournal{}, err
 	}
 	if journal.SchemaVersion != dropJournalSchemaVersion {
 		return DropJournal{}, fmt.Errorf("unsupported drop journal schemaVersion %d", journal.SchemaVersion)

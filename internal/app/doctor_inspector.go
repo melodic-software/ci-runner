@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -109,11 +110,7 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 	for _, target := range i.Config.GitHub.Targets {
 		secretIDs[target.SecretID] = struct{}{}
 	}
-	orderedSecretIDs := make([]string, 0, len(secretIDs))
-	for id := range secretIDs {
-		orderedSecretIDs = append(orderedSecretIDs, id)
-	}
-	sort.Strings(orderedSecretIDs)
+	orderedSecretIDs := slices.Sorted(maps.Keys(secretIDs))
 	for _, id := range orderedSecretIDs {
 		path := filepath.Join(i.Config.Paths.Secrets, id+".dpapi")
 		if i.ACL == nil {
@@ -280,10 +277,7 @@ func (i *LocalDoctorInspector) verifyACLTree(root string) (int, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return count, err
-	}
-	return count, nil
+	return count, err
 }
 
 var _ DoctorInspector = (*LocalDoctorInspector)(nil)
