@@ -47,10 +47,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G4 | worker-image | 8 | 1 | delivered (wave 1) |
 | G5 | go-shared-small | 9 | 1 | delivered (wave 1) |
 | G6 | go-scaleset | 5 | 1 | delivered (wave 1) |
-| G7 | go-telemetry | 6 | 2 | pending |
-| G8 | go-state | 14 | 2 | pending |
-| G9 | go-control | 8 | 2 | pending |
-| G10 | go-secret | 15 | 2 | pending |
+| G7 | go-telemetry | 6 | 2 | in-flight |
+| G8 | go-state | 14 | 2 | in-flight |
+| G9 | go-control | 8 | 2 | in-flight |
+| G10 | go-secret | 15 | 2 | in-flight |
 | G11 | go-jobindex | 8 | 3 | pending |
 | G12 | go-controller-src | 9 | 3 | pending |
 | G13 | go-controller-tests | 11 | 3 (after G12) | pending |
