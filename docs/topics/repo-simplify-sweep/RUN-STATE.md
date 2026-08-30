@@ -42,10 +42,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | Grp | Name | Files | Wave | Status |
 |---|---|---|---|---|
 | G1 | root-config | 4 (9 deferred read-only) | 1 | verified (no changes) |
-| G2 | ci-scripts | 10 | 1 | simplified (verifier running) |
-| G3 | powershell | 3 | 1 | simplified (verifier running) |
+| G2 | ci-scripts | 10 | 1 | verified (refuter: NOT REFUTED) |
+| G3 | powershell | 3 | 1 | REFUTED → reverted → re-running safe subset |
 | G4 | worker-image | 8 | 1 | simplified (verifier running) |
-| G5 | go-shared-small | 9 | 1 | simplified (verifier running) |
+| G5 | go-shared-small | 9 | 1 | verified (refuter: NOT REFUTED) |
 | G6 | go-scaleset | 5 | 1 | verified (refuter: NOT REFUTED) |
 | G7 | go-telemetry | 6 | 2 | pending |
 | G8 | go-state | 14 | 2 | pending |
