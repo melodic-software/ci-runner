@@ -637,11 +637,7 @@ func (s *FileArtifactSink) sweepCapUnreferenced(referenced map[string]struct{}, 
 			removalFailures[canonicalPath(entry.path)] = struct{}{}
 			continue
 		}
-		if entry.size <= *total {
-			*total -= entry.size
-		} else {
-			*total = 0
-		}
+		*total = saturatingSub(*total, entry.size)
 	}
 	return errors.Join(cleanupErrors...)
 }

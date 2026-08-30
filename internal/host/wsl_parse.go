@@ -25,13 +25,12 @@ func looksUTF16LE(value []byte) bool {
 		return false
 	}
 	zeroes := 0
-	pairs := len(value) / 2
 	for i := 1; i < len(value); i += 2 {
 		if value[i] == 0 {
 			zeroes++
 		}
 	}
-	return pairs > 0 && zeroes*2 >= pairs
+	return zeroes*2 >= len(value)/2
 }
 
 func parseWSLDistributions(output []byte) []string {

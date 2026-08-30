@@ -60,9 +60,8 @@ func (w *resourceEvidenceLogObserver) appendLine(content []byte) {
 func (w *resourceEvidenceLogObserver) completeLine() {
 	if !w.discardLine {
 		if evidence, ok := parseResourceEvidenceLogLine(w.line); ok {
-			copy := evidence
-			copy.Missing = append([]string(nil), evidence.Missing...)
-			w.evidence = &copy
+			evidence.Missing = append([]string(nil), evidence.Missing...)
+			w.evidence = &evidence
 		}
 	}
 	w.line = nil

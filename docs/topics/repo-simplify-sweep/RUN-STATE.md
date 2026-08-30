@@ -55,10 +55,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G12 | go-controller-src | 9 | 3 | delivered (wave 3) |
 | G13 | go-controller-tests | 11 | 3 | delivered (wave 3; one unreproduced full-suite flake disclosed by refuter — 42+ clean runs since incl. 4 orchestrator race-double-runs; differential baseline showed no stability difference) |
 | G14 | go-healthwatch | 7 | 3 | delivered (wave 3) |
-| G15 | go-host-core | 19 | 4 | verified (refuter: NOT REFUTED) |
-| G16 | go-host-probes | 10 | 4 (after G15) | in-flight |
-| G17 | go-host-tests | 8 | 4 (after G15+G16) | pending |
-| G18 | go-runtime-docker | 13 | 4 | verified (refuter: NOT REFUTED) |
+| G15 | go-host-core | 19 | 4 | delivered (wave 4) |
+| G16 | go-host-probes | 10 | 4 | delivered (wave 4) |
+| G17 | go-host-tests | 8 | 4 | delivered (wave 4) |
+| G18 | go-runtime-docker | 13 | 4 | delivered (wave 4) |
 | G19 | go-app-src | 23 | 5 | pending |
 | G20 | go-app-tests | 11 | 5 (after G19) | pending |
 
@@ -456,6 +456,63 @@ File lists: deterministic mapping mirrored below from the refined grouping
 - G14: check.go:204-207 — `started := now; ... = &started` → &now. Reason:
   named copy documents intent; nil gain. Scope: trivial. Category: cleanup.
 
+- G15: controller_desktop.go:106-114 + monitor_windows.go:96-104 — drop the
+  pre-Go-1.23 timer drain (`if !timer.Stop() { <-timer.C }`). Reason: post-Stop
+  receive semantics changed in Go 1.23; cannot prove the edge identical from
+  local evidence; timers touch concurrency. Scope: trivial. Category: modernize.
+- G15: monitor_windows.go:18 — syscall.NewLazyDLL → windows.NewLazySystemDLL
+  (hardening). Reason: changes DLL search path — a fix, not a simplification.
+  Scope: trivial. Category: cleanup.
+- G15: controller_process_windows.go:13-19 — local process/wait constants
+  duplicate windows.* constants. Reason: windows-only, compile-check-only net.
+  Scope: trivial. Category: dedup.
+- G15: trusted_tools_windows.go:35 — ContainsAny redundant with filepath.Base
+  under windows. Reason: security-frozen defense-in-depth kept. Scope: trivial.
+  Category: cleanup.
+- G15: controller_desktop.go:22,39,54 — hoist thrice-repeated errors.New to a
+  package var. Reason: changes error identity (==). Scope: trivial.
+  Category: dedup.
+- G15: controller_desktop.go:38-66 — merge Start/Stop near-duplicates into a
+  5-parameter helper. Reason: indirection without clear simplification.
+  Scope: small. Category: refactor.
+- G15: json_log.go:347-352 — sort.Slice → slices.SortFunc. Reason: mixed repo
+  convention; comparator rewrite risk. Scope: trivial. Category: modernize.
+- G15: json_log.go:283,313 — drop redundant .UTC() in rotateLocked. Reason:
+  defensive normalization guards future callers/test-injected now. Scope:
+  trivial. Category: cleanup.
+- G16: wsl_windows.go:16 + reboot_windows.go:23-25 — identical one-line
+  trustedSystemExecutable closures could curry via a helper. Reason: natural
+  home is G15's frozen security file; relocation isn't simplification.
+  Scope: trivial. Category: dedup.
+- G17: json_log_test.go:58-72,101-112 — shared readCombinedLogs helper for
+  duplicated fixture. Reason: new-helper refactor beyond wave scope. Scope:
+  small. Category: dedup.
+- G17: docker_windows_test.go:63-67,112-116 — duplicated ExitError prerequisite
+  block. Reason: windows-only, compile-check-only. Scope: small.
+  Category: dedup.
+- G17: gaming_test.go:56-60,124,201 — answeringDesktop subset of fakeDesktop.
+  Reason: naming vocabulary is deliberate documentation. Scope: small.
+  Category: dedup.
+- G17: reboot_args_test.go:15-19 — /d-before-/c index assertion redundant after
+  slices.Equal. Reason: assertions immovable; documents intent. Scope: trivial.
+  Category: cleanup.
+- G17: host_test.go:46 + controller_process_windows_test.go:21 —
+  reflect.DeepEqual on []string → slices.Equal. Reason: mixed precedent;
+  windows file compile-check-only. Scope: trivial. Category: modernize.
+- G18: runtime_test.go:2127-2133 — cloneLabels → maps.Clone. Reason: nil-map
+  nilness differs (mapsloop conservatism). Scope: trivial. Category: modernize.
+- G18: artifacts.go:96-268 — OpenLog/WriteDiagnostics/WriteResourceEvidence
+  share a temp-write/harden/replace skeleton. Reason: per-variant error prose
+  is operator contract; extraction risks drift. Scope: medium. Category: dedup.
+- G18: artifacts.go:515-582 — artifactDiskTotal/protectedCountedBytes duplicate
+  a scan loop. Reason: shared iterator changes error-surfacing points. Scope:
+  small-medium. Category: dedup.
+- G18: log_evidence.go:72-79 — local named `copy` shadows builtin. Reason:
+  rename churn. Scope: trivial. Category: cleanup.
+- G18: artifacts_audit.go:169-178 — redundant zero-value assignment + 3-way
+  branch compression. Reason: explicit three-state logic documents semantics.
+  Scope: trivial. Category: cleanup.
+
 (further items populated as waves complete)
 
 ## Wave delivery log
@@ -480,3 +537,9 @@ File lists: deterministic mapping mirrored below from the refined grouping
   unreproduced full-suite flake (name lost to output truncation; 42+
   clean runs since, differential baseline clean) — recorded, not
   attributed to the diff.
+- Wave 4 (G15-G18): delivered as one code commit. All four groups
+  refutation-verified NOT REFUTED (regex language equality probed over 200k
+  strings for G18's merge; differential probes for host parse/loop changes).
+  Wave verification: go build/vet, GOOS=windows build/vet, golangci-lint
+  0 issues, go test -race for host and runtime/docker ok, runtime-docker
+  fuzz lane re-run clean.

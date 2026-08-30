@@ -7,7 +7,8 @@ import (
 )
 
 func parseDesktopStatus(output []byte) (DesktopStatus, error) {
-	normalized := strings.ToLower(strings.TrimSpace(string(output)))
+	trimmed := strings.TrimSpace(string(output))
+	normalized := strings.ToLower(trimmed)
 	var document struct {
 		Status string `json:"Status"`
 	}
@@ -24,6 +25,6 @@ func parseDesktopStatus(output []byte) (DesktopStatus, error) {
 	case normalized == "stopping", strings.Contains(normalized, "is stopping"):
 		return DesktopStatusStopping, nil
 	default:
-		return DesktopStatusUnknown, fmt.Errorf("unrecognized Docker Desktop status %q", strings.TrimSpace(string(output)))
+		return DesktopStatusUnknown, fmt.Errorf("unrecognized Docker Desktop status %q", trimmed)
 	}
 }

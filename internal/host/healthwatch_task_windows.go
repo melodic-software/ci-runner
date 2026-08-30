@@ -35,10 +35,7 @@ func InstallHealthWatchTask(ctx context.Context, tasks ScheduledTaskCLI, executa
 	if err != nil {
 		return err
 	}
-	minutes := int(interval / time.Minute)
-	if minutes < 1 {
-		minutes = 1
-	}
+	minutes := max(int(interval/time.Minute), 1)
 	command := fmt.Sprintf(
 		`"%s" --config "%s" host health-watch check`,
 		runnerExecutable,

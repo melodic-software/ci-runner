@@ -43,7 +43,7 @@ func TestJSONLogSinkRotatesRetainsAndRedacts(t *testing.T) {
 	}
 	sink.now = func() time.Time { return now }
 	secretMessage := "authorization=Bearer abcdef token=ghs_abcdefghijklmnopqrstuvwxyz012345 ACTIONS_RUNNER_INPUT_JITCONFIG=c2VjcmV0aml0 -----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY----- eyJabcdefghijk.abcdefghijkl.abcdefghijkl"
-	for index := 0; index < 4; index++ {
+	for range 4 {
 		if err := sink.Write(context.Background(), controller.LogEvent{Code: "test", Message: secretMessage}); err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +263,7 @@ func TestJSONLogSinkHealthReportsQueueTimeoutWithoutBlocking(t *testing.T) {
 
 	// One request stalls in the worker and the next queue-capacity requests
 	// fill the buffer. Each caller returns on its own delivery deadline.
-	for index := 0; index <= structuredLogQueueCapacity; index++ {
+	for range structuredLogQueueCapacity + 1 {
 		_ = sink.Write(context.Background(), controller.LogEvent{Code: "fill-queue"})
 	}
 	if err := sink.Write(context.Background(), controller.LogEvent{Code: "queue-overflow"}); !errors.Is(err, context.DeadlineExceeded) {
