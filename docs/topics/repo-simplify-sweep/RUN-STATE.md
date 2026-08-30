@@ -46,7 +46,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G3 | powershell | 3 | 1 | simplified (verifier running) |
 | G4 | worker-image | 8 | 1 | simplified (verifier running) |
 | G5 | go-shared-small | 9 | 1 | simplified (verifier running) |
-| G6 | go-scaleset | 5 | 1 | simplified (verifier running) |
+| G6 | go-scaleset | 5 | 1 | verified (refuter: NOT REFUTED) |
 | G7 | go-telemetry | 6 | 2 | pending |
 | G8 | go-state | 14 | 2 | pending |
 | G9 | go-control | 8 | 2 | pending |
