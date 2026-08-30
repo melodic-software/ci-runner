@@ -179,11 +179,11 @@ func parseElevatedBitLockerExit(out []byte) error {
 	case bitLockerProtectedExit:
 		return nil
 	case bitLockerNotEncryptedExit:
-		return fmt.Errorf("BitLocker volume status is not FullyEncrypted")
+		return errors.New("BitLocker volume status is not FullyEncrypted")
 	case bitLockerProtectionOffExit:
-		return fmt.Errorf("BitLocker protection status is not On")
+		return errors.New("BitLocker protection status is not On")
 	case bitLockerQueryFailedExit:
-		return fmt.Errorf("elevated Get-BitLockerVolume failed")
+		return errors.New("elevated Get-BitLockerVolume failed")
 	default:
 		return fmt.Errorf("elevated BitLocker verifier returned unsupported exit code %d", exitCode)
 	}

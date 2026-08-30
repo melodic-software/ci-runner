@@ -50,7 +50,7 @@ func (WindowsAccessController) Harden(path string) error {
 		return fmt.Errorf("resolve current Windows identity: %w", err)
 	}
 	if current.Uid == "" {
-		return fmt.Errorf("current Windows identity has no SID")
+		return errors.New("current Windows identity has no SID")
 	}
 	inheritance := ""
 	if info.IsDir() {
@@ -124,7 +124,7 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 		return fmt.Errorf("read security descriptor control: %w", callError(callErr))
 	}
 	if control&securityDescriptorDACLProtected == 0 {
-		return fmt.Errorf("ACL inheritance is not protected")
+		return errors.New("ACL inheritance is not protected")
 	}
 
 	var present, defaulted int32
@@ -139,7 +139,7 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 		return fmt.Errorf("read security descriptor DACL: %w", callError(callErr))
 	}
 	if present == 0 || aclPointer == nil {
-		return fmt.Errorf("protected ACL has no DACL")
+		return errors.New("protected ACL has no DACL")
 	}
 	acl := (*windows.ACL)(aclPointer)
 	if acl.AceCount != 2 {
@@ -165,7 +165,7 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 		expectedFlags = objectInheritACE | containerInheritACE
 	}
 	currentCount, systemCount := 0, 0
-	for index := uint16(0); index < acl.AceCount; index++ {
+	for index := range acl.AceCount {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(acl, uint32(index), &ace); err != nil {
 			return fmt.Errorf("read ACL entry %d: %w", index, err)
@@ -175,16 +175,16 @@ func verifyFileDACL(path, currentSID string, directory bool) (resultErr error) {
 		}
 		sidPointer := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 		switch {
-		case equalSID(sidPointer, currentPointer):
+		case windows.EqualSid(sidPointer, currentPointer):
 			currentCount++
-		case equalSID(sidPointer, systemPointer):
+		case windows.EqualSid(sidPointer, systemPointer):
 			systemCount++
 		default:
 			return fmt.Errorf("ACL entry %d grants an unexpected principal", index)
 		}
 	}
 	if currentCount != 1 || systemCount != 1 {
-		return fmt.Errorf("ACL must grant exactly one entry each to current user and SYSTEM")
+		return errors.New("ACL must grant exactly one entry each to current user and SYSTEM")
 	}
 	runtime.KeepAlive(descriptor)
 	return nil
@@ -230,8 +230,4 @@ func sidFromString(value string) (*windows.SID, error) {
 		return nil, fmt.Errorf("convert SID %q: %w", value, err)
 	}
 	return sid, nil
-}
-
-func equalSID(left, right *windows.SID) bool {
-	return windows.EqualSid(left, right)
 }

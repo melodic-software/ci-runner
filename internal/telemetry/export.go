@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -295,13 +296,11 @@ func millisecondsEnvironment(lookup environmentLookup, variable string, fallback
 		return fallback, nil
 	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil || value <= 0 || value > mathMaxMilliseconds() {
+	if err != nil || value <= 0 || value > math.MaxInt64/int64(time.Millisecond) {
 		return 0, fmt.Errorf("%s must be a positive millisecond integer", variable)
 	}
 	return time.Duration(value) * time.Millisecond, nil
 }
-
-func mathMaxMilliseconds() int64 { return int64(^uint64(0)>>1) / int64(time.Millisecond) }
 
 func compactErrors(values ...error) []error {
 	result := make([]error, 0, len(values))

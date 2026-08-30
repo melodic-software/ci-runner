@@ -168,7 +168,7 @@ func (s *Store) QuarantineObserved(ctx context.Context) (resultErr error) {
 	}
 	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
 	var evidence string
-	for attempt := 0; attempt < 100; attempt++ {
+	for attempt := range 100 {
 		evidence = filepath.Join(s.directory, fmt.Sprintf("observed.corrupt-%s-%d.json", stamp, attempt))
 		err = os.Link(source, evidence)
 		if err == nil {

@@ -3,6 +3,7 @@
 package secret
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -18,5 +19,5 @@ func openPrivateKeySource(path string) (privateKeySource, error) {
 	if err := inspectPrivateKeySource(info); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("identity-bound private-key source deletion requires Windows")
+	return nil, errors.New("identity-bound private-key source deletion requires Windows")
 }

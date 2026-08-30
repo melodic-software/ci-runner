@@ -87,10 +87,7 @@ func (s *MemoryStore) SaveObserved(ctx context.Context, observed model.ObservedS
 
 func cloneDesired(in model.DesiredState) model.DesiredState {
 	out := in
-	if in.TemporaryCapacityOverride != nil {
-		capacity := *in.TemporaryCapacityOverride
-		out.TemporaryCapacityOverride = &capacity
-	}
+	out.TemporaryCapacityOverride = clonePointer(in.TemporaryCapacityOverride)
 	return out
 }
 
@@ -99,21 +96,19 @@ func cloneObserved(in model.ObservedState) model.ObservedState {
 	out.Pools = append([]model.PoolObservation(nil), in.Pools...)
 	out.Workers = append([]model.Worker(nil), in.Workers...)
 	out.Problems = append([]model.Problem(nil), in.Problems...)
-	if in.DrainStartedAt != nil {
-		value := *in.DrainStartedAt
-		out.DrainStartedAt = &value
-	}
-	if in.ResourceGate.HighCPUSince != nil {
-		value := *in.ResourceGate.HighCPUSince
-		out.ResourceGate.HighCPUSince = &value
-	}
-	if in.ResourceGate.HealthySince != nil {
-		value := *in.ResourceGate.HealthySince
-		out.ResourceGate.HealthySince = &value
-	}
-	if in.PowerGate.ACSince != nil {
-		value := *in.PowerGate.ACSince
-		out.PowerGate.ACSince = &value
-	}
+	out.DrainStartedAt = clonePointer(in.DrainStartedAt)
+	out.ResourceGate.HighCPUSince = clonePointer(in.ResourceGate.HighCPUSince)
+	out.ResourceGate.HealthySince = clonePointer(in.ResourceGate.HealthySince)
+	out.PowerGate.ACSince = clonePointer(in.PowerGate.ACSince)
 	return out
+}
+
+// clonePointer copies the pointed-to value so callers cannot mutate stored
+// state through a shared pointer. nil stays nil.
+func clonePointer[T any](in *T) *T {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
 }

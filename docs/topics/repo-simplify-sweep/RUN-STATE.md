@@ -47,10 +47,10 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G4 | worker-image | 8 | 1 | delivered (wave 1) |
 | G5 | go-shared-small | 9 | 1 | delivered (wave 1) |
 | G6 | go-scaleset | 5 | 1 | delivered (wave 1) |
-| G7 | go-telemetry | 6 | 2 | in-flight |
-| G8 | go-state | 14 | 2 | verified (refuter: NOT REFUTED) |
-| G9 | go-control | 8 | 2 | verified (refuter: NOT REFUTED; note — WaitGroup.Go skips Done on panic unwind, observable only during process death, accepted) |
-| G10 | go-secret | 15 | 2 | verified (refuter: NOT REFUTED) |
+| G7 | go-telemetry | 6 | 2 | delivered (wave 2) |
+| G8 | go-state | 14 | 2 | delivered (wave 2) |
+| G9 | go-control | 8 | 2 | delivered (wave 2; refuter note — WaitGroup.Go skips Done on panic unwind, observable only during process death, accepted) |
+| G10 | go-secret | 15 | 2 | delivered (wave 2) |
 | G11 | go-jobindex | 8 | 3 | pending |
 | G12 | go-controller-src | 9 | 3 | pending |
 | G13 | go-controller-tests | 11 | 3 (after G12) | pending |
@@ -333,6 +333,56 @@ File lists: deterministic mapping mirrored below from the refined grouping
 - G6: official_test.go:747,836 — locals named `copy` shadow the builtin.
   Reason: cosmetic; lint-clean at baseline. Scope: trivial. Category: cleanup.
 
+- G7: export.go:182-210 — NewFromEnv re-derives probe endpoint/protocol already
+  consulted earlier; could be captured once during enable phase. Reason:
+  degraded-mode startup-probe semantics must stay byte-for-byte; equivalence
+  hard to prove locally. Scope: small. Category: dedup.
+- G7: export.go:83-89 — Shutdown reverse loop could use slices.Backward.
+  Reason: not clearly simpler; churn. Scope: trivial. Category: modernize.
+- G7: telemetry.go:387-398 — RecordCapacityCheckpoint ignores heartbeatAt
+  (frozen signature); single-pool helper restructure neutral. Reason: frozen
+  exported shape; neutral size. Scope: trivial. Category: refactor.
+- G8: store.go:99-101 — append([]model.X(nil), ...) → slices.Clone. Reason:
+  nil-ness differs for empty non-nil input (appendclipped hazard). Scope:
+  trivial. Category: modernize.
+- G8: store_test.go:40-46 — Add/Done → sync.WaitGroup.Go. Reason: repo-wide
+  convention decision (five Add/Done sites elsewhere). Scope: trivial.
+  Category: modernize. NOTE: G9 applied wg.Go in transport.go the same wave —
+  consolidation should reconcile repo-wide (see 6.5).
+- G8: fs/mutex_windows.go:20-22 — local wait consts duplicate windows.WAIT_*.
+  Reason: cosmetic dedup in correctness-critical mutex code. Scope: trivial.
+  Category: cleanup.
+- G8: fs/store_test.go:30-32 — lockFailureLocker nil-err default branch dead.
+  Reason: defensive test-double scaffolding. Scope: trivial. Category: cleanup.
+- G9: transport.go:277,287,292 — append(nil, x...) → slices.Clone. Reason:
+  appendclipped disabled-by-default; nil-ness hazard. Scope: trivial.
+  Category: modernize.
+- G9: transport.go:361-367 — newRequestID rand.Read error branch unreachable
+  per Go 1.24+ docs; dropping simplifies 4 call sites. Reason: removes
+  defensive error plumbing in wire client on docs guarantee alone. Scope:
+  small. Category: cleanup.
+- G9: transport.go:123-148 vs 324-340 — server readRequest / client
+  roundTripMessage duplicate framing sequence. Reason: error texts deliberately
+  diverge; EOF semantics differ; parameterization changes contractual strings.
+  Scope: medium. Category: dedup.
+- G9: pipe_windows.go:20 — no-verb fmt.Errorf → errors.New. Reason: agent
+  judged fmt.Errorf the dominant convention; cross-group decision. NOTE:
+  G10 converted its sites the same wave — consolidation should reconcile
+  (see 6.5). Scope: trivial. Category: cleanup.
+- G9: pipe_windows_test.go:28-45 — four cancel() calls could be one defer.
+  Reason: windows-only test, compile-verified only. Scope: trivial.
+  Category: cleanup.
+- G10: secret.go:465-469 — zero() loop could be clear() builtin. Reason:
+  zeroization-pattern caution (audited form). Scope: trivial.
+  Category: modernize.
+- G10: secret.go:490-498 — clearBigInt bits loop could use clear(bits).
+  Reason: same. Scope: trivial. Category: modernize.
+- G10: dpapi_windows.go:72-76 — unmanaged-buffer wipe loop could use clear().
+  Reason: same + windows-only. Scope: trivial. Category: modernize.
+- G10: secret.go:374-393 — fingerprint helpers share marshal+SHA-256 prefix.
+  Reason: security-critical path, marginal 4-line dedup. Scope: small.
+  Category: dedup.
+
 (further items populated as waves complete)
 
 ## Wave delivery log
@@ -345,3 +395,8 @@ File lists: deterministic mapping mirrored below from the refined grouping
   golangci-lint 0 issues, node --test 97/97, Test-ReleasePins PASS,
   shellcheck PASS, shfmt PASS. No version discipline detected in-repo
   (release tags drive versions); skipping bump step.
+- Wave 2 (G7-G10): delivered as one code commit. 12 files changed; all four
+  groups refutation-verified NOT REFUTED (no refutations this wave). Wave
+  verification: go build/vet, GOOS=windows build/vet, golangci-lint 0 issues,
+  go test -race for telemetry/state/control/secret — green except exactly the
+  known-red environmental state/fs subtest. Deferrals recorded below.

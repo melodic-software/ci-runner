@@ -74,9 +74,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 		s.connections[connection] = struct{}{}
 		s.connectionsMu.Unlock()
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 			defer func() {
 				s.connectionsMu.Lock()
 				delete(s.connections, connection)
@@ -84,7 +82,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				_ = connection.Close()
 			}()
 			s.serveConnection(serveContext, connection)
-		}()
+		})
 	}
 }
 
@@ -260,8 +258,8 @@ func legacyShutdownFieldRejection(err error, expectedVersion string) bool {
 	if expectedVersion != legacyShutdownControllerVersion {
 		return false
 	}
-	var responseErr *ResponseError
-	if !errors.As(err, &responseErr) || responseErr.Code != "invalid-request" {
+	responseErr, ok := errors.AsType[*ResponseError](err)
+	if !ok || responseErr.Code != "invalid-request" {
 		return false
 	}
 	return responseErr.Message == legacyShutdownIdentityFieldRejectionError
