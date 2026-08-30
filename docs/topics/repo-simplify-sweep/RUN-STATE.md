@@ -43,7 +43,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 |---|---|---|---|---|
 | G1 | root-config | 4 (9 deferred read-only) | 1 | verified (no changes) |
 | G2 | ci-scripts | 10 | 1 | verified (refuter: NOT REFUTED) |
-| G3 | powershell | 3 | 1 | REFUTED → reverted → re-running safe subset |
+| G3 | powershell | 3 | 1 | verified (refuted hunk reverted; safe subset re-applied) |
 | G4 | worker-image | 8 | 1 | simplified (verifier running) |
 | G5 | go-shared-small | 9 | 1 | verified (refuter: NOT REFUTED) |
 | G6 | go-scaleset | 5 | 1 | verified (refuter: NOT REFUTED) |
@@ -260,6 +260,11 @@ File lists: deterministic mapping mirrored below from the refined grouping
 - G2: queue-monitor.cjs:122 — healthy-summary prose hardcodes "five minutes"
   while QUEUE_THRESHOLD_MINUTES is configurable. Reason: rendered prose change
   is not behavior-preserving. Scope: trivial. Category: cleanup.
+- G3 (REFUTED, do not re-attempt): Test-ReleasePins.ps1:13,15 —
+  `[regex]::Replace($x,'\s+',' ')` → `-replace` swap. Refutation: zero-byte
+  README.md/docs/releases.md makes Get-Content -Raw return AutomationNull; the
+  two forms throw different exceptions in the failure path. A null-guard would
+  also change behavior. Category: judgment-call preserved (do-not-file).
 - G3: Test-DependencyFreshness.ps1:267-277 — syft image inspection near-copies
   Get-OfficialImageIndexDigest. Reason: dedup changes throw-message prose;
   script cannot be executed to verify. Scope: small. Category: dedup.
