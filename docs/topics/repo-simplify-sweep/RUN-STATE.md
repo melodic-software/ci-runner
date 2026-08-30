@@ -42,11 +42,11 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | Grp | Name | Files | Wave | Status |
 |---|---|---|---|---|
 | G1 | root-config | 4 (9 deferred read-only) | 1 | verified (no changes) |
-| G2 | ci-scripts | 10 | 1 | verified (refuter: NOT REFUTED) |
-| G3 | powershell | 3 | 1 | verified (refuted hunk reverted; safe subset re-applied) |
-| G4 | worker-image | 8 | 1 | simplified (verifier running) |
-| G5 | go-shared-small | 9 | 1 | verified (refuter: NOT REFUTED) |
-| G6 | go-scaleset | 5 | 1 | verified (refuter: NOT REFUTED) |
+| G2 | ci-scripts | 10 | 1 | delivered (wave 1) |
+| G3 | powershell | 3 | 1 | delivered (wave 1; refuted hunk reverted, safe subset re-applied) |
+| G4 | worker-image | 8 | 1 | delivered (wave 1) |
+| G5 | go-shared-small | 9 | 1 | delivered (wave 1) |
+| G6 | go-scaleset | 5 | 1 | delivered (wave 1) |
 | G7 | go-telemetry | 6 | 2 | pending |
 | G8 | go-state | 14 | 2 | pending |
 | G9 | go-control | 8 | 2 | pending |
@@ -337,4 +337,11 @@ File lists: deterministic mapping mirrored below from the refined grouping
 
 ## Wave delivery log
 
-(populated as waves complete)
+- Wave 1 (G1-G6): delivered as one code commit on the designated branch.
+  9 files changed across G2/G3/G4/G5/G6; G1 reviewed no-change. All five
+  changed groups refutation-verified NOT REFUTED (G3 after one confirmed
+  refutation → group revert → safe-subset re-run). Wave verification: go
+  build/vet, GOOS=windows build/vet, go test -race (config, scaleset),
+  golangci-lint 0 issues, node --test 97/97, Test-ReleasePins PASS,
+  shellcheck PASS, shfmt PASS. No version discipline detected in-repo
+  (release tags drive versions); skipping bump step.

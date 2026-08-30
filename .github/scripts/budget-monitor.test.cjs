@@ -51,7 +51,6 @@ function fakeCore() {
   const summary = {
     addHeading() { return summary; },
     addRaw() { return summary; },
-    addTable() { return summary; },
     async write() {},
   };
   return {
@@ -74,12 +73,10 @@ function fakeGitHub({
 } = {}) {
   const calls = [];
   const listForRepo = Symbol('listForRepo');
-  const getRepo = Symbol('getRepo');
   return {
     calls,
     rest: {
       repos: {
-        get: getRepo,
         async get(parameters) {
           calls.push(['repos.get', parameters]);
           const key = `${parameters.owner}/${parameters.repo}`;

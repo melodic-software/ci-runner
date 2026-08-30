@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -421,10 +422,7 @@ func (c *OfficialClient) ActiveJob(poolID, runnerName string) (string, bool) {
 // permanent uninstall must call DeleteScaleSet explicitly.
 func (c *OfficialClient) Close(ctx context.Context) error {
 	c.mu.RLock()
-	targets := make([]*officialTarget, 0, len(c.targets))
-	for _, target := range c.targets {
-		targets = append(targets, target)
-	}
+	targets := slices.Collect(maps.Values(c.targets))
 	c.mu.RUnlock()
 	var errs []error
 	for _, target := range targets {
@@ -550,8 +548,8 @@ func sameLabels(a, b []actionsscale.Label) bool {
 	for _, label := range b {
 		right = append(right, label.Type+"\x00"+label.Name)
 	}
-	sort.Strings(left)
-	sort.Strings(right)
+	slices.Sort(left)
+	slices.Sort(right)
 	return strings.Join(left, "\x01") == strings.Join(right, "\x01")
 }
 
@@ -710,12 +708,6 @@ func (c *officialAPIWrapper) MessageSession(ctx context.Context, scaleSetID int,
 }
 func (c *officialAPIWrapper) GenerateJITConfig(ctx context.Context, setting *actionsscale.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error) {
 	return c.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
-}
-func (c *officialAPIWrapper) GetRunner(ctx context.Context, runnerID int) (*actionsscale.RunnerReference, error) {
-	return c.Client.GetRunner(ctx, runnerID)
-}
-func (c *officialAPIWrapper) RemoveRunner(ctx context.Context, runnerID int64) error {
-	return c.Client.RemoveRunner(ctx, runnerID)
 }
 
 var _ Client = (*OfficialClient)(nil)

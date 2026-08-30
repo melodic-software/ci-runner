@@ -12,11 +12,7 @@ fi
 # container creation. This keeps the secret out of Docker's persistent
 # container configuration and `docker inspect`; the official runner then masks
 # the value and removes ACTIONS_RUNNER_INPUT_* before it launches job code.
-if ! IFS= read -r jit_config; then
-  echo 'worker JIT configuration was not provided' >&2
-  exit 78
-fi
-if [[ -z "$jit_config" ]]; then
+if ! IFS= read -r jit_config || [[ -z "$jit_config" ]]; then
   echo 'worker JIT configuration was not provided' >&2
   exit 78
 fi

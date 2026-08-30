@@ -25,8 +25,12 @@ const STANDARD_HOSTED_SKUS = Object.freeze([
 
 const MAX_SKU_TABLE_ROWS = 25;
 
+function isActionsProduct(item) {
+  return String(item.product ?? '').toLowerCase() === ACTIONS_PRODUCT;
+}
+
 function isActionsMinuteItem(item) {
-  return String(item.product ?? '').toLowerCase() === ACTIONS_PRODUCT
+  return isActionsProduct(item)
     && MINUTE_UNIT_TYPES.includes(String(item.unitType ?? '').toLowerCase());
 }
 
@@ -43,8 +47,8 @@ function hasRequiredFields(item) {
     && quantity >= 0;
 }
 
-function roundMinutes(minutes) {
-  return Math.round(minutes * 10) / 10;
+function roundToTenth(value) {
+  return Math.round(value * 10) / 10;
 }
 
 function billingMonth(now) {
@@ -97,7 +101,7 @@ async function summarizeUsage(usageItems, { includedMinutes, github }) {
   // non-minute Actions products (storage, etc.) are excluded and must not block
   // a zero-consumption month before any runner-minute row exists.
   const runnerSkusWithUnexpectedUnit = usageItems.filter(
-    item => String(item.product ?? '').toLowerCase() === ACTIONS_PRODUCT
+    item => isActionsProduct(item)
       && isStandardHostedSku(item)
       && !isActionsMinuteItem(item),
   );
@@ -125,11 +129,11 @@ async function summarizeUsage(usageItems, { includedMinutes, github }) {
 
   return {
     includedMinutes,
-    consumedMinutes: roundMinutes(consumedMinutes),
-    percentUsed: Math.round(percentUsed * 10) / 10,
+    consumedMinutes: roundToTenth(consumedMinutes),
+    percentUsed: roundToTenth(percentUsed),
     breachedThresholds: POOL_ALERT_THRESHOLD_PERCENTS.filter(threshold => percentUsed >= threshold),
     perSku: [...minutesBySku.entries()]
-      .map(([sku, minutes]) => ({ sku, minutes: roundMinutes(minutes) }))
+      .map(([sku, minutes]) => ({ sku, minutes: roundToTenth(minutes) }))
       .sort((left, right) => right.minutes - left.minutes || left.sku.localeCompare(right.sku)),
   };
 }
