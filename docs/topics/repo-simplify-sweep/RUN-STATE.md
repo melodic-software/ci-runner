@@ -49,7 +49,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G6 | go-scaleset | 5 | 1 | delivered (wave 1) |
 | G7 | go-telemetry | 6 | 2 | in-flight |
 | G8 | go-state | 14 | 2 | verified (refuter: NOT REFUTED) |
-| G9 | go-control | 8 | 2 | in-flight |
+| G9 | go-control | 8 | 2 | verified (refuter: NOT REFUTED; note — WaitGroup.Go skips Done on panic unwind, observable only during process death, accepted) |
 | G10 | go-secret | 15 | 2 | verified (refuter: NOT REFUTED) |
 | G11 | go-jobindex | 8 | 3 | pending |
 | G12 | go-controller-src | 9 | 3 | pending |
