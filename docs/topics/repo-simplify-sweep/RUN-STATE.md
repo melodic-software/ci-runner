@@ -59,7 +59,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G16 | go-host-probes | 10 | 4 | delivered (wave 4) |
 | G17 | go-host-tests | 8 | 4 | delivered (wave 4) |
 | G18 | go-runtime-docker | 13 | 4 | delivered (wave 4) |
-| G19 | go-app-src | 23 | 5 | pending |
+| G19 | go-app-src | 23 | 5 | in-flight |
 | G20 | go-app-tests | 11 | 5 (after G19) | pending |
 
 ### Group file lists
