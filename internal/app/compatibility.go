@@ -153,7 +153,7 @@ func (m CompatibilityManifest) Validate(expectedControllerVersion string) error 
 	add(m.Evidence.Checksums == "SHA256SUMS", "compatibility checksum evidence must be SHA256SUMS")
 	add(m.Evidence.ControllerSBOM == fmt.Sprintf("ci-runner-v%s-windows-amd64.spdx.json", expectedControllerVersion), "compatibility controller SBOM reference does not match this executable")
 	add(m.Evidence.ControllerProvenance == "https://github.com/melodic-software/ci-runner/attestations", "compatibility controller provenance reference is invalid")
-	workerReference := m.Worker.Image + "@" + m.Worker.Digest
+	workerReference := m.WorkerReference()
 	add(m.Evidence.WorkerSBOM == "oci://"+workerReference+"#sbom", "compatibility worker SBOM reference does not match the worker digest")
 	add(m.Evidence.WorkerProvenance == "oci://"+workerReference+"#provenance", "compatibility worker provenance reference does not match the worker digest")
 	if len(problems) > 0 {

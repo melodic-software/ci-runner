@@ -6,11 +6,12 @@ package app
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"io"
+	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -168,9 +169,7 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 // encoder failure it reports the error on a.errOut, naming the failed
 // operation, and returns ExitRuntime; on success it returns ExitOK.
 func (a *Application) writeIndentedJSON(value any, operation string) int {
-	encoder := json.NewEncoder(a.out)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
+	if err := encodeJSON(a.out, value); err != nil {
 		writef(a.errOut, "write %s: %v\n", operation, err)
 		return ExitRuntime
 	}
@@ -443,11 +442,7 @@ func (a *Application) runSecret(ctx context.Context, args []string) int {
 	for _, target := range a.dependencies.Config.GitHub.Targets {
 		configuredIDs[target.SecretID] = struct{}{}
 	}
-	ids := make([]string, 0, len(configuredIDs))
-	for id := range configuredIDs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(configuredIDs))
 	selectedID := strings.TrimSpace(*secretID)
 	if selectedID == "" && len(ids) == 1 {
 		selectedID = ids[0]

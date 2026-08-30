@@ -59,8 +59,8 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G16 | go-host-probes | 10 | 4 | delivered (wave 4) |
 | G17 | go-host-tests | 8 | 4 | delivered (wave 4) |
 | G18 | go-runtime-docker | 13 | 4 | delivered (wave 4) |
-| G19 | go-app-src | 23 | 5 | in-flight |
-| G20 | go-app-tests | 11 | 5 (after G19) | pending |
+| G19 | go-app-src | 23 | 5 | delivered (wave 5) |
+| G20 | go-app-tests | 11 | 5 | delivered (wave 5) |
 
 ### Group file lists
 
@@ -513,7 +513,52 @@ File lists: deterministic mapping mirrored below from the refined grouping
   branch compression. Reason: explicit three-state logic documents semantics.
   Scope: trivial. Category: cleanup.
 
-(further items populated as waves complete)
+- G19: app.go:216 + output.go:56,66 + logs.go:302 — sort.Slice struct
+  comparators → slices.SortFunc. Reason: not in endorsed slicessort set;
+  dominant idiom here. Scope: small. Category: modernize.
+- G19: logs.go:279-309 — newestRegularFile sort-then-last → slices.MaxFunc.
+  Reason: tie-break rewrite, equivalence only under path tie-break. Scope:
+  small. Category: perf.
+- G19: logs.go:32-33 — modeCount evaluated twice. Reason: hoisting changes
+  stderr bytes in an edge; mirrors established idiom. Scope: trivial.
+  Category: cleanup.
+- G19: bootstrap.go:48-56 — reparse-point checks iterate a map literal
+  (nondeterministic first-reported path); a slice would be deterministic.
+  Reason: narrows observable output distribution — a refinement, not strict
+  preservation. Scope: small. Category: cleanup.
+- G19: bootstrap.go:239-243 — HasPrefix+TrimPrefix → strings.CutPrefix.
+  Reason: forces if/else restructure across a switch guard; reads worse.
+  Scope: trivial. Category: modernize.
+- G19: app.go:383-396 + controller_main.go (4 sites) + controller_restart.go:
+  225-228 + logs.go:166-174 — pre-Go-1.23 timer drain idiom removable.
+  Reason: concurrency semantics; no official analyzer endorses removal.
+  Scope: small. Category: modernize. (Same class as G15's timer-drain item.)
+- G19: controller_main.go:161-192 — thrice-duplicated error-path cleanup.
+  Reason: restructures resource-release ordering in the composition root.
+  Scope: small. Category: refactor.
+- G19: controller_restart.go:217 — pre-Go1.13 uint conversion in shift.
+  Reason: removal diverges (panic vs 0) on unreachable negative. Scope:
+  trivial. Category: modernize.
+- G19: force_stop.go:40-58 — mirror to/from converters generic-dedupable.
+  Reason: over-clever for two fixed types. Scope: small. Category: dedup.
+  (Same shape as G12's control_handler converters item.)
+- G19: app.go:356-398 vs 533-571 — waitForMode/waitForZeroCapacity share
+  poll/timer/select skeleton. Reason: divergent messages/cancel/exit paths.
+  Scope: medium. Category: refactor.
+- G19: doctor.go:340 — duration-max spelling differs from controller_main's
+  math.MaxInt64. Reason: cosmetic cross-file consistency. Scope: trivial.
+  Category: cleanup.
+- G20: doctor_test.go:44-648 — ~14 tests repeat an 8-line setup block; a
+  newDoctorHarness helper would cut ~150 lines. Reason: new-helper refactor
+  beyond wave scope; judgment-heavy. Scope: medium. Category: dedup.
+- G20: app_test.go:150 + doctor_test.go:41 — append(nil,...) → slices.Clone.
+  Reason: appendclipped forbidden (nilness). Scope: trivial.
+  Category: modernize.
+- G20: logs_test.go:87-91 — map-values copy → slices.Collect(maps.Values).
+  Reason: nil-vs-empty not provably unobservable through Catalog consumer.
+  Scope: trivial. Category: modernize.
+
+(end of per-group deferrals — all 20 groups complete)
 
 ## Wave delivery log
 
@@ -543,3 +588,9 @@ File lists: deterministic mapping mirrored below from the refined grouping
   Wave verification: go build/vet, GOOS=windows build/vet, golangci-lint
   0 issues, go test -race for host and runtime/docker ok, runtime-docker
   fuzz lane re-run clean.
+- Wave 5 (G19-G20): delivered as one code commit. Both groups
+  refutation-verified NOT REFUTED (G19's verifier found the nil-vs-empty
+  slices.Sorted edge and proved it unobservable in both consumers). Wave
+  verification: go build/vet, GOOS=windows build/vet + -trimpath cmd
+  builds, golangci-lint 0 issues, go test -race app+cmd ok. ALL 20 GROUPS
+  COMPLETE.
