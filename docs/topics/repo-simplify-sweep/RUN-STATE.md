@@ -560,6 +560,69 @@ File lists: deterministic mapping mirrored below from the refined grouping
 
 (end of per-group deferrals — all 20 groups complete)
 
+## Phase 6.5 consolidation (deduped concerns, classified)
+
+HIGH (filed — repo-mode files High only; filed as
+<https://github.com/melodic-software/ci-runner/issues/313> with the repo's
+`priority: medium` label, whose semantics — "real value, no hard deadline" —
+match this concern; the sweep's High tier governs filing, not the repo's
+priority axis):
+
+- H1. refactor(persistence): extract a shared atomic-durable-write helper.
+  The temp-file write→chmod→sync→close→ACL-harden→atomic-replace→dir-sync
+  skeleton is independently implemented ~7 times: jobindex (assign_times,
+  drop_journal, file_store — G11, scope large), runtime/docker (OpenLog,
+  WriteDiagnostics, WriteResourceEvidence — G18, scope medium), healthwatch
+  storage (mirrors state/fs — G14), atop the canonical state/fs
+  implementation. Each copy varies subtly (error swallowing per a livelock
+  comment, ACL ordering, error prose), which is exactly why drift is a risk
+  and why simplifiers correctly refused to dedup it piecemeal. A deliberate,
+  reviewed consolidation (likely in or beside internal/state/fs) with
+  per-caller error-prefix injection would centralize durability semantics.
+
+MEDIUM (not filed at repo scale — persisted here):
+
+- M1. Go 1.23+ timer-drain idiom removal (~10 sites: G15 ×2, G19 ×8) — needs
+  one careful concurrency review, not per-site edits.
+- M2. jobindex sidecar-loader dedup (G11).
+- M3. doctor_test harness helper, ~150 lines saved (G20).
+- M4. .cjs close-incident sequence dedup across both monitors (G2).
+- M5. Test-DependencyFreshness dedups — image-inspection near-copies,
+  driftDate fallback ×8 (G3); unrunnable-script caveat applies.
+- M6. WaitGroup.Go adoption consistency: G9/G11/G13 adopted it; G8 and G12
+  sites remain Add/Done (one deliberate: pass-snapshots-as-arguments).
+- M7. errors.New-vs-verb-free-fmt.Errorf consistency: G10/G14 converted their
+  sites; G9's pipe_windows.go:20 and others remain — one sweep decision.
+- M8. errors.AsType adoption completion (scaleset sites deferred by G6;
+  control/controller/app now use it).
+
+LOW (persisted only): per-site slices.Clone/maps.Clone nilness class (G8, G9,
+G12, G18, G20), sort.Slice→SortFunc class (G11, G15, G19), os.IsNotExist→
+errors.Is (G11), cosmetic renames/moves (G6, G13, G18), pre-sorted literals
+(G2), curry helper for trustedSystemExecutable closures (G16).
+
+DO-NOT-FILE (judgment calls preserved; agent rationale stands):
+
+- G3 regex→-replace swap (REFUTED — AutomationNull divergence).
+- G14 http.Client collapse (drops operator-installed global Transport).
+- G14 errors.Join→fmt.Errorf (error bytes change).
+- G12/G19 &now pointer-copy collapses (deliberate documenting copies).
+- G12 poll_cadence always-true return + G15 defense-in-depth redundancy +
+  G18 three-state branch (deliberate defensive/documenting code).
+- G15 NewLazySystemDLL + PS $null-flips + process.exit swaps (fixes, not
+  simplifications — behavior changes).
+- G11 Validate map-range unroll (would narrow observable output).
+- G13 t.Parallel addition (changes what the test observes).
+- Upstream-owned: nine standards-synced root configs + .claude/
+  cloud-bootstrap.sh — improvements belong in melodic-software/standards /
+  the plugin distribution repo, not here.
+
+Scope diagnostic: 46 files changed vs ~75 deferrals. The deferral volume is
+dominated by (a) deliberately-defensive code the sweep correctly refused to
+touch and (b) the atomic-write skeleton (H1) — a structural concern no
+file-scoped simplifier could safely fix. Not evidence of structural rot;
+the codebase is in strong shape for its size.
+
 ## Wave delivery log
 
 - Wave 1 (G1-G6): delivered as one code commit on the designated branch.
