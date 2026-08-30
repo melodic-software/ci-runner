@@ -41,12 +41,12 @@ File lists: deterministic mapping mirrored below from the refined grouping
 
 | Grp | Name | Files | Wave | Status |
 |---|---|---|---|---|
-| G1 | root-config | 4 (9 deferred read-only) | 1 | in-flight |
-| G2 | ci-scripts | 10 | 1 | in-flight |
-| G3 | powershell | 3 | 1 | in-flight |
-| G4 | worker-image | 8 | 1 | in-flight |
-| G5 | go-shared-small | 9 | 1 | in-flight |
-| G6 | go-scaleset | 5 | 1 | in-flight |
+| G1 | root-config | 4 (9 deferred read-only) | 1 | verified (no changes) |
+| G2 | ci-scripts | 10 | 1 | simplified (verifier running) |
+| G3 | powershell | 3 | 1 | simplified (verifier running) |
+| G4 | worker-image | 8 | 1 | simplified (verifier running) |
+| G5 | go-shared-small | 9 | 1 | simplified (verifier running) |
+| G6 | go-scaleset | 5 | 1 | simplified (verifier running) |
 | G7 | go-telemetry | 6 | 2 | pending |
 | G8 | go-state | 14 | 2 | pending |
 | G9 | go-control | 8 | 2 | pending |
@@ -226,6 +226,107 @@ File lists: deterministic mapping mirrored below from the refined grouping
 - Excluded-class (orchestrator, pre-dispatch): .claude/cloud-bootstrap.sh is
   sync-materialized (distribution/sync-manifest.yml); improvements belong
   upstream. Reason: externally managed. Scope: n/a. Category: cleanup (upstream).
+
+- G1: .dockerignore:3-4 — `!worker/` and `!worker/*.sh` are mutually redundant
+  today (worker/ contains only .sh files); one line could go. Reason:
+  negation/traversal semantics differ between classic builder and BuildKit
+  patternmatcher and diverge again if a non-.sh file is ever added to worker/;
+  equivalence is only provable by building the image, which the local
+  environment cannot do (worker-image lane is CI-only). Scope: trivial.
+  Category: cleanup.
+- G1: go.mod:22-56 — the second and third `require` blocks could be merged into
+  the canonical two-block layout (`go mod tidy` normal form), keeping the GHSA
+  comment attached to its otelhttp line. Reason: go.mod edits are explicitly
+  owned by dependabot/in-flight branches per dispatch; `go mod tidy` is
+  forbidden; parallel-edit conflict risk. Scope: small. Category: cleanup.
+
+- G2: .github/scripts/budget-monitor.cjs:228-243 + queue-monitor.cjs:207-227 —
+  close-incident sequence duplicated across both monitors, could live in
+  incident-issue.cjs. Reason: recovery/info prose differs per monitor (tests
+  assert it); module.exports shape is contract. Scope: medium. Category: dedup.
+- G2: release-transaction.cjs:345-350 — verify-tag branch re-implements a subset
+  of validateInput with deliberately different error strings. Reason: dedup
+  would change error text (contract). Scope: small. Category: dedup.
+- G2: verify-existing-release.sh:31-32,45-46 — runtime LC_ALL=C sort of
+  literal arrays could be pre-sorted literals. Reason: the sort is
+  self-maintaining against future edits. Scope: trivial. Category: cleanup.
+- G2: verify-existing-release.sh:38 — download loop could iterate expected[@].
+  Reason: would reorder gh invocations; SHA256SUMS order is asserted by the
+  behavioral test. Scope: trivial. Category: cleanup.
+- G2: budget-monitor.test.cjs:29-30 + queue-monitor.test.cjs:24-25 —
+  ISSUE_AUTHOR_LOGIN/ownIssue helpers duplicated across test files. Reason:
+  shared helper needs a new file (cross-file, out of scope). Scope: small.
+  Category: dedup.
+- G2: queue-monitor.cjs:122 — healthy-summary prose hardcodes "five minutes"
+  while QUEUE_THRESHOLD_MINUTES is configurable. Reason: rendered prose change
+  is not behavior-preserving. Scope: trivial. Category: cleanup.
+- G3: Test-DependencyFreshness.ps1:267-277 — syft image inspection near-copies
+  Get-OfficialImageIndexDigest. Reason: dedup changes throw-message prose;
+  script cannot be executed to verify. Scope: small. Category: dedup.
+- G3: Test-DependencyFreshness.ps1:388-398 — runner image inspection, same
+  near-copy. Reason: same prose-contract concern. Scope: small. Category: dedup.
+- G3: Test-DependencyFreshness.ps1:150,165,185,240,256,263,315,338 — driftDate
+  fallback repeats 8 times; helper or ?? would dedupe. Reason: ?? differs on
+  non-null falsy edges; unrunnable script. Scope: medium. Category: dedup.
+- G3: Test-DependencyFreshness.ps1:191 — simplified Where-Object syntax
+  inconsistent with three sibling scriptblock lookups. Reason: StrictMode
+  behavior differs on missing property; not provably identical. Scope: trivial.
+  Category: cleanup.
+- G3: Test-DependencyFreshness.ps1:96-103 — Add-Drift [bool] $Critical vs house
+  [switch]. Reason: positional bool call at :151 breaks; unrunnable. Scope:
+  small. Category: modernize.
+- G3: Test-DependencyFreshness.ps1 (whole file) — positional → named parameters
+  on ~25 internal calls. Reason: parse-level verification only; risk outweighs
+  benefit. Scope: medium. Category: modernize.
+- G3: Test-ReleasePins.ps1:189-194 — single-element foreach could be plain if.
+  Reason: matches eight sibling assertion loops; churn. Scope: trivial.
+  Category: cleanup.
+- G3: Test-ReleasePins.ps1:95-101,138-149,154-163 — three once-used named
+  arrays could be inlined. Reason: style churn touching PR-blocking contract
+  strings. Scope: trivial. Category: cleanup.
+- G3: New-CompatibilityManifest.ps1:100-103 + Test-DependencyFreshness.ps1:
+  409-412 — identical output-directory-creation blocks; shared helper needs a
+  new file. Reason: cross-file refactor out of scope. Scope: small.
+  Category: dedup.
+- G4: verify-worker-image.sh:30-31 — hook-env assertions duplicate image_env
+  select logic. Reason: image_env adds an exactly-one jq error, changing
+  failure-path behavior. Scope: trivial. Category: dedup.
+- G4: verify-worker-image.sh:253-254,292-293 — fixture_script/unavailable_script
+  pre-inits are dead (read always assigns). Reason: defensive idiom; set -u
+  interplay debate; zero win. Scope: trivial. Category: cleanup.
+- G4: capture-cgroup.sh:19-46 — read_scalar/read_stat share identical
+  validate/missing tail. Reason: indirection for ~6 lines in load-bearing
+  degrade paths. Scope: small. Category: dedup.
+- G4: capture-cgroup.sh:113 — printf|jq --raw-input could be jq --args form.
+  Reason: telemetry-path JSON reshape needs in-image jq re-verification.
+  Scope: trivial. Category: modernize.
+- G5: childprocess/command_windows_test.go:25 — reflect.DeepEqual on []string
+  could be slices.Equal. Reason: DeepEqual is the repo test convention (12
+  uses); windows-only file, compile-check-only confidence. Scope: trivial.
+  Category: modernize.
+- G5: config.go:437-440,449-451 — defensive nil checks after
+  dereferenceYAMLNode are unreachable. Reason: safety margin depends on yaml.v3
+  internals; checks cost nothing. Scope: trivial. Category: cleanup.
+- G5: clock.go:20-27 — NewTimer/defer Stop/select could be time.After (leak-free
+  since Go 1.23). Reason: style-neutral; be-conservative caution. Scope:
+  trivial. Category: modernize.
+- G5: config_test.go:444-460 — HasPrefix-branched replacements could be a
+  {old,new} table. Reason: pure churn in an asserting test. Scope: small.
+  Category: refactor.
+- G6: official.go:551 — sameLabels join comparison could be slices.Equal.
+  Reason: NOT strictly behavior-preserving (\x00/\x01 collision edge changes
+  UpdateRunnerScaleSet call decision). Scope: trivial. Category: cleanup.
+- G6: scaleset.go:132-139 + official.go:583 — errors.As → errors.AsType[T]
+  (Go 1.26 modernize). Reason: errors.As is the repo-wide convention (8+
+  packages owned by other groups); belongs in a coordinated pass. Scope: small.
+  Category: modernize.
+- G6: official.go:186-190 — stale byScaleSet cleanup loop could be
+  maps.DeleteFunc. Reason: equal length, no clarity gain. Scope: trivial.
+  Category: modernize.
+- G6: fake.go:79 — Sprintf("listener-%s") → concat. Reason: breaks symmetry
+  with adjacent Sprintf. Scope: trivial. Category: cleanup.
+- G6: official_test.go:747,836 — locals named `copy` shadow the builtin.
+  Reason: cosmetic; lint-clean at baseline. Scope: trivial. Category: cleanup.
 
 (further items populated as waves complete)
 
