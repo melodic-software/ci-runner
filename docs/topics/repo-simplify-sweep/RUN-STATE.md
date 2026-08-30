@@ -48,7 +48,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 | G5 | go-shared-small | 9 | 1 | delivered (wave 1) |
 | G6 | go-scaleset | 5 | 1 | delivered (wave 1) |
 | G7 | go-telemetry | 6 | 2 | in-flight |
-| G8 | go-state | 14 | 2 | in-flight |
+| G8 | go-state | 14 | 2 | verified (refuter: NOT REFUTED) |
 | G9 | go-control | 8 | 2 | in-flight |
 | G10 | go-secret | 15 | 2 | in-flight |
 | G11 | go-jobindex | 8 | 3 | pending |
