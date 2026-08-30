@@ -41,7 +41,7 @@ File lists: deterministic mapping mirrored below from the refined grouping
 
 | Grp | Name | Files | Wave | Status |
 |---|---|---|---|---|
-| G1 | root-config | 13 | 1 | pending |
+| G1 | root-config | 4 (9 deferred read-only) | 1 | pending |
 | G2 | ci-scripts | 10 | 1 | pending |
 | G3 | powershell | 3 | 1 | pending |
 | G4 | worker-image | 8 | 1 | pending |
@@ -64,9 +64,14 @@ File lists: deterministic mapping mirrored below from the refined grouping
 
 ### Group file lists
 
-- G1 root-config: .dockerignore .editorconfig .editorconfig-checker.json
-  .gitattributes .github/actionlint.yaml .gitignore .gitleaks.toml .golangci.yml
-  .markdownlint-cli2.jsonc .shellcheckrc _typos.toml go.mod lychee.toml
+- G1 root-config (NARROWED post-grounding): .dockerignore .github/actionlint.yaml
+  .gitignore go.mod — the other nine base-pass members (.editorconfig,
+  .editorconfig-checker.json, .gitattributes, .gitleaks.toml, .golangci.yml,
+  .markdownlint-cli2.jsonc, .shellcheckrc, _typos.toml, lychee.toml) are
+  standards-synced copies (git history: every touch is a "chore: sync standards
+  components" / "adopt shared standards" commit; upstream owner
+  melodic-software/standards). Read-only deferred class per repo-mode
+  externally-managed rule; recorded as deferred items, not swept.
 - G2 ci-scripts: .github/scripts/budget-monitor.cjs
   .github/scripts/budget-monitor.test.cjs .github/scripts/incident-issue.cjs
   .github/scripts/queue-monitor.cjs .github/scripts/queue-monitor.test.cjs
@@ -192,9 +197,37 @@ File lists: deterministic mapping mirrored below from the refined grouping
 - `shellcheck --rcfile=.shellcheckrc worker/*.sh scripts/*.sh` (v0.11.0 = CI pin): PASS
 - `shfmt -d worker/*.sh scripts/*.sh` (v3.14.0; CI pins 3.13.1): PASS
 
+## Grounding decisions (open questions resolved by orchestrator; unattended run)
+
+1. `internal/state/fs` open-failure subtest: known-red environmental baseline
+   (uid 0); simplifiers neither claim nor fix it.
+2. Comment reductions: OUT of scope except provably stale comments (comments
+   encode security rationale and reviewed decisions; comment-hygiene CI lane
+   grades them; never add TODO/FIXME/HACK/XXX markers).
+3. golangci-lint v2.6.0 built from source before wave 1: done (baseline PASS).
+4. `internal/app/app.go` usage() stray tab: leave — usage output bytes are
+   contract.
+5. `modernize` linter NOT enabled in .golangci.yml (file is standards-synced +
+   claim only MEDIUM confidence); modernize-style rewrites applied only where a
+   simplifier verifies them individually.
+6. Semantic-fix classes (PowerShell $null-on-left flips, bash pipe-to-while →
+   readarray with outer-state mutation, process.exit → process.exitCode): NOT
+   applied — behavior-preserving sweep; recorded as deferred items where found.
+7. `util.styleText`: not introduced.
+
 ## Deferred items (verbatim, keyed by group)
 
-(populated as waves complete)
+- G1/root-config (orchestrator, pre-dispatch): nine standards-synced root
+  configs (.editorconfig, .editorconfig-checker.json, .gitattributes,
+  .gitleaks.toml, .golangci.yml, .markdownlint-cli2.jsonc, .shellcheckrc,
+  _typos.toml, lychee.toml) are externally managed by melodic-software/standards
+  sync; any simplification belongs upstream. Reason: local edits are overwritten
+  on next sync. Scope: n/a. Category: cleanup (upstream).
+- Excluded-class (orchestrator, pre-dispatch): .claude/cloud-bootstrap.sh is
+  sync-materialized (distribution/sync-manifest.yml); improvements belong
+  upstream. Reason: externally managed. Scope: n/a. Category: cleanup (upstream).
+
+(further items populated as waves complete)
 
 ## Wave delivery log
 
