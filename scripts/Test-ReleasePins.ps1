@@ -363,15 +363,17 @@ foreach ($workflow in $workflowFiles) {
         if ($reference -notmatch '@[0-9a-f]{40}$') {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
         }
+        $parts = $reference -split '@', 2
         # Advisory soak callers owned by standards-sync may pin a pre-release
         # SHA of the same org repository. They still require a full commit SHA
         # (checked above) but must not join the reviewed compatibility
         # inventory, or every sync that ships a new soak pin fails Product
-        # policy. See .github/scripts/workflow-pin-metadata.test.cjs.
-        if ($syncManaged) {
+        # policy. Only the ci-workflows soak reference is exempt; other
+        # actions on the same file (checkout, etc.) still match githubActions.
+        # See .github/scripts/workflow-pin-metadata.test.cjs.
+        if ($syncManaged -and $parts[0].StartsWith('melodic-software/ci-workflows/', [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
-        $parts = $reference -split '@', 2
         if ($reusablePins.ContainsKey($parts[0])) {
             if ($reusablePins[$parts[0]].commit -ne $parts[1]) {
                 throw "$($workflow.Name) pin for $($parts[0]) disagrees with release/dependencies.json: $($parts[1])"
