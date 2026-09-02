@@ -354,6 +354,7 @@ foreach ($tool in $toolPins.GetEnumerator()) {
 
 foreach ($workflow in $workflowFiles) {
     $content = Get-Content -Raw -LiteralPath $workflow.FullName
+    $syncManaged = $content.Contains('SYNC-MANAGED FILE')
     foreach ($match in [regex]::Matches($content, '(?m)^\s*uses:\s*(?<reference>[^\s#]+)')) {
         $reference = $match.Groups['reference'].Value
         if ($reference.StartsWith('./')) {
@@ -361,6 +362,14 @@ foreach ($workflow in $workflowFiles) {
         }
         if ($reference -notmatch '@[0-9a-f]{40}$') {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
+        }
+        # Advisory soak callers owned by standards-sync may pin a pre-release
+        # SHA of the same org repository. They still require a full commit SHA
+        # (checked above) but must not join the reviewed compatibility
+        # inventory, or every sync that ships a new soak pin fails Product
+        # policy. See .github/scripts/workflow-pin-metadata.test.cjs.
+        if ($syncManaged) {
+            continue
         }
         $parts = $reference -split '@', 2
         if ($reusablePins.ContainsKey($parts[0])) {

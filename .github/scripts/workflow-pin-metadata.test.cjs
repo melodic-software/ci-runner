@@ -9,8 +9,11 @@ const ciWorkflowsReference = "melodic-software/ci-workflows/";
 const ciWorkflowsSha = "0f8176e87e0be518f382664779655011bf95784a";
 const ciWorkflowsVersion = "v0.17.2";
 const expectedCiWorkflowsReferences = 21;
+const syncManagedMarker = "SYNC-MANAGED FILE";
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
+const advisoryReference =
+  /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
 
 function workflowSource(name) {
   return fs.readFileSync(path.join(workflowDirectory, name), "utf8");
@@ -82,9 +85,24 @@ test("ci-workflows references use a full SHA with one release version", () => {
   const versions = [];
 
   for (const file of workflowFiles(workflowDirectory)) {
-    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/u);
+    const source = fs.readFileSync(file, "utf8");
+    const advisory = source.includes(syncManagedMarker);
+    const lines = source.split(/\r?\n/u);
     for (const [index, line] of lines.entries()) {
       if (!line.includes(ciWorkflowsReference)) {
+        continue;
+      }
+
+      // SYNC-MANAGED soak callers may pin a pre-release SHA with the
+      // fallback comment form until a reviewed release carries the action.
+      // They stay out of the one-release compatibility inventory so a
+      // standards-sync cannot break Product policy; they still require a
+      // full 40-hex SHA (https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
+      if (advisory) {
+        assert.ok(
+          advisoryReference.exec(line),
+          `${path.relative(workflowDirectory, file)}:${index + 1} is not a SHA-pinned advisory ci-workflows reference`,
+        );
         continue;
       }
 
