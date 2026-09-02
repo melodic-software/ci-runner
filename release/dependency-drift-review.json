@@ -40,6 +40,30 @@
       "requiresFleetRollout": true,
       "rolloutNote": "PowerShell is baked into the worker image (Dockerfile POWERSHELL_VERSION / POWERSHELL_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
       "reviewNote": "Recorded by an automated drain lane and proposed, not promoted: it ships as a review-only pull request carrying the do-not-merge label, per the docs/releases.md rule that controller, runner, image, toolchain, Scale Set Client, Action, and release changes are never auto-merged. The go hold above is unchanged by this row and is addressed in its own pull request. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
+    },
+    {
+      "dependency": "actions-runner",
+      "from": "2.336.0",
+      "to": "2.337.0",
+      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Dependabot PR #316 cannot land: it only rewrote the Dockerfile FROM line to ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 and left release/dependencies.json, OCI base labels, and docs/worker-image.md on 2.336.0. Test-ReleasePins.ps1 and verify-worker-image.sh require those files to move with the image. Org still offers 2.337.0 (gh api orgs/melodic-software/actions/runners/downloads linux-x64). GHCR multi-platform index digest sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 was confirmed from the GHCR OCI index Docker-Content-Digest header and the tagged GHCR package version. linux-x64 archive sha256 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 matches the org download checksum, the GitHub release asset digest, and an independent download hash. The drift table HARD FAIL on 2.337.0 is a regex false positive: Test-DependencyFreshness.ps1 treats a release body matching (?i)\\bcritical\\b|\\bsecurity\\b|CVE-[0-9]{4}-[0-9]+ as critical, and v2.337.0 notes include Dependabot bumps of System.Security.Cryptography.Pkcs and System.Security.Cryptography.ProtectedData. The upstream release (https://github.com/actions/runner/releases/tag/v2.337.0) is not a critical/CVE: no CVE identifier, no security advisory, routine SDK/tooling/dependency updates plus VSock secret notifier, websocket retry NRE fix, DAP debugger masking, HTTP Retry-After, and Docker/Buildx updates.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "The official runner binary and GHCR base image are baked into the worker image. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself. Do not treat #316 as the complete pin bump."
+    },
+    {
+      "dependency": "github-hosted-gh",
+      "from": "2.97.0",
+      "to": "2.98.0",
+      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "GitHub CLI tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity (same policy as PowerShell). The current hosted rail at runner-images commit cbb8df97e1dd32af7cb23a90590f12734ec11d0b (2026-08-28) lists GitHub CLI 2.98.0, so adopting 2.98.0 restores parity rather than leading it. The linux_amd64 archive checksum 3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de was verified independently by downloading gh_2.98.0_linux_amd64.tar.gz and hashing it, and it matches both the GitHub release asset digest and gh_2.98.0_checksums.txt. v2.98.0 also documents GHSA-vfhh-p7hm-pxfh (gh codespace ports forward binding the local forwarded port to all interfaces); hosted-image parity is still the adoption gate.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Recorded together with the actions-runner 2.337.0 bump because both are worker-image pins. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
     }
   ]
 }
