@@ -266,45 +266,33 @@ func (s *Store) save(ctx context.Context, name string, value any) (resultErr err
 		return fmt.Errorf("encode %s: %w", name, err)
 	}
 	encoded = append(encoded, '\n')
-	temporary, err := os.CreateTemp(s.directory, "."+name+"-*")
-	if err != nil {
-		return fmt.Errorf("create temporary %s: %w", name, err)
-	}
-	temporaryPath := temporary.Name()
-	committed := false
-	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("set temporary %s permissions: %w", name, err)
-	}
-	if _, err := temporary.Write(encoded); err != nil {
-		return fmt.Errorf("write temporary %s: %w", name, err)
-	}
-	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush temporary %s: %w", name, err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary %s: %w", name, err)
-	}
-	if err := s.acl.Harden(temporaryPath); err != nil {
-		return fmt.Errorf("secure temporary %s: %w", name, err)
-	}
-	target := filepath.Join(s.directory, name)
-	if err := atomicReplace(temporaryPath, target); err != nil {
-		return fmt.Errorf("replace %s atomically: %w", name, err)
-	}
-	committed = true
-	if err := s.acl.Harden(target); err != nil {
-		return fmt.Errorf("verify %s ACL: %w", name, err)
-	}
-	if err := syncDirectory(s.directory); err != nil {
-		return fmt.Errorf("flush state directory: %w", err)
-	}
-	return nil
+	return DurableWrite{
+		Directory:        s.directory,
+		Target:           filepath.Join(s.directory, name),
+		TemporaryPattern: "." + name + "-*",
+		Mode:             0o600,
+		HardenBeforeReplace: func(path string) error {
+			if err := s.acl.Harden(path); err != nil {
+				return fmt.Errorf("secure temporary %s: %w", name, err)
+			}
+			return nil
+		},
+		HardenAfterReplace: func(path string) error {
+			if err := s.acl.Harden(path); err != nil {
+				return fmt.Errorf("verify %s ACL: %w", name, err)
+			}
+			return nil
+		},
+		Labels: DurableWriteLabels{
+			CreateTemporary: fmt.Sprintf("create temporary %s", name),
+			SetMode:         fmt.Sprintf("set temporary %s permissions", name),
+			Write:           fmt.Sprintf("write temporary %s", name),
+			Flush:           fmt.Sprintf("flush temporary %s", name),
+			Close:           fmt.Sprintf("close temporary %s", name),
+			Replace:         fmt.Sprintf("replace %s atomically", name),
+			FlushDirectory:  "flush state directory",
+		},
+	}.WriteBytes(encoded)
 }
 
 func validateDesired(value model.DesiredState) error {

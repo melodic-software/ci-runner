@@ -142,48 +142,37 @@ func (s FileSidecar) Save(ctx context.Context, sidecar Sidecar) error {
 	if err != nil {
 		return fmt.Errorf("encode health watch sidecar: %w", err)
 	}
-	temporary, err := os.CreateTemp(directory, ".health-watch-*")
-	if err != nil {
-		return fmt.Errorf("create temporary health watch sidecar: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	committed := false
-	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary health watch sidecar: %w", err)
-	}
-	if _, err := temporary.Write(encoded); err != nil {
-		return fmt.Errorf("write temporary health watch sidecar: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush temporary health watch sidecar: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary health watch sidecar: %w", err)
-	}
-	if err := s.ACL.Harden(temporaryPath); err != nil {
-		return fmt.Errorf("secure temporary health watch sidecar ACL: %w", err)
-	}
-	if err := s.ACL.Verify(temporaryPath); err != nil {
-		return fmt.Errorf("verify temporary health watch sidecar ACL: %w", err)
-	}
-	if err := statefs.ReplaceFileAtomic(temporaryPath, s.Path); err != nil {
-		return fmt.Errorf("replace health watch sidecar atomically: %w", err)
-	}
-	committed = true
-	if err := s.ACL.Harden(s.Path); err != nil {
-		return fmt.Errorf("secure health watch sidecar ACL: %w", err)
-	}
-	if err := s.ACL.Verify(s.Path); err != nil {
-		return fmt.Errorf("verify health watch sidecar ACL: %w", err)
-	}
-	if err := statefs.SyncDirectory(directory); err != nil {
-		return fmt.Errorf("flush health watch sidecar directory: %w", err)
-	}
-	return nil
+	return statefs.DurableWrite{
+		Directory:        directory,
+		Target:           s.Path,
+		TemporaryPattern: ".health-watch-*",
+		Mode:             0o600,
+		HardenBeforeReplace: func(path string) error {
+			if err := s.ACL.Harden(path); err != nil {
+				return fmt.Errorf("secure temporary health watch sidecar ACL: %w", err)
+			}
+			if err := s.ACL.Verify(path); err != nil {
+				return fmt.Errorf("verify temporary health watch sidecar ACL: %w", err)
+			}
+			return nil
+		},
+		HardenAfterReplace: func(path string) error {
+			if err := s.ACL.Harden(path); err != nil {
+				return fmt.Errorf("secure health watch sidecar ACL: %w", err)
+			}
+			if err := s.ACL.Verify(path); err != nil {
+				return fmt.Errorf("verify health watch sidecar ACL: %w", err)
+			}
+			return nil
+		},
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary health watch sidecar",
+			SetMode:         "secure temporary health watch sidecar",
+			Write:           "write temporary health watch sidecar",
+			Flush:           "flush temporary health watch sidecar",
+			Close:           "close temporary health watch sidecar",
+			Replace:         "replace health watch sidecar atomically",
+			FlushDirectory:  "flush health watch sidecar directory",
+		},
+	}.WriteBytes(encoded)
 }
