@@ -1,7 +1,7 @@
 # The tag and multi-platform index digest are intentionally both pinned. The
 # official image is Ubuntu 24.04 and contains the exact runner binary named by
 # the tag. release/dependencies.json records the independent release evidence.
-FROM ghcr.io/actions/actions-runner:2.336.0@sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda
+FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 
 ARG POWERSHELL_VERSION=7.6.5
 ARG POWERSHELL_SHA256=b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844
