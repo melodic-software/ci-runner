@@ -64,6 +64,46 @@
       "requiresFleetRollout": true,
       "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
       "reviewNote": "Recorded together with the actions-runner 2.337.0 bump because both are worker-image pins. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
+    },
+    {
+      "dependency": "github-action:zizmorcore/zizmor-action",
+      "from": "0.6.2",
+      "to": "0.6.3",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v0.6.3 (2026-08-30) sets zizmor 1.30.0 as the default wrapper version; the action.yml input contract is unchanged. Lightweight tag v0.6.3 resolves to commit 70fb788f84895a7701f5643d103d587e460b5c99. CI-only Action: no worker-image or fleet rollout.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "zizmor",
+      "from": "1.29.0",
+      "to": "1.30.0",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v1.30.0 (2026-08-30) adds the self-repository audit plus pre-commit-config support for several existing audits; the release workflow already passes an explicit version: input to zizmor-action. Analyzer used at publication time only: no fleet rollout.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "syft",
+      "from": "1.51.0",
+      "to": "1.51.1",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v1.51.1 (2026-08-27) is a patch with cataloger bug fixes and three remediated Go advisories (GO-2026-5158, GO-2026-6179, GO-2026-6180). GHCR tag v1.51.1 index digest sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c was verified from the official registry (docker-content-digest) and the GitHub Packages version name. Publication SBOM generator only: no fleet rollout. buildkit-syft-scanner remains at 1.12.0.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "node-lts",
+      "from": "24.19.0",
+      "to": "24.20.0",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. Node.js 24.20.0 (Krypton LTS, 2026-08-26) is listed on the official dist index and https://nodejs.org/dist/v24.20.0/. Every workflow node-version field and release/dependencies.json move together. Used only by actions/setup-node in CI and the Release workflow to run .github/scripts tests: not baked into the worker image, so no fleet rollout.",
+      "requiresFleetRollout": false
     }
   ]
 }
