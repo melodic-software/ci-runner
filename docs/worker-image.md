@@ -11,16 +11,16 @@ script runs inside the worker.
 
 ## Reviewed upstream baseline
 
-- Final base: `ghcr.io/actions/actions-runner:2.336.0@sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda`.
+- Final base: `ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4`.
 - The tag is GitHub's runner release; the digest is the GHCR multi-platform index.
 - The selected image is Ubuntu 24.04 and runs as the upstream `runner` identity
   (uid/gid 1001).
 - The scale-set resource is created with `RunnerSetting.DisableUpdate=true`.
   GitHub requires an update-disabled runner to be refreshed within 30 days and
   may block it sooner for a critical release.
-- PowerShell comes from Microsoft's checksummed `v7.6.4` Linux x64 release
+- PowerShell comes from Microsoft's checksummed `v7.6.5` Linux x64 release
   archive. That is the version in GitHub's Ubuntu 24.04 hosted-image manifest at
-  reviewed commit `8926c75ceb03577c5cc94415743a88f548b781ab`. The remaining
+  reviewed commit `c5170d2845dc0eb0f22853ec70bd4f1c891112ca`. The remaining
   compatibility packages come from Ubuntu 24.04.
 
 The immutable evidence and original source URLs are recorded in
@@ -37,7 +37,7 @@ Authoritative references:
 - [`setup-dotnet` v5.4.0 rootless installation guidance](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/README.md#environment-variables)
 - [`setup-dotnet` v5.4.0 install-directory implementation](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/src/installer.ts#L329-L359)
 - [.NET install-script environment contract](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script#set-environment-variables)
-- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md)
+- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/c5170d2845dc0eb0f22853ec70bd4f1c891112ca/images/ubuntu/Ubuntu2404-Readme.md)
 - [PowerShell releases](https://github.com/PowerShell/PowerShell/releases)
 - [Docker image pinning guidance](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
 

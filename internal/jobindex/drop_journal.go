@@ -115,44 +115,24 @@ func appendDropJournal(directory string, acl AccessController, dropped []Record,
 	if err != nil {
 		return
 	}
-	temporary, err := os.CreateTemp(directory, ".jobs-drop.json-*")
-	if err != nil {
-		return
-	}
-	temporaryPath := temporary.Name()
-	committed := false
-	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryPath)
+	// Every stage failure is discarded, error labels included, per the ignored
+	// write failures the doc comment above requires; the shared sequence still
+	// removes an uncommitted temporary.
+	hardenQuietly := func(path string) error {
+		if acl != nil {
+			_ = acl.Harden(path)
+			_ = acl.Verify(path)
 		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return
+		return nil
 	}
-	if acl != nil {
-		_ = acl.Harden(temporaryPath)
-		_ = acl.Verify(temporaryPath)
-	}
-	if _, err := temporary.Write(encoded); err != nil {
-		return
-	}
-	if err := temporary.Sync(); err != nil {
-		return
-	}
-	if err := temporary.Close(); err != nil {
-		return
-	}
-	target := filepath.Join(directory, dropJournalFilename)
-	if err := statefs.ReplaceFileAtomic(temporaryPath, target); err != nil {
-		return
-	}
-	committed = true
-	if acl != nil {
-		_ = acl.Harden(target)
-		_ = acl.Verify(target)
-	}
-	_ = statefs.SyncDirectory(directory)
+	_ = statefs.DurableWrite{
+		Directory:          directory,
+		Target:             filepath.Join(directory, dropJournalFilename),
+		TemporaryPattern:   ".jobs-drop.json-*",
+		Mode:               0o600,
+		HardenBeforeWrite:  hardenQuietly,
+		HardenAfterReplace: hardenQuietly,
+	}.WriteBytes(encoded)
 }
 
 func encodeDropJournalWithinCapacity(journal DropJournal) ([]byte, error) {

@@ -28,6 +28,82 @@
       "toVersion": "v0.17.0",
       "decision": "bump",
       "rationale": "The 2026-08-14 hold's recorded exit condition is met: ci-workflows published v0.17.0 targeting exactly d26c750691b5498fab529d115b63f84aa7aecebe. Every uses: reference moves together in this dedicated compatibility PR. Gate reusables (semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor) are unchanged vs v0.14.2; go-quality.yml carries the already-reviewed govulncheck update. Frontier consensus (Fable + Sol) unanimously chose BUMP_CI_WORKFLOWS."
+    },
+    {
+      "dependency": "github-hosted-powershell",
+      "from": "7.6.4",
+      "to": "7.6.5",
+      "reviewedAt": "2026-08-27T08:00:00.0000000Z",
+      "cycle": "2026-08-27",
+      "decision": "bump",
+      "rationale": "PowerShell tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity. The manifest at commit c5170d2845dc0eb0f22853ec70bd4f1c891112ca (2026-08-21) lists PowerShell 7.6.5, so adopting 7.6.5 restores parity rather than leading it. v7.6.5 is a servicing patch over v7.6.4: one engine fix (dot-sourcing behavior of `pwsh -file` for advanced-function scripts), .NET SDK 10.0.302, Microsoft.PowerShell.Archive 1.2.6, and packaging changes; the release notes document no breaking change and no security fix. The archive checksum was verified independently by downloading the asset and hashing it, not only by reading the release metadata. The same manifest still lists GitHub CLI 2.97.0, so the gh version pin is unchanged and only its hostedImageManifestCommit evidence reference moves to the manifest actually consulted.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "PowerShell is baked into the worker image (Dockerfile POWERSHELL_VERSION / POWERSHELL_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Recorded by an automated drain lane and proposed, not promoted: it ships as a review-only pull request carrying the do-not-merge label, per the docs/releases.md rule that controller, runner, image, toolchain, Scale Set Client, Action, and release changes are never auto-merged. The go hold above is unchanged by this row and is addressed in its own pull request. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
+    },
+    {
+      "dependency": "actions-runner",
+      "from": "2.336.0",
+      "to": "2.337.0",
+      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Dependabot PR #316 cannot land: it only rewrote the Dockerfile FROM line to ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 and left release/dependencies.json, OCI base labels, and docs/worker-image.md on 2.336.0. Test-ReleasePins.ps1 and verify-worker-image.sh require those files to move with the image. Org still offers 2.337.0 (gh api orgs/melodic-software/actions/runners/downloads linux-x64). GHCR multi-platform index digest sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 was confirmed from the GHCR OCI index Docker-Content-Digest header and the tagged GHCR package version. linux-x64 archive sha256 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 matches the org download checksum, the GitHub release asset digest, and an independent download hash. The drift table HARD FAIL on 2.337.0 is a regex false positive: Test-DependencyFreshness.ps1 treats a release body matching (?i)\\bcritical\\b|\\bsecurity\\b|CVE-[0-9]{4}-[0-9]+ as critical, and v2.337.0 notes include Dependabot bumps of System.Security.Cryptography.Pkcs and System.Security.Cryptography.ProtectedData. The upstream release (https://github.com/actions/runner/releases/tag/v2.337.0) is not a critical/CVE: no CVE identifier, no security advisory, routine SDK/tooling/dependency updates plus VSock secret notifier, websocket retry NRE fix, DAP debugger masking, HTTP Retry-After, and Docker/Buildx updates.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "The official runner binary and GHCR base image are baked into the worker image. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself. Do not treat #316 as the complete pin bump."
+    },
+    {
+      "dependency": "github-hosted-gh",
+      "from": "2.97.0",
+      "to": "2.98.0",
+      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "GitHub CLI tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity (same policy as PowerShell). The current hosted rail at runner-images commit cbb8df97e1dd32af7cb23a90590f12734ec11d0b (2026-08-28) lists GitHub CLI 2.98.0, so adopting 2.98.0 restores parity rather than leading it. The linux_amd64 archive checksum 3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de was verified independently by downloading gh_2.98.0_linux_amd64.tar.gz and hashing it, and it matches both the GitHub release asset digest and gh_2.98.0_checksums.txt. v2.98.0 also documents GHSA-vfhh-p7hm-pxfh (gh codespace ports forward binding the local forwarded port to all interfaces); hosted-image parity is still the adoption gate.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
+      "reviewNote": "Recorded together with the actions-runner 2.337.0 bump because both are worker-image pins. Issue 283 is deliberately left open; the daily dependency-drift job reconciles it itself."
+    },
+    {
+      "dependency": "github-action:zizmorcore/zizmor-action",
+      "from": "0.6.2",
+      "to": "0.6.3",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v0.6.3 (2026-08-30) sets zizmor 1.30.0 as the default wrapper version; the action.yml input contract is unchanged. Lightweight tag v0.6.3 resolves to commit 70fb788f84895a7701f5643d103d587e460b5c99. CI-only Action: no worker-image or fleet rollout.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "zizmor",
+      "from": "1.29.0",
+      "to": "1.30.0",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v1.30.0 (2026-08-30) adds the self-repository audit plus pre-commit-config support for several existing audits; the release workflow already passes an explicit version: input to zizmor-action. Analyzer used at publication time only: no fleet rollout.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "syft",
+      "from": "1.51.0",
+      "to": "1.51.1",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. v1.51.1 (2026-08-27) is a patch with cataloger bug fixes and three remediated Go advisories (GO-2026-5158, GO-2026-6179, GO-2026-6180). GHCR tag v1.51.1 index digest sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c was verified from the official registry (docker-content-digest) and the GitHub Packages version name. Publication SBOM generator only: no fleet rollout. buildkit-syft-scanner remains at 1.12.0.",
+      "requiresFleetRollout": false
+    },
+    {
+      "dependency": "node-lts",
+      "from": "24.19.0",
+      "to": "24.20.0",
+      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
+      "cycle": "2026-09-02",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin. Node.js 24.20.0 (Krypton LTS, 2026-08-26) is listed on the official dist index and https://nodejs.org/dist/v24.20.0/. Every workflow node-version field and release/dependencies.json move together. Used only by actions/setup-node in CI and the Release workflow to run .github/scripts tests: not baked into the worker image, so no fleet rollout.",
+      "requiresFleetRollout": false
     }
   ]
 }

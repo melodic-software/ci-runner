@@ -1,12 +1,12 @@
 # The tag and multi-platform index digest are intentionally both pinned. The
 # official image is Ubuntu 24.04 and contains the exact runner binary named by
 # the tag. release/dependencies.json records the independent release evidence.
-FROM ghcr.io/actions/actions-runner:2.336.0@sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda
+FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 
-ARG POWERSHELL_VERSION=7.6.4
-ARG POWERSHELL_SHA256=4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721
-ARG GH_VERSION=2.97.0
-ARG GH_SHA256=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
+ARG POWERSHELL_VERSION=7.6.5
+ARG POWERSHELL_SHA256=b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844
+ARG GH_VERSION=2.98.0
+ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 
 USER root
 
@@ -74,8 +74,8 @@ ENV DOTNET_INSTALL_DIR=/home/runner/.dotnet \
     ImageOS=ubuntu24
 
 LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
-      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.336.0" \
-      org.opencontainers.image.base.digest="sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda" \
+      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.337.0" \
+      org.opencontainers.image.base.digest="sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4" \
       org.opencontainers.image.description="Ephemeral one-job GitHub Actions worker for ci-runner"
 
 # The upstream user is uid/gid 1001 and has passwordless sudo, matching the

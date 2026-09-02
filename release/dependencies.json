@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-08-21T07:40:00.0000000Z",
+  "resolvedAt": "2026-09-02T06:40:00.0000000Z",
   "go": {
     "version": "1.26.6",
     "source": "https://go.dev/dl/?mode=json"
   },
   "node": {
-    "version": "24.19.0",
-    "source": "https://nodejs.org/dist/v24.19.0/"
+    "version": "24.20.0",
+    "source": "https://nodejs.org/dist/v24.20.0/"
   },
   "buildx": {
     "version": "0.36.1",
@@ -34,25 +34,25 @@
     "source": "https://github.com/actions/scaleset/releases/tag/v0.4.0"
   },
   "runner": {
-    "version": "2.336.0",
-    "image": "ghcr.io/actions/actions-runner:2.336.0",
-    "digest": "sha256:0cfdcc701ce933c6d243c6b0b2da767366dc9f2e99961d4c3754b0b78084cdda",
-    "archiveSha256": "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d",
-    "source": "https://github.com/actions/runner/releases/tag/v2.336.0"
+    "version": "2.337.0",
+    "image": "ghcr.io/actions/actions-runner:2.337.0",
+    "digest": "sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4",
+    "archiveSha256": "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613",
+    "source": "https://github.com/actions/runner/releases/tag/v2.337.0"
   },
   "powerShell": {
-    "version": "7.6.4",
-    "linuxX64ArchiveSha256": "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
-    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.4",
-    "hostedImageManifestCommit": "8926c75ceb03577c5cc94415743a88f548b781ab",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "7.6.5",
+    "linuxX64ArchiveSha256": "b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844",
+    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.5",
+    "hostedImageManifestCommit": "c5170d2845dc0eb0f22853ec70bd4f1c891112ca",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c5170d2845dc0eb0f22853ec70bd4f1c891112ca/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "gh": {
-    "version": "2.97.0",
-    "linuxAmd64ArchiveSha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
-    "source": "https://github.com/cli/cli/releases/tag/v2.97.0",
-    "hostedImageManifestCommit": "8926c75ceb03577c5cc94415743a88f548b781ab",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "2.98.0",
+    "linuxAmd64ArchiveSha256": "3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de",
+    "source": "https://github.com/cli/cli/releases/tag/v2.98.0",
+    "hostedImageManifestCommit": "cbb8df97e1dd32af7cb23a90590f12734ec11d0b",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/cbb8df97e1dd32af7cb23a90590f12734ec11d0b/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "govulncheck": {
     "version": "1.7.0",
@@ -63,14 +63,14 @@
     "source": "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
   },
   "zizmor": {
-    "version": "1.29.0",
-    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.29.0"
+    "version": "1.30.0",
+    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.30.0"
   },
   "syft": {
-    "version": "1.51.0",
-    "image": "ghcr.io/anchore/syft:v1.51.0",
-    "digest": "sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0",
-    "source": "https://github.com/anchore/syft/releases/tag/v1.51.0"
+    "version": "1.51.1",
+    "image": "ghcr.io/anchore/syft:v1.51.1",
+    "digest": "sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c",
+    "source": "https://github.com/anchore/syft/releases/tag/v1.51.1"
   },
   "githubActions": [
     {
@@ -130,15 +130,15 @@
     },
     {
       "repository": "zizmorcore/zizmor-action",
-      "version": "0.6.2",
-      "commit": "3dc1ecc9bcb9e94e9b2c709687979e1298497054"
+      "version": "0.6.3",
+      "commit": "70fb788f84895a7701f5643d103d587e460b5c99"
     }
   ],
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "d26c750691b5498fab529d115b63f84aa7aecebe",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/d26c750691b5498fab529d115b63f84aa7aecebe"
+      "commit": "0f8176e87e0be518f382664779655011bf95784a",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/0f8176e87e0be518f382664779655011bf95784a"
     }
   ],
   "reusableWorkflows": []
