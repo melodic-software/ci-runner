@@ -137,46 +137,39 @@ func saveAssignTimesUnlocked(directory string, acl AccessController, catalog Cat
 	if len(encoded) > maximumJobState {
 		return fmt.Errorf("assign-times sidecar exceeds the %d-byte cap", maximumJobState)
 	}
-	temporary, err := os.CreateTemp(directory, ".runner-assign-times.json-*")
-	if err != nil {
-		return fmt.Errorf("create temporary assign-times sidecar: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	committed := false
-	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary assign-times sidecar: %w", err)
-	}
-	if _, err := temporary.Write(encoded); err != nil {
-		return fmt.Errorf("write temporary assign-times sidecar: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush temporary assign-times sidecar: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary assign-times sidecar: %w", err)
-	}
-	if err := acl.Harden(temporaryPath); err != nil {
-		return fmt.Errorf("secure temporary assign-times sidecar ACL: %w", err)
-	}
-	if err := acl.Verify(temporaryPath); err != nil {
-		return fmt.Errorf("verify temporary assign-times sidecar ACL: %w", err)
-	}
-	target := filepath.Join(directory, assignTimesFilename)
-	if err := statefs.ReplaceFileAtomic(temporaryPath, target); err != nil {
-		return fmt.Errorf("replace assign-times sidecar atomically: %w", err)
-	}
-	committed = true
-	if err := acl.Harden(target); err != nil {
-		return fmt.Errorf("verify assign-times sidecar ACL: %w", err)
-	}
-	if err := acl.Verify(target); err != nil {
-		return fmt.Errorf("verify assign-times sidecar ACL: %w", err)
-	}
-	return nil
+	// The enclosing saveUnlocked flushes the state directory after this
+	// sidecar commits, so the shared sequence skips its own directory flush.
+	return statefs.DurableWrite{
+		Directory:        directory,
+		Target:           filepath.Join(directory, assignTimesFilename),
+		TemporaryPattern: ".runner-assign-times.json-*",
+		Mode:             0o600,
+		HardenBeforeReplace: func(path string) error {
+			if err := acl.Harden(path); err != nil {
+				return fmt.Errorf("secure temporary assign-times sidecar ACL: %w", err)
+			}
+			if err := acl.Verify(path); err != nil {
+				return fmt.Errorf("verify temporary assign-times sidecar ACL: %w", err)
+			}
+			return nil
+		},
+		HardenAfterReplace: func(path string) error {
+			if err := acl.Harden(path); err != nil {
+				return fmt.Errorf("verify assign-times sidecar ACL: %w", err)
+			}
+			if err := acl.Verify(path); err != nil {
+				return fmt.Errorf("verify assign-times sidecar ACL: %w", err)
+			}
+			return nil
+		},
+		SkipDirectorySync: true,
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary assign-times sidecar",
+			SetMode:         "secure temporary assign-times sidecar",
+			Write:           "write temporary assign-times sidecar",
+			Flush:           "flush temporary assign-times sidecar",
+			Close:           "close temporary assign-times sidecar",
+			Replace:         "replace assign-times sidecar atomically",
+		},
+	}.WriteBytes(encoded)
 }

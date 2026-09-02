@@ -108,22 +108,50 @@ func (s *FileArtifactSink) OpenLog(ctx context.Context, metadata ArtifactMetadat
 	// ContainerLogs replays retained output when a controller adopts or retries.
 	// Capture into a same-directory temporary file so an interrupted retry never
 	// destroys the prior complete artifact.
-	file, err := os.CreateTemp(s.logDirectory, ".ci-runner-log-*.tmp")
+	writer, err := statefs.DurableWrite{
+		Directory:        s.logDirectory,
+		Target:           path,
+		TemporaryPattern: ".ci-runner-log-*.tmp",
+		Mode:             0o600,
+		HardenBeforeWrite: func(temporaryPath string) error {
+			if err := hardenAndVerify(s.acl, temporaryPath); err != nil {
+				return fmt.Errorf("secure worker log: %w", err)
+			}
+			return nil
+		},
+		HardenBeforeReplace: func(temporaryPath string) error {
+			if err := hardenAndVerify(s.acl, temporaryPath); err != nil {
+				return fmt.Errorf("verify temporary worker log: %w", err)
+			}
+			return nil
+		},
+		// The container streams for as long as it runs after the check above,
+		// so the destination is rechecked immediately before the replace.
+		BeforeReplace: func() error {
+			if err := ensureRegularOrMissing(path); err != nil {
+				return fmt.Errorf("recheck worker log destination: %w", err)
+			}
+			return nil
+		},
+		HardenAfterReplace: func(finalPath string) error {
+			if err := hardenAndVerify(s.acl, finalPath); err != nil {
+				return fmt.Errorf("verify published worker log: %w", err)
+			}
+			return nil
+		},
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary worker log",
+			SetMode:         "secure temporary worker log mode",
+			Flush:           "flush temporary worker log",
+			Close:           "close temporary worker log",
+			Replace:         "publish worker log atomically",
+			FlushDirectory:  "flush worker log directory",
+		},
+	}.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("create temporary worker log: %w", err)
+		return nil, err
 	}
-	temporaryPath := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(temporaryPath)
-		return nil, fmt.Errorf("secure temporary worker log mode: %w", err)
-	}
-	if err := hardenAndVerify(s.acl, temporaryPath); err != nil {
-		_ = file.Close()
-		_ = os.Remove(temporaryPath)
-		return nil, fmt.Errorf("secure worker log: %w", err)
-	}
-	atomic := &atomicLogFile{file: file, temporaryPath: temporaryPath, finalPath: path, directory: s.logDirectory, acl: s.acl}
+	atomic := &atomicLogFile{writer: writer}
 	return &truncatingWriteCloser{destination: atomic, limit: s.policy.MaxFileSizeBytes}, nil
 }
 
@@ -143,25 +171,41 @@ func (s *FileArtifactSink) WriteDiagnostics(ctx context.Context, metadata Artifa
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect existing diagnostic archive: %w", err)
 	}
-	temporary, err := os.CreateTemp(s.diagnosticDirectory, ".ci-runner-diag-*.tmp")
+	writer, err := statefs.DurableWrite{
+		Directory:        s.diagnosticDirectory,
+		Target:           finalPath,
+		TemporaryPattern: ".ci-runner-diag-*.tmp",
+		Mode:             0o600,
+		HardenBeforeWrite: func(temporaryPath string) error {
+			if err := hardenAndVerify(s.acl, temporaryPath); err != nil {
+				return fmt.Errorf("secure temporary diagnostic archive: %w", err)
+			}
+			return nil
+		},
+		// A committed archive that cannot be hardened is withdrawn; one that is
+		// hardened but whose directory flush fails stays, because the bytes are
+		// already protected and the unreferenced sweep reclaims them.
+		HardenAfterReplace: func(committedPath string) error {
+			if err := hardenAndVerify(s.acl, committedPath); err != nil {
+				_ = os.Remove(committedPath)
+				return fmt.Errorf("secure diagnostic archive: %w", err)
+			}
+			return nil
+		},
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary diagnostic archive",
+			SetMode:         "secure temporary diagnostic archive",
+			Flush:           "flush diagnostic archive",
+			Close:           "close diagnostic archive",
+			Replace:         "publish diagnostic archive",
+			FlushDirectory:  "flush diagnostic directory",
+		},
+	}.Begin()
 	if err != nil {
-		return fmt.Errorf("create temporary diagnostic archive: %w", err)
+		return err
 	}
-	temporaryName := temporary.Name()
-	succeeded := false
-	defer func() {
-		_ = temporary.Close()
-		if !succeeded {
-			_ = os.Remove(temporaryName)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary diagnostic archive: %w", err)
-	}
-	if err := hardenAndVerify(s.acl, temporaryName); err != nil {
-		return fmt.Errorf("secure temporary diagnostic archive: %w", err)
-	}
-	boundedOutput := &boundedWriter{destination: temporary, limit: s.policy.MaxFileSizeBytes}
+	defer writer.Discard()
+	boundedOutput := &boundedWriter{destination: writer.File(), limit: s.policy.MaxFileSizeBytes}
 	gzipWriter := gzip.NewWriter(boundedOutput)
 	boundedInput := &io.LimitedReader{R: source, N: int64(s.policy.RawDiagnosticMaxInputBytes) + 1}
 	_, copyErr := io.Copy(gzipWriter, boundedInput)
@@ -172,22 +216,8 @@ func (s *FileArtifactSink) WriteDiagnostics(ctx context.Context, metadata Artifa
 	if boundedInput.N <= 0 {
 		return fmt.Errorf("raw diagnostic input: %w", ErrArtifactTooLarge)
 	}
-	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush diagnostic archive: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close diagnostic archive: %w", err)
-	}
-	if err := statefs.ReplaceFileAtomic(temporaryName, finalPath); err != nil {
-		return fmt.Errorf("publish diagnostic archive: %w", err)
-	}
-	succeeded = true
-	if err := hardenAndVerify(s.acl, finalPath); err != nil {
-		_ = os.Remove(finalPath)
-		return fmt.Errorf("secure diagnostic archive: %w", err)
-	}
-	if err := statefs.SyncDirectory(s.diagnosticDirectory); err != nil {
-		return fmt.Errorf("flush diagnostic directory: %w", err)
+	if err := writer.Commit(); err != nil {
+		return err
 	}
 	if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
 		PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: metadata.ContainerID,
@@ -225,44 +255,38 @@ func (s *FileArtifactSink) WriteResourceEvidence(_ context.Context, metadata Art
 		return false, fmt.Errorf("inspect existing worker resource evidence: %w", statErr)
 	}
 
-	temporary, err := os.CreateTemp(s.diagnosticDirectory, ".ci-runner-resources-*.tmp")
-	if err != nil {
-		return false, fmt.Errorf("create temporary worker resource evidence: %w", err)
-	}
-	temporaryName := temporary.Name()
-	succeeded := false
-	defer func() {
-		_ = temporary.Close()
-		if !succeeded {
-			_ = os.Remove(temporaryName)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return false, fmt.Errorf("secure temporary worker resource evidence mode: %w", err)
-	}
-	if err := hardenAndVerify(s.acl, temporaryName); err != nil {
-		return false, fmt.Errorf("secure temporary worker resource evidence: %w", err)
-	}
-	if _, err := temporary.Write(content); err != nil {
-		return false, fmt.Errorf("write worker resource evidence: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		return false, fmt.Errorf("flush worker resource evidence: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return false, fmt.Errorf("close worker resource evidence: %w", err)
-	}
-	if err := statefs.ReplaceFileAtomic(temporaryName, finalPath); err != nil {
-		return false, fmt.Errorf("publish worker resource evidence: %w", err)
-	}
-	succeeded = true
-	if err := hardenAndVerify(s.acl, finalPath); err != nil {
-		_ = os.Remove(finalPath)
-		return false, fmt.Errorf("verify worker resource evidence: %w", err)
-	}
-	if err := statefs.SyncDirectory(s.diagnosticDirectory); err != nil {
-		_ = os.Remove(finalPath)
-		return false, fmt.Errorf("flush worker resource evidence directory: %w", err)
+	if err := (statefs.DurableWrite{
+		Directory:        s.diagnosticDirectory,
+		Target:           finalPath,
+		TemporaryPattern: ".ci-runner-resources-*.tmp",
+		Mode:             0o600,
+		HardenBeforeWrite: func(temporaryPath string) error {
+			if err := hardenAndVerify(s.acl, temporaryPath); err != nil {
+				return fmt.Errorf("secure temporary worker resource evidence: %w", err)
+			}
+			return nil
+		},
+		HardenAfterReplace: func(committedPath string) error {
+			if err := hardenAndVerify(s.acl, committedPath); err != nil {
+				return fmt.Errorf("verify worker resource evidence: %w", err)
+			}
+			return nil
+		},
+		// A retry short-circuits on an existing parseable file, so evidence
+		// that committed and then failed verification or the directory flush
+		// is withdrawn rather than frozen as the worker's final resource state.
+		OnCommitFailure: func(committedPath string) { _ = os.Remove(committedPath) },
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary worker resource evidence",
+			SetMode:         "secure temporary worker resource evidence mode",
+			Write:           "write worker resource evidence",
+			Flush:           "flush worker resource evidence",
+			Close:           "close worker resource evidence",
+			Replace:         "publish worker resource evidence",
+			FlushDirectory:  "flush worker resource evidence directory",
+		},
+	}).WriteBytes(content); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -717,54 +741,20 @@ func (w *truncatingWriteCloser) Write(value []byte) (int, error) {
 func (w *truncatingWriteCloser) Close() error { return w.destination.Close() }
 
 type atomicLogFile struct {
-	file          *os.File
-	temporaryPath string
-	finalPath     string
-	directory     string
-	acl           jobindex.AccessController
-	once          sync.Once
-	err           error
+	writer *statefs.DurableWriter
+	once   sync.Once
+	err    error
 }
 
 func (w *atomicLogFile) Write(value []byte) (int, error) {
-	return w.file.Write(value)
+	return w.writer.File().Write(value)
 }
 
 func (w *atomicLogFile) Close() error {
 	w.once.Do(func() {
-		defer func() {
-			if w.err != nil {
-				_ = os.Remove(w.temporaryPath)
-			}
-		}()
-		if err := w.file.Sync(); err != nil {
-			w.err = fmt.Errorf("flush temporary worker log: %w", err)
-			_ = w.file.Close()
-			return
-		}
-		if err := w.file.Close(); err != nil {
-			w.err = fmt.Errorf("close temporary worker log: %w", err)
-			return
-		}
-		if err := hardenAndVerify(w.acl, w.temporaryPath); err != nil {
-			w.err = fmt.Errorf("verify temporary worker log: %w", err)
-			return
-		}
-		if err := ensureRegularOrMissing(w.finalPath); err != nil {
-			w.err = fmt.Errorf("recheck worker log destination: %w", err)
-			return
-		}
-		if err := statefs.ReplaceFileAtomic(w.temporaryPath, w.finalPath); err != nil {
-			w.err = fmt.Errorf("publish worker log atomically: %w", err)
-			return
-		}
-		if err := hardenAndVerify(w.acl, w.finalPath); err != nil {
-			w.err = fmt.Errorf("verify published worker log: %w", err)
-			return
-		}
-		if err := statefs.SyncDirectory(w.directory); err != nil {
-			w.err = fmt.Errorf("flush worker log directory: %w", err)
-			return
+		w.err = w.writer.Commit()
+		if w.err != nil {
+			w.writer.Discard()
 		}
 	})
 	return w.err

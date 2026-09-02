@@ -316,55 +316,46 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(s.directory, ".jobs.json-*")
-	if err != nil {
-		return fmt.Errorf("create temporary jobs.json: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	committed := false
-	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temporary jobs.json: %w", err)
-	}
-	if _, err := temporary.Write(encoded); err != nil {
-		return fmt.Errorf("write temporary jobs.json: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		return fmt.Errorf("flush temporary jobs.json: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary jobs.json: %w", err)
-	}
-	if err := s.acl.Harden(temporaryPath); err != nil {
-		return fmt.Errorf("secure temporary jobs.json ACL: %w", err)
-	}
-	if err := s.acl.Verify(temporaryPath); err != nil {
-		return fmt.Errorf("verify temporary jobs.json ACL: %w", err)
-	}
-	target := filepath.Join(s.directory, jobsFilename)
-	if err := statefs.ReplaceFileAtomic(temporaryPath, target); err != nil {
-		return fmt.Errorf("replace jobs.json atomically: %w", err)
-	}
-	committed = true
-	appendDropJournal(s.directory, s.acl, dropped, s.now())
-	if err := saveAssignTimesUnlocked(s.directory, s.acl, catalog); err != nil {
-		return err
-	}
-	if err := s.acl.Harden(target); err != nil {
-		return fmt.Errorf("verify jobs.json ACL: %w", err)
-	}
-	if err := s.acl.Verify(target); err != nil {
-		return fmt.Errorf("verify jobs.json ACL: %w", err)
-	}
-	if err := statefs.SyncDirectory(s.directory); err != nil {
-		return fmt.Errorf("flush jobs state directory: %w", err)
-	}
-	return nil
+	return statefs.DurableWrite{
+		Directory:        s.directory,
+		Target:           filepath.Join(s.directory, jobsFilename),
+		TemporaryPattern: ".jobs.json-*",
+		Mode:             0o600,
+		HardenBeforeReplace: func(path string) error {
+			if err := s.acl.Harden(path); err != nil {
+				return fmt.Errorf("secure temporary jobs.json ACL: %w", err)
+			}
+			if err := s.acl.Verify(path); err != nil {
+				return fmt.Errorf("verify temporary jobs.json ACL: %w", err)
+			}
+			return nil
+		},
+		// The drop journal and the assign-times sidecar describe the catalog
+		// that just committed, so they are written between the replace and the
+		// directory flush that closes the save.
+		AfterReplace: func() error {
+			appendDropJournal(s.directory, s.acl, dropped, s.now())
+			return saveAssignTimesUnlocked(s.directory, s.acl, catalog)
+		},
+		HardenAfterReplace: func(path string) error {
+			if err := s.acl.Harden(path); err != nil {
+				return fmt.Errorf("verify jobs.json ACL: %w", err)
+			}
+			if err := s.acl.Verify(path); err != nil {
+				return fmt.Errorf("verify jobs.json ACL: %w", err)
+			}
+			return nil
+		},
+		Labels: statefs.DurableWriteLabels{
+			CreateTemporary: "create temporary jobs.json",
+			SetMode:         "secure temporary jobs.json",
+			Write:           "write temporary jobs.json",
+			Flush:           "flush temporary jobs.json",
+			Close:           "close temporary jobs.json",
+			Replace:         "replace jobs.json atomically",
+			FlushDirectory:  "flush jobs state directory",
+		},
+	}.WriteBytes(encoded)
 }
 
 // encodeWithinCapacity marshals the catalog, compacting records when the
