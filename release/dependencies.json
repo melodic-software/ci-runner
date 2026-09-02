@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "resolvedAt": "2026-09-02T06:40:00.0000000Z",
   "go": {
-    "version": "1.26.6",
+    "version": "1.27.1",
     "source": "https://go.dev/dl/?mode=json"
   },
   "node": {
