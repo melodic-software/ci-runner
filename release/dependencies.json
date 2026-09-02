@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-09-02T06:30:00.0000000Z",
+  "resolvedAt": "2026-09-02T06:40:00.0000000Z",
   "go": {
     "version": "1.26.6",
     "source": "https://go.dev/dl/?mode=json"
   },
   "node": {
-    "version": "24.19.0",
-    "source": "https://nodejs.org/dist/v24.19.0/"
+    "version": "24.20.0",
+    "source": "https://nodejs.org/dist/v24.20.0/"
   },
   "buildx": {
     "version": "0.36.1",
@@ -63,14 +63,14 @@
     "source": "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
   },
   "zizmor": {
-    "version": "1.29.0",
-    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.29.0"
+    "version": "1.30.0",
+    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.30.0"
   },
   "syft": {
-    "version": "1.51.0",
-    "image": "ghcr.io/anchore/syft:v1.51.0",
-    "digest": "sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0",
-    "source": "https://github.com/anchore/syft/releases/tag/v1.51.0"
+    "version": "1.51.1",
+    "image": "ghcr.io/anchore/syft:v1.51.1",
+    "digest": "sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c",
+    "source": "https://github.com/anchore/syft/releases/tag/v1.51.1"
   },
   "githubActions": [
     {
@@ -130,8 +130,8 @@
     },
     {
       "repository": "zizmorcore/zizmor-action",
-      "version": "0.6.2",
-      "commit": "3dc1ecc9bcb9e94e9b2c709687979e1298497054"
+      "version": "0.6.3",
+      "commit": "70fb788f84895a7701f5643d103d587e460b5c99"
     }
   ],
   "repositoryPins": [
