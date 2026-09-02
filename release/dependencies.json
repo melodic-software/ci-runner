@@ -41,18 +41,18 @@
     "source": "https://github.com/actions/runner/releases/tag/v2.336.0"
   },
   "powerShell": {
-    "version": "7.6.4",
-    "linuxX64ArchiveSha256": "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
-    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.4",
-    "hostedImageManifestCommit": "8926c75ceb03577c5cc94415743a88f548b781ab",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "7.6.5",
+    "linuxX64ArchiveSha256": "b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844",
+    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.5",
+    "hostedImageManifestCommit": "c5170d2845dc0eb0f22853ec70bd4f1c891112ca",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c5170d2845dc0eb0f22853ec70bd4f1c891112ca/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "gh": {
     "version": "2.97.0",
     "linuxAmd64ArchiveSha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
     "source": "https://github.com/cli/cli/releases/tag/v2.97.0",
-    "hostedImageManifestCommit": "8926c75ceb03577c5cc94415743a88f548b781ab",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/8926c75ceb03577c5cc94415743a88f548b781ab/images/ubuntu/Ubuntu2404-Readme.md"
+    "hostedImageManifestCommit": "c5170d2845dc0eb0f22853ec70bd4f1c891112ca",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c5170d2845dc0eb0f22853ec70bd4f1c891112ca/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "govulncheck": {
     "version": "1.7.0",
