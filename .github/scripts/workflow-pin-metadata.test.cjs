@@ -6,9 +6,9 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const ciWorkflowsSha = "0f8176e87e0be518f382664779655011bf95784a";
-const ciWorkflowsVersion = "v0.17.2";
-const expectedCiWorkflowsReferences = 21;
+const ciWorkflowsSha = "449157aaa8e30f7b1457305d8048ebe6168e174a";
+const ciWorkflowsVersion = "v0.20.0";
+const expectedCiWorkflowsReferences = 22;
 const syncManagedMarker = "SYNC-MANAGED FILE";
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
@@ -119,29 +119,41 @@ test("ci-workflows references use a full SHA with one release version", () => {
   assert.equal(
     references.length,
     expectedCiWorkflowsReferences,
-    "the 18 pre-gate ci-workflows references plus the do-not-merge, pr-issue-linkage, and ci-status gate callers must remain inventoried",
+    "the 18 pre-gate ci-workflows references plus the do-not-merge, pr-issue-linkage, ci-status, and pr-contract gate callers must remain inventoried",
   );
   assert.equal(
     new Set(references).size,
     1,
     "ci-workflows references must move as one reviewed compatibility pin",
   );
-  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.17.2 SHA");
+  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.20.0 SHA");
   assert.equal(
     new Set(versions).size,
     1,
     "ci-workflows references must name one release version for online pin verification",
   );
-  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.17.2");
+  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.20.0");
 });
 
 test("go-quality uses the exact reusable caller contract", () => {
   const block = jobBlock(workflowSource("ci.yml"), "go-quality");
 
+  // `if` is admitted because the required-check contract gates every lane job
+  // on the contract-only predicate, go-quality included: a `labeled`,
+  // `unlabeled` or `edited` event cannot change any Go result, so the lane is
+  // skipped and ci-status carries the recorded `ci-lanes` verdict forward. The
+  // predicate is asserted below so the caller cannot smuggle in an arbitrary
+  // condition; every other key stays closed.
   assert.deepEqual(
     directMappingKeys(block),
-    ["permissions", "uses", "with"],
-    "go-quality must not add a condition, runner, caller secrets, or undeclared inputs",
+    ["if", "permissions", "uses", "with"],
+    "go-quality must not add a runner, caller secrets, or undeclared inputs",
+  );
+  assert.ok(
+    block.includes(
+      "    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('[\"labeled\",\"unlabeled\"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}",
+    ),
+    "go-quality's only condition is the contract-only gate",
   );
   assert.deepEqual(nestedMapping(block, "permissions"), { contents: "read" });
   assert.deepEqual(nestedMapping(block, "with"), { config: ".golangci.yml" });
