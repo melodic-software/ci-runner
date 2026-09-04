@@ -25,7 +25,7 @@ jobs:
     permissions:
       pull-requests: read # the reusable now reads the live PR body itself
       actions: read # mandatory to start the reusable; see pr-title.yml for why
-    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@0f8176e87e0be518f382664779655011bf95784a # v0.17.2
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
     with:
       # Generated PR bodies cannot carry the closing-keyword + contract-header
       # markers; exact-login exemption per the reusable's contract, never a
