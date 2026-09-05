@@ -461,6 +461,14 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/pr-contract@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
         with:
           token: ${{ github.token }}
+          # Dependabot and the standards sync open pull requests that close no
+          # issue, so without this they collect the advisory linkage comment
+          # and the `needs-issue-linkage` label on every run. Exempts the
+          # linkage check only; the Conventional Commits title check and the
+          # do-not-merge label gate still apply to both authors. Exact login
+          # equality, never a `*[bot]` pattern, so a new bot is not silently
+          # skipped.
+          exempt-authors: 'dependabot[bot],melodic-standards-sync[bot]'
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
