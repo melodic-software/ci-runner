@@ -8,7 +8,7 @@ const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
 const ciWorkflowsSha = "449157aaa8e30f7b1457305d8048ebe6168e174a";
 const ciWorkflowsVersion = "v0.20.0";
-const expectedCiWorkflowsReferences = 22;
+const expectedCiWorkflowsReferences = 19;
 const syncManagedMarker = "SYNC-MANAGED FILE";
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
@@ -119,7 +119,7 @@ test("ci-workflows references use a full SHA with one release version", () => {
   assert.equal(
     references.length,
     expectedCiWorkflowsReferences,
-    "the 18 pre-gate ci-workflows references plus the do-not-merge, pr-issue-linkage, ci-status, and pr-contract gate callers must remain inventoried",
+    "the 17 lane and link-check ci-workflows references plus the ci-status and pr-contract gate callers must remain inventoried",
   );
   assert.equal(
     new Set(references).size,
