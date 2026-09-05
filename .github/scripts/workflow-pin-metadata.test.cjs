@@ -6,14 +6,38 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const ciWorkflowsSha = "449157aaa8e30f7b1457305d8048ebe6168e174a";
-const ciWorkflowsVersion = "v0.20.0";
-const expectedCiWorkflowsReferences = 19;
 const syncManagedMarker = "SYNC-MANAGED FILE";
 const canonicalReference =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
+  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
+
+// Which files call which ci-workflows composite or reusable, sorted, with
+// duplicates kept. This is the omitted-caller regression check: a lane that
+// quietly stops calling its shared action, or one that appears without review,
+// fails here. It is deliberately independent of the pin: a Dependabot bump
+// moves every SHA and leaves this inventory untouched, so the bump stays green.
+const expectedCiWorkflowsCallers = [
+  ["ci.yml", ".github/actions/actionlint"],
+  ["ci.yml", ".github/actions/check-jsonschema"],
+  ["ci.yml", ".github/actions/check-jsonschema"],
+  ["ci.yml", ".github/actions/ci-status"],
+  ["ci.yml", ".github/actions/comment-hygiene"],
+  ["ci.yml", ".github/actions/editorconfig"],
+  ["ci.yml", ".github/actions/eol-renormalize"],
+  ["ci.yml", ".github/actions/exec-bit"],
+  ["ci.yml", ".github/actions/gitleaks"],
+  ["ci.yml", ".github/actions/lychee-offline"],
+  ["ci.yml", ".github/actions/machine-specific-paths"],
+  ["ci.yml", ".github/actions/markdown"],
+  ["ci.yml", ".github/actions/pr-contract"],
+  ["ci.yml", ".github/actions/shellcheck"],
+  ["ci.yml", ".github/actions/shfmt"],
+  ["ci.yml", ".github/actions/typos"],
+  ["ci.yml", ".github/workflows/go-quality.yml"],
+  ["ci.yml", ".github/workflows/zizmor.yml"],
+  ["link-check.yml", ".github/workflows/link-check.yml"],
+];
 
 function workflowSource(name) {
   return fs.readFileSync(path.join(workflowDirectory, name), "utf8");
@@ -80,9 +104,20 @@ function workflowFiles(directory) {
     .sort();
 }
 
-test("ci-workflows references use a full SHA with one release version", () => {
+// The reviewed ci-workflows pin is whatever the canonical references agree on,
+// not a constant repeated here. A grouped Dependabot bump rewrites every
+// canonical `uses:` line at once and cannot touch this file or
+// `release/dependencies.json`, so hardcoding the SHA, the version and the
+// reference count made every bump red by construction and cost three manual
+// edits. The tests below assert the properties that matter instead: the
+// expected callers are all present, the references agree with each other, and
+// the release manifest agrees with them. None of the three moves when only a
+// SHA moves, which leaves `release/dependencies.json` as the single manual
+// edit per bump.
+function ciWorkflowsPin() {
   const references = [];
   const versions = [];
+  const callers = [];
 
   for (const file of workflowFiles(workflowDirectory)) {
     const source = fs.readFileSync(file, "utf8");
@@ -113,29 +148,38 @@ test("ci-workflows references use a full SHA with one release version", () => {
       );
       references.push(match.groups.sha);
       versions.push(match.groups.version);
+      callers.push([
+        path.relative(workflowDirectory, file).split(path.sep).join("/"),
+        match.groups.reference,
+      ]);
     }
   }
 
-  assert.equal(
-    references.length,
-    expectedCiWorkflowsReferences,
-    "the 17 lane and link-check ci-workflows references plus the ci-status and pr-contract gate callers must remain inventoried",
+  assert.deepEqual(
+    callers.sort(),
+    expectedCiWorkflowsCallers,
+    "every lane, link-check and gate caller must stay inventoried; adding or removing one is a reviewed change",
   );
   assert.equal(
     new Set(references).size,
     1,
     "ci-workflows references must move as one reviewed compatibility pin",
   );
-  assert.equal(references[0], ciWorkflowsSha, "ci-workflows must use the reviewed v0.20.0 SHA");
   assert.equal(
     new Set(versions).size,
     1,
     "ci-workflows references must name one release version for online pin verification",
   );
-  assert.equal(versions[0], ciWorkflowsVersion, "ci-workflows must identify release v0.20.0");
+
+  return { sha: references[0], version: versions[0] };
+}
+
+test("ci-workflows references use a full SHA with one release version", () => {
+  ciWorkflowsPin();
 });
 
 test("go-quality uses the exact reusable caller contract", () => {
+  const { sha, version } = ciWorkflowsPin();
   const block = jobBlock(workflowSource("ci.yml"), "go-quality");
 
   // `if` is admitted because the required-check contract gates every lane job
@@ -159,13 +203,14 @@ test("go-quality uses the exact reusable caller contract", () => {
   assert.deepEqual(nestedMapping(block, "with"), { config: ".golangci.yml" });
   assert.ok(
     block.includes(
-      `    uses: melodic-software/ci-workflows/.github/workflows/go-quality.yml@${ciWorkflowsSha} # ${ciWorkflowsVersion}`,
+      `    uses: melodic-software/ci-workflows/.github/workflows/go-quality.yml@${sha} # ${version}`,
     ),
-    "go-quality must call the exact released reusable workflow",
+    "go-quality must call the exact released reusable workflow every other reference names",
   );
 });
 
 test("release metadata tracks the same ci-workflows release", () => {
+  const { sha } = ciWorkflowsPin();
   const dependencies = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, "release", "dependencies.json"), "utf8"),
   );
@@ -176,8 +221,8 @@ test("release metadata tracks the same ci-workflows release", () => {
     [
       {
         repository: "melodic-software/ci-workflows",
-        commit: ciWorkflowsSha,
-        source: `https://github.com/melodic-software/ci-workflows/tree/${ciWorkflowsSha}`,
+        commit: sha,
+        source: `https://github.com/melodic-software/ci-workflows/tree/${sha}`,
       },
     ],
   );
