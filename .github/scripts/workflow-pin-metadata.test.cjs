@@ -8,9 +8,36 @@ const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
 const syncManagedMarker = "SYNC-MANAGED FILE";
 const canonicalReference =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
+  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
+
+// Which files call which ci-workflows composite or reusable, sorted, with
+// duplicates kept. This is the omitted-caller regression check: a lane that
+// quietly stops calling its shared action, or one that appears without review,
+// fails here. It is deliberately independent of the pin: a Dependabot bump
+// moves every SHA and leaves this inventory untouched, so the bump stays green.
+const expectedCiWorkflowsCallers = [
+  ["ci.yml", ".github/actions/actionlint"],
+  ["ci.yml", ".github/actions/check-jsonschema"],
+  ["ci.yml", ".github/actions/check-jsonschema"],
+  ["ci.yml", ".github/actions/ci-status"],
+  ["ci.yml", ".github/actions/comment-hygiene"],
+  ["ci.yml", ".github/actions/editorconfig"],
+  ["ci.yml", ".github/actions/eol-renormalize"],
+  ["ci.yml", ".github/actions/exec-bit"],
+  ["ci.yml", ".github/actions/gitleaks"],
+  ["ci.yml", ".github/actions/lychee-offline"],
+  ["ci.yml", ".github/actions/machine-specific-paths"],
+  ["ci.yml", ".github/actions/markdown"],
+  ["ci.yml", ".github/actions/pr-contract"],
+  ["ci.yml", ".github/actions/shellcheck"],
+  ["ci.yml", ".github/actions/shfmt"],
+  ["ci.yml", ".github/actions/typos"],
+  ["ci.yml", ".github/workflows/go-quality.yml"],
+  ["ci.yml", ".github/workflows/zizmor.yml"],
+  ["link-check.yml", ".github/workflows/link-check.yml"],
+];
 
 function workflowSource(name) {
   return fs.readFileSync(path.join(workflowDirectory, name), "utf8");
@@ -82,12 +109,15 @@ function workflowFiles(directory) {
 // canonical `uses:` line at once and cannot touch this file or
 // `release/dependencies.json`, so hardcoding the SHA, the version and the
 // reference count made every bump red by construction and cost three manual
-// edits. The tests below assert the property that matters instead: the
-// references agree with each other, and the release manifest agrees with them.
-// That leaves `release/dependencies.json` as the single manual edit per bump.
+// edits. The tests below assert the properties that matter instead: the
+// expected callers are all present, the references agree with each other, and
+// the release manifest agrees with them. None of the three moves when only a
+// SHA moves, which leaves `release/dependencies.json` as the single manual
+// edit per bump.
 function ciWorkflowsPin() {
   const references = [];
   const versions = [];
+  const callers = [];
 
   for (const file of workflowFiles(workflowDirectory)) {
     const source = fs.readFileSync(file, "utf8");
@@ -118,12 +148,17 @@ function ciWorkflowsPin() {
       );
       references.push(match.groups.sha);
       versions.push(match.groups.version);
+      callers.push([
+        path.relative(workflowDirectory, file).split(path.sep).join("/"),
+        match.groups.reference,
+      ]);
     }
   }
 
-  assert.ok(
-    references.length > 0,
-    "the lane, link-check and gate callers must keep at least one canonical ci-workflows reference inventoried",
+  assert.deepEqual(
+    callers.sort(),
+    expectedCiWorkflowsCallers,
+    "every lane, link-check and gate caller must stay inventoried; adding or removing one is a reviewed change",
   );
   assert.equal(
     new Set(references).size,
@@ -136,7 +171,7 @@ function ciWorkflowsPin() {
     "ci-workflows references must name one release version for online pin verification",
   );
 
-  return { sha: references[0], version: versions[0], count: references.length };
+  return { sha: references[0], version: versions[0] };
 }
 
 test("ci-workflows references use a full SHA with one release version", () => {
