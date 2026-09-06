@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ "$(id -u)" == "0" ]]; then
+# EUID is the effective uid, matching `id -u` (coreutils id(1) --user) without
+# a fork. GNU Bash: https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html
+if [[ "$EUID" == "0" ]]; then
   echo 'worker must run as the non-root runner identity' >&2
   exit 77
 fi
