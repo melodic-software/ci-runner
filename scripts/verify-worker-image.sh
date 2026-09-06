@@ -13,27 +13,30 @@ expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$depende
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
-image_env() {
-  local name="$1"
-  jq --exit-status --raw-output --arg name "$name" '
-    [.Env[] | select(startswith($name + "="))]
-    | if length == 1 then .[0] else error("expected exactly one " + $name + " image variable") end
-  ' <<<"$config"
-}
-
-[[ "$(jq --raw-output '.User' <<<"$config")" == "runner" ]]
-[[ "$(jq --raw-output '.WorkingDir' <<<"$config")" == "/home/runner" ]]
-[[ "$(jq --compact-output '.Cmd' <<<"$config")" == '["/home/runner/run.sh"]' ]]
-[[ "$(jq --compact-output '.Entrypoint' <<<"$config")" == '["/usr/local/bin/ci-runner-entrypoint"]' ]]
-[[ "$(jq --compact-output '.Volumes' <<<"$config")" == 'null' ]]
-[[ "$(jq --raw-output '.Labels["org.opencontainers.image.base.digest"]' <<<"$config")" == "$expected_base_digest" ]]
-[[ "$(jq --raw-output '.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED="))' <<<"$config")" == 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh' ]]
-[[ "$(jq --raw-output '.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))' <<<"$config")" == 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh' ]]
-[[ "$(image_env DOTNET_INSTALL_DIR)" == 'DOTNET_INSTALL_DIR=/home/runner/.dotnet' ]]
-[[ "$(image_env DOTNET_ROOT)" == 'DOTNET_ROOT=/home/runner/.dotnet' ]]
-[[ "$(image_env NUGET_PACKAGES)" == 'NUGET_PACKAGES=/home/runner/.nuget/packages' ]]
-[[ "$(image_env PATH)" == 'PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:'* ]]
-[[ "$(image_env RUNNER_MANUALLY_TRAP_SIG)" == 'RUNNER_MANUALLY_TRAP_SIG=1' ]]
+# One jq pass over the already-loaded Config JSON replaces a dozen
+# command-substitution jq forks. error() keeps the exactly-one Env contract
+# that image_env used to enforce. Custom-message checks below stay separate so
+# failure text is unchanged.
+jq --exit-status --arg expected_base_digest "$expected_base_digest" '
+  def env(name):
+    [.Env[] | select(startswith(name + "="))]
+    | if length == 1 then .[0] else error("expected exactly one " + name + " image variable") end;
+  .User == "runner" and
+  .WorkingDir == "/home/runner" and
+  .Cmd == ["/home/runner/run.sh"] and
+  .Entrypoint == ["/usr/local/bin/ci-runner-entrypoint"] and
+  .Volumes == null and
+  .Labels["org.opencontainers.image.base.digest"] == $expected_base_digest and
+  ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED="))]
+    == ["ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh"]) and
+  ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))]
+    == ["ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh"]) and
+  env("DOTNET_INSTALL_DIR") == "DOTNET_INSTALL_DIR=/home/runner/.dotnet" and
+  env("DOTNET_ROOT") == "DOTNET_ROOT=/home/runner/.dotnet" and
+  env("NUGET_PACKAGES") == "NUGET_PACKAGES=/home/runner/.nuget/packages" and
+  (env("PATH") | startswith("PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:")) and
+  env("RUNNER_MANUALLY_TRAP_SIG") == "RUNNER_MANUALLY_TRAP_SIG=1"
+' <<<"$config" >/dev/null
 
 for dynamic_runner_variable in RUNNER_TOOL_CACHE RUNNER_TOOLSDIRECTORY AGENT_TOOLSDIRECTORY; do
   if jq --exit-status --arg name "$dynamic_runner_variable" \
@@ -54,7 +57,7 @@ actual_runner_version="$({
 [[ "$actual_runner_version" == "$expected_runner_version" ]]
 
 docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
-  [[ "$(id -u)" == "1001" ]]
+  [[ "$EUID" == "1001" ]]
   [[ "$(id -g)" == "1001" ]]
   [[ "$(. /etc/os-release && printf "%s" "$VERSION_ID")" == "24.04" ]]
   for command in sudo pwsh gh git git-lfs curl jq zip unzip ssh clang; do
@@ -152,15 +155,20 @@ harness_config="$(docker image inspect "$production_harness_image" --format '{{j
 [[ "$harness_config" == "$config" ]]
 
 run_production_command_transport() {
-  local container_id="$1" exit_code logs
-  [[ "$(docker inspect --format '{{.Path}}' "$container_id")" == /usr/local/bin/ci-runner-entrypoint ]]
-  [[ "$(docker inspect --format '{{json .Args}}' "$container_id")" == '["/home/runner/run.sh"]' ]]
-  [[ "$(docker inspect --format '{{.Config.User}}' "$container_id")" == runner ]]
-  [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" == local ]]
-  [[ "$(docker inspect --format '{{.HostConfig.Privileged}}' "$container_id")" == false ]]
-  [[ "$(docker inspect --format '{{json .HostConfig.Binds}}' "$container_id")" == null ]]
-  [[ "$(docker inspect --format '{{json .HostConfig.CapAdd}}' "$container_id")" == null ]]
-  [[ "$(docker inspect --format '{{json .Mounts}}' "$container_id")" == '[]' ]]
+  local container_id="$1" exit_code logs inspect
+  # One daemon round-trip: the eight --format inspects were sequential RPCs
+  # against unchanged container state. ExitCode is inspected after start.
+  inspect="$(docker inspect --format '{{json .}}' "$container_id")"
+  jq --exit-status '
+    .Path == "/usr/local/bin/ci-runner-entrypoint" and
+    .Args == ["/home/runner/run.sh"] and
+    .Config.User == "runner" and
+    .HostConfig.LogConfig.Type == "local" and
+    .HostConfig.Privileged == false and
+    .HostConfig.Binds == null and
+    .HostConfig.CapAdd == null and
+    .Mounts == []
+  ' <<<"$inspect" >/dev/null
   if ! printf 'test-jit\n' | timeout 60s docker start --attach --interactive "$container_id" >/dev/null; then
     docker logs --timestamps "$container_id" >&2 || true
     return 1
