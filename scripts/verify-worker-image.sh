@@ -13,14 +13,19 @@ expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$depende
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
-# One jq pass over the already-loaded Config JSON replaces a dozen
-# command-substitution jq forks. error() keeps the exactly-one Env contract
-# that image_env used to enforce. Custom-message checks below stay separate so
-# failure text is unchanged.
+# Test-ReleasePins.ps1 pins these three call sites as the rootless .NET contract.
+# The helper also supplies the exactly-one Env error text.
+image_env() {
+  local name="$1"
+  jq --exit-status --raw-output --arg name "$name" '
+    [.Env[] | select(startswith($name + "="))]
+    | if length == 1 then .[0] else error("expected exactly one " + $name + " image variable") end
+  ' <<<"$config"
+}
+
+# One jq pass for the silent Config assertions. image_env stays for the pinned
+# DOTNET_* checks so the pin fragments and exactly-one error path are unchanged.
 jq --exit-status --arg expected_base_digest "$expected_base_digest" '
-  def env(name):
-    [.Env[] | select(startswith(name + "="))]
-    | if length == 1 then .[0] else error("expected exactly one " + name + " image variable") end;
   .User == "runner" and
   .WorkingDir == "/home/runner" and
   .Cmd == ["/home/runner/run.sh"] and
@@ -31,12 +36,16 @@ jq --exit-status --arg expected_base_digest "$expected_base_digest" '
     == ["ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh"]) and
   ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))]
     == ["ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh"]) and
-  env("DOTNET_INSTALL_DIR") == "DOTNET_INSTALL_DIR=/home/runner/.dotnet" and
-  env("DOTNET_ROOT") == "DOTNET_ROOT=/home/runner/.dotnet" and
-  env("NUGET_PACKAGES") == "NUGET_PACKAGES=/home/runner/.nuget/packages" and
-  (env("PATH") | startswith("PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:")) and
-  env("RUNNER_MANUALLY_TRAP_SIG") == "RUNNER_MANUALLY_TRAP_SIG=1"
+  ([.Env[] | select(startswith("PATH="))] | length == 1) and
+  (([.Env[] | select(startswith("PATH="))][0])
+    | startswith("PATH=/home/runner/.dotnet:/home/runner/.dotnet/tools:")) and
+  ([.Env[] | select(startswith("RUNNER_MANUALLY_TRAP_SIG="))]
+    == ["RUNNER_MANUALLY_TRAP_SIG=1"])
 ' <<<"$config" >/dev/null
+
+[[ "$(image_env DOTNET_INSTALL_DIR)" == 'DOTNET_INSTALL_DIR=/home/runner/.dotnet' ]]
+[[ "$(image_env DOTNET_ROOT)" == 'DOTNET_ROOT=/home/runner/.dotnet' ]]
+[[ "$(image_env NUGET_PACKAGES)" == 'NUGET_PACKAGES=/home/runner/.nuget/packages' ]]
 
 for dynamic_runner_variable in RUNNER_TOOL_CACHE RUNNER_TOOLSDIRECTORY AGENT_TOOLSDIRECTORY; do
   if jq --exit-status --arg name "$dynamic_runner_variable" \
