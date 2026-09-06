@@ -14,7 +14,10 @@ readonly state_directory=/home/runner/_runner_state
 readonly state_file="$state_directory/state"
 
 umask 077
-mkdir --parents "$state_directory"
+# mkdir is the only skippable spawn on the warm path: the worker image and
+# entrypoint already created this directory. `mkdir --parents` stays on the
+# cold path so a missing tree is still created.
+[[ -d "$state_directory" ]] || mkdir --parents "$state_directory"
 temporary="$(mktemp "$state_directory/.state.XXXXXX")"
 trap 'rm --force "$temporary"' EXIT
 printf '%s' "$state" >"$temporary"

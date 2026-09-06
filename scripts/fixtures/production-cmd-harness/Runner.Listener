@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 [[ "$#" == 1 && "$1" == run ]]
-[[ "$(id -u)" == 1001 ]]
+[[ "$EUID" == 1001 ]]
 [[ "$(id -g)" == 1001 ]]
 [[ "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" == test-jit ]]
 [[ "${ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT:-}" == 1 ]]
@@ -18,15 +18,15 @@ mapfile -d '' -t pid1_argv </proc/1/cmdline
 pipe_buffer="$(getconf PIPE_BUF /proc/1/fd/1)"
 [[ "$pipe_buffer" =~ ^[0-9]+$ ]]
 
-initial="$(cat /home/runner/_runner_state/state)"
+initial="$(</home/runner/_runner_state/state)"
 captured_output="$(mktemp)"
 trap 'rm --force "$captured_output"' EXIT
 "$ACTIONS_RUNNER_HOOK_JOB_STARTED" >"$captured_output" 2>&1
 [[ ! -s "$captured_output" ]]
-busy="$(cat /home/runner/_runner_state/state)"
+busy="$(</home/runner/_runner_state/state)"
 "$ACTIONS_RUNNER_HOOK_JOB_COMPLETED" >"$captured_output" 2>&1
 [[ ! -s "$captured_output" ]]
-completed="$(cat /home/runner/_runner_state/state)"
+completed="$(</home/runner/_runner_state/state)"
 
 [[ "$initial" == idle ]]
 [[ "$busy" == busy ]]

@@ -16,6 +16,18 @@ if [[ ! -d "$state_directory" || -L "$state_directory" ]]; then
 fi
 
 missing=()
+# Accept a decimal integer or record the field as missing. Shared by scalar
+# files and key/value stat maps so the degrade path stays one shape.
+take_numeric() {
+  local name="$1" value="${2:-}"
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    REPLY="$value"
+    return
+  fi
+  missing+=("$name")
+  REPLY=0
+}
+
 read_scalar() {
   local name="$1" path="$2" value
   if [[ -r "$path" ]]; then
@@ -23,42 +35,50 @@ read_scalar() {
   else
     value=''
   fi
-  if [[ "$value" =~ ^[0-9]+$ ]]; then
-    REPLY="$value"
-    return
-  fi
-  missing+=("$name")
-  REPLY=0
+  take_numeric "$name" "$value"
 }
 
-read_stat() {
-  local name="$1" path="$2" key="$3" value
-  value=''
-  if [[ -r "$path" ]]; then
-    value="$(awk -v key="$key" '$1 == key && $2 ~ /^[0-9]+$/ { print $2; exit }' "$path")"
-  fi
-  if [[ "$value" =~ ^[0-9]+$ ]]; then
-    REPLY="$value"
-    return
-  fi
-  missing+=("$name")
-  REPLY=0
+# Load a whitespace key/value cgroup file into a nameref associative array.
+# Bash read stays in-process; the previous per-key awk fork (five of them on
+# the complete path) is the spawn-census hotspot this replaces. GNU Bash
+# namerefs: https://www.gnu.org/software/bash/manual/html_node/Shell-Parameters.html
+# Line iteration: https://mywiki.wooledge.org/BashFAQ/001
+read_map() {
+  local read_map_path="$1"
+  local -n read_map_dest="$2"
+  local read_map_key read_map_value
+  # nameref: these writes update the caller associative array, not a local copy.
+  # shellcheck disable=SC2034
+  read_map_dest=()
+  [[ -r "$read_map_path" ]] || return 0
+  while read -r read_map_key read_map_value || [[ -n ${read_map_key:-} ]]; do
+    [[ -n "$read_map_key" ]] || continue
+    # shellcheck disable=SC2034
+    read_map_dest["$read_map_key"]="$read_map_value"
+  done <"$read_map_path"
 }
 
 read_scalar memory.peak "$cgroup_root/memory.peak"
 memory_peak="$REPLY"
 read_scalar memory.swap.peak "$cgroup_root/memory.swap.peak"
 memory_swap_peak="$REPLY"
-read_stat memory.events.oom "$cgroup_root/memory.events" oom
+
+declare -A memory_events=()
+read_map "$cgroup_root/memory.events" memory_events
+take_numeric memory.events.oom "${memory_events[oom]:-}"
 memory_oom="$REPLY"
-read_stat memory.events.oom_kill "$cgroup_root/memory.events" oom_kill
+take_numeric memory.events.oom_kill "${memory_events[oom_kill]:-}"
 memory_oom_kill="$REPLY"
-read_stat cpu.stat.nr_periods "$cgroup_root/cpu.stat" nr_periods
+
+declare -A cpu_stat=()
+read_map "$cgroup_root/cpu.stat" cpu_stat
+take_numeric cpu.stat.nr_periods "${cpu_stat[nr_periods]:-}"
 cpu_periods="$REPLY"
-read_stat cpu.stat.nr_throttled "$cgroup_root/cpu.stat" nr_throttled
+take_numeric cpu.stat.nr_throttled "${cpu_stat[nr_throttled]:-}"
 cpu_throttled="$REPLY"
-read_stat cpu.stat.throttled_usec "$cgroup_root/cpu.stat" throttled_usec
+take_numeric cpu.stat.throttled_usec "${cpu_stat[throttled_usec]:-}"
 cpu_throttled_usec="$REPLY"
+
 read_scalar pids.peak "$cgroup_root/pids.peak"
 pids_peak="$REPLY"
 
@@ -108,9 +128,12 @@ fi
 umask 077
 temporary="$(mktemp "$state_directory/.cgroup-terminal.XXXXXX")" || exit 0
 trap 'rm --force "$temporary"' EXIT
+# --args is jq's documented way to pass remaining argv as $ARGS.positional
+# (https://jqlang.github.io/jq/manual/#invoking-jq). That replaces a nested
+# jq --raw-input --slurp over printf, which spawn-census counted as a second
+# jq on every path including unavailable.
 if ! jq --compact-output --null-input \
   --arg status "$status" \
-  --argjson missing "$(printf '%s\n' "${missing[@]}" | jq --raw-input --slurp 'split("\n") | map(select(length > 0))')" \
   --argjson memory_peak "$memory_peak" \
   --argjson memory_swap_peak "$memory_swap_peak" \
   --argjson memory_oom "$memory_oom" \
@@ -121,11 +144,12 @@ if ! jq --compact-output --null-input \
   --argjson pids_peak "$pids_peak" \
   --argjson io_read_bytes "$io_read_bytes" \
   --argjson io_write_bytes "$io_write_bytes" \
+  --args \
   '{
     schemaVersion: 1,
     source: "cgroup-v2",
     status: $status,
-    missing: $missing,
+    missing: $ARGS.positional,
     memory: {
       peakBytes: $memory_peak,
       swapPeakBytes: $memory_swap_peak,
@@ -139,7 +163,8 @@ if ! jq --compact-output --null-input \
     },
     pids: { peak: $pids_peak },
     io: { readBytes: $io_read_bytes, writeBytes: $io_write_bytes }
-  }' >"$temporary"; then
+  }' \
+  -- "${missing[@]}" >"$temporary"; then
   exit 0
 fi
 evidence_size="$(wc --bytes <"$temporary")" || exit 0
