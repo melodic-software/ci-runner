@@ -3,12 +3,12 @@
 `ci-runner` is the Windows host controller and disposable Linux worker image
 for a small, demand-scaled GitHub Actions fleet. Its purpose is to move eligible
 private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
-`melo-lap-001` without creating a second CI contract. The centrally governed
-routing policy decides whether local capacity is preferred, required, or
-bypassed.
+`melo-lap-001` without creating a second CI contract. There is no routing
+policy: an eligible private job names the governed fleet label
+`melodic-ubuntu-24.04-x64` as a literal, and GitHub queues it for that label.
 
-Both hosts passed their acceptance gates and serve the
-organization's governed `self-hosted-only` routing default. The former
+Both hosts passed their acceptance gates and serve every eligible private job in
+the organization. The former
 Compose/restart-in-place implementation is retired and its files are deleted;
 the only production credential entry point is
 `ci-runner secret import --file PATH`.
@@ -17,8 +17,8 @@ the only production credential entry point is
 
 ```mermaid
 flowchart LR
-    W["Reusable workflow selector"] -->|"managed route"| S["Host-owned scale sets"]
-    W -->|"hosted route"| H["GitHub-hosted ubuntu-24.04"]
+    W["Workflow job"] -->|"names melodic-ubuntu-24.04-x64"| S["Host-owned scale sets"]
+    W -->|"names an approved hosted label"| H["GitHub-hosted ubuntu-24.04"]
     S --> C1["Windows controller\nmelo-desk-001"]
     S --> C2["Windows controller\nmelo-lap-001"]
     C1 --> D1["Fresh one-job Linux containers"]
@@ -45,48 +45,57 @@ with current-user DPAPI and never enter worker containers. The controller talks
 only to the fixed local Docker Engine endpoint and requires a Linux/amd64
 engine; `DOCKER_HOST`, TLS, and API-version environment overrides are ignored.
 
-## Routing and fallback contract
+## Routing contract
 
-Eligible workflows call the central selector in
-[`melodic-software/ci-workflows`](https://github.com/melodic-software/ci-workflows).
-The selector owns routing and fallback; this controller only supplies runners
-inside its governed name and label namespaces. Immutable selector revisions are
-reviewed and allowlisted by the
-[`standards` runner policy](https://github.com/melodic-software/standards/blob/main/components/runner-policy/README.md):
+**There is no selector and no fallback.** ci-perf Phase 7 retired the central
+`select-runner` reusable workflow in
+[`melodic-software/ci-workflows`](https://github.com/melodic-software/ci-workflows)
+(ci-workflows#569, merged as `541ee4e90d12d77a90a3ddd72a3af9bc78634ea7`,
+released as v0.23.0), and melodic-software/standards#556 (merged as
+`771a796628f325c3c418c7b397d09fb7211e2972`) removed the selector grammar from
+the runner-policy component. The three policies this section used to document,
+`hosted-only`, `prefer-self-hosted` and `self-hosted-only`, no longer exist. The
+`CI_RUNNER_POLICY` organization variable that chose between them still exists at
+`self-hosted-only` and reads nowhere: the selector that consumed it is deleted,
+and its removal from the Pulumi program is decided pending the owner's Phase 7
+step 5 apply, so changing it changes nothing.
 
-- `hosted-only` returns the approved GitHub-hosted image;
-- `prefer-self-hosted` chooses a safe online managed namespace and otherwise
-  falls back hosted; and
-- `self-hosted-only` permits only its reviewed managed label and never falls
-  back to paid hosted capacity.
+An eligible private-repository job names the governed fleet label
+`melodic-ubuntu-24.04-x64` as a literal in its own `runs-on`. GitHub queues the
+job for that label, and this controller supplies runners inside its governed
+name and label namespaces exactly as before. What changed is upstream of the
+controller: nothing decides at run time where a job goes. The
+[`standards` runner policy](https://github.com/melodic-software/standards/blob/main/components/runner-policy/README.md)
+admits that literal under its `managed-literal` routing kind and fails a job
+that names anything else without a declared exception.
 
-Adaptive selection treats any matching online ephemeral runner as fleet
-liveness. A busy runner can therefore keep the managed route eligible, and
-GitHub queues the job until matching capacity is available. Security guards,
-invalid inventory, missing adaptive credentials, and API failures retain the
-selector's documented fail-open or fail-closed behavior for the chosen policy.
+A busy runner does not divert work. GitHub queues the job until matching
+capacity is available, which was already the behavior under the retired
+liveness rule and is now structural rather than policy-dependent.
 
-A rerun is not an automatic hosted fallback. Recovery from unavailable local
-capacity first uses the audited
-[`github-iac` routing-control procedure](https://github.com/melodic-software/github-iac/blob/main/README.md#local-ci-routing-governance)
-to make the affected repository's effective policy `hosted-only` and verify the
-readback. Then cancel the affected run and choose **Re-run all jobs** to
-guarantee that the selector executes again; confirm its output selects hosted
-capacity. Do not use a failed-job or single-job rerun for this recovery because
-partial-rerun dependency behavior does not guarantee a fresh selector decision.
-A `workflow_dispatch` creates a separate run with different event and ref
-context; it does not recover the original pull-request check. The hosted queue
-monitor reports the condition; it
-never changes policy, cancels, or replays work automatically. GitHub documents
-the distinct [full and partial rerun
+**Recovery from unavailable local capacity is a pull request, not a variable.**
+The audited `github-iac` routing-control procedure is deleted with the workflow
+that implemented it (github-iac#453, merged as
+`4c5937e6b6067552d11b87abef04620191dda503`). A job that must reach hosted
+capacity declares a `hosted-exception-required` key with a justification in its
+repository's own `.github/runner-policy.json`, which is reviewed in a diff.
+A rerun changes nothing about placement: there is no selector verdict to
+recompute, so **Re-run all jobs** and a failed-job rerun are equivalent as far
+as routing is concerned. Do not re-run a stale run on a superseded head SHA in a
+pull request whose concurrency group key does not vary with the head; that
+hazard is unrelated to routing and is recorded in github-iac
+`docs/topics/ci-perf/POSTURE.md` under "Stale re-runs". A `workflow_dispatch`
+still creates a separate run with different event and ref context and does not
+recover the original pull-request check. GitHub documents the distinct
+[full and partial rerun
 operations](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
 and [`workflow_dispatch` event
 context](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
 
-The adaptive/hosted selector's two-minute `ubuntu-slim` control job is
-independent of downstream job timeouts. Strict `self-hosted-only` selection
-keeps that control job on the reviewed managed label so it does not spend hosted
-minutes. A selected build/test job can outlive either selector control path.
+The two-minute `ubuntu-slim` selector control job is gone with the selector, so
+it no longer sits in front of a build. The decision record is
+[github-iac ADR 0014](https://github.com/melodic-software/github-iac/blob/main/docs/adr/0014-fleet-first-ci-for-private-repositories.md),
+which supersedes ADR 0004.
 
 Authoritative behavior:
 
@@ -419,10 +428,13 @@ reviewed and are never auto-merged. Deployment uses a versioned install
 directory plus `current` junction; how many known-good pairs are retained is a
 floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
 
-Rollback order is: set routing `hosted-only`, drain without killing work,
-restore the prior immutable pair, restore the prior reusable-workflow SHA if
-needed, then use **Re-run all jobs** for affected workflows and confirm hosted
-selection.
+Rollback order is: drain without killing work, restore the prior immutable pair,
+restore the prior reusable-workflow SHA if needed, then use **Re-run all jobs**
+for affected workflows. The first step used to be flipping routing to
+`hosted-only`; there is no routing variable to flip, so a fleet the rollback
+cannot restore means the affected jobs queue until it is back, or a
+`hosted-exception-required` key lands in the consumer repository's own
+`.github/runner-policy.json`. Plan the rollback window accordingly.
 
 ## Troubleshooting
 

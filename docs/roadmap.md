@@ -22,8 +22,12 @@ Docker-daemon workloads remain GitHub-hosted. A future backend may run them in
 a disposable Linux VM whose Docker daemon, filesystem, and runner identity are
 destroyed after one job. The host Docker socket must never be mounted or proxied
 into a worker. The backend must preserve JIT registration, external diagnostics,
-resource admission, graceful drain, and the audited hosted-only cutoff with a
-full workflow rerun that recomputes selector eligibility.
+resource admission, and graceful drain. The audited hosted-only cutoff it used
+to have to preserve is gone: ci-perf Phase 7 retired the selector, so there is
+no eligibility to recompute on a rerun and no routing variable to cut over
+with. A backend that cannot serve a job leaves that job queued on the fleet
+label until it can, unless the consumer repository declares a
+`hosted-exception-required` key in its own `.github/runner-policy.json`.
 
 This work is motivated by GitHub's warning that self-hosted runners can be
 persistently compromised by workflow code and Docker's warning that daemon
@@ -80,8 +84,10 @@ but it must not depend on the monitored schedule or the local fleet.
 
 Cost reporting may automate the same GitHub billing-usage summary used for the
 rollout baseline. It must keep private billing data out of this public
-repository, separate selector spend from workload spend, and normalize by
-eligible completed jobs before claiming savings.
+repository and normalize by eligible completed jobs before claiming savings.
+There is no longer any selector spend to separate from workload spend: the
+selector's two-minute `ubuntu-slim` control job is retired with the selector
+itself.
 
 - [GitHub billing usage API](https://docs.github.com/en/rest/billing/usage)
 - [GitHub scheduled-event limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
