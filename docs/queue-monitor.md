@@ -96,17 +96,20 @@ instruction:
 
 > Confirm the managed runner host is running a release that includes the latest
 > capacity and reconciliation fixes (at least `v0.1.21` / current `main` tip)
-> before changing routing. An unrebuilt host on an older controller will keep
+> before escalating. An unrebuilt host on an older controller will keep
 > queuing work against dead capacity even when `main` already carries the fix.
 >
-> Then follow the audited CI routing-control procedure to make the affected
-> repository's effective `CI_RUNNER_POLICY` value `hosted-only` and verify the
-> readback. Cancel the affected run, choose **Re-run all jobs** to guarantee
-> that the selector executes again, and confirm that it selects hosted capacity.
-> Do not use a failed-job or single-job rerun for this recovery because
-> partial-rerun dependency behavior does not guarantee a fresh selector
-> decision. A `workflow_dispatch` creates a separate run with different event
-> and ref context; it does not recover the original pull-request check.
+> There is no routing cutoff to reach for. ci-perf Phase 7 deleted the
+> `select-runner` selector and the audited CI routing-control procedure, so
+> `CI_RUNNER_POLICY` no longer exists and no rerun changes where a job runs:
+> **Re-run all jobs** and a failed-job rerun are equivalent for routing. Queued
+> work waits for fleet capacity to return, so recovery is bringing a host back.
+> Moving a job to hosted capacity is not an incident-time action: it needs a
+> per-job `exceptions` entry in the affected repository's
+> `.github/runner-policy.json` plus a `runs-on` change, and the `reason` must
+> already be a member of the governed set, which has no fleet-outage member. A
+> `workflow_dispatch` creates a separate run with different event and ref
+> context; it does not recover the original pull-request check.
 
 The monitor never changes policy, cancels, reruns, dispatches, or mutates a
 workload. The central selector applies its policy-driven routing rules on every
