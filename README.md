@@ -7,8 +7,9 @@ private-repository CI from paid GitHub-hosted runners onto `melo-desk-001` and
 policy: an eligible private job names the governed fleet label
 `melodic-ubuntu-24.04-x64` as a literal, and GitHub queues it for that label.
 
-Both hosts passed their acceptance gates and serve every eligible private job in
-the organization. The former
+Both hosts passed their acceptance gates and serve every private job that names
+the fleet label, which is every eligible private job that does not hold a
+declared hosted exception. The former
 Compose/restart-in-place implementation is retired and its files are deleted;
 the only production credential entry point is
 `ci-runner secret import --file PATH`.
@@ -58,7 +59,8 @@ the runner-policy component. The three policies this section used to document,
 `CI_RUNNER_POLICY` organization variable that chose between them still exists at
 `self-hosted-only` and reads nowhere: the selector that consumed it is deleted,
 and its removal from the Pulumi program is decided pending the owner's Phase 7
-step 5 apply, so changing it changes nothing.
+step 5 apply, so changing it changes nothing. github-iac `OrgCiRouting.cs` still
+declares it, unprotected ahead of that apply.
 
 An eligible private-repository job names the governed fleet label
 `melodic-ubuntu-24.04-x64` as a literal in its own `runs-on`. GitHub queues the
@@ -448,9 +450,12 @@ for affected workflows. The first step used to be flipping routing to
 `hosted-only`; there is no routing variable to flip and no consumer-side
 substitute, so a fleet the rollback cannot restore means the affected jobs
 queue until it is back. Plan the rollback window accordingly: the fleet's
-availability is now the whole of private CI's availability, and the only
-shortcut is a governed change to the standards runner policy, not an edit in
-the affected repository.
+availability is now the availability of every private job that routes to it,
+which is all of them except the ones already holding a hosted exception. There
+is no quick shortcut either, because widening the reason set is a governed
+change to the standards runner policy **and** each affected repository still
+needs its own per-job `exceptions` entry and a `runs-on` change before anything
+routes differently.
 
 ## Troubleshooting
 
