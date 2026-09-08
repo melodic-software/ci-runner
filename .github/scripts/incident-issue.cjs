@@ -2,11 +2,11 @@
 
 // The marker-deduped incident-issue alert channel shared by this repository's
 // scheduled monitors (the fleet's established alert-per-incident pattern; see
-// link-check.yml and queue-monitor-liveness.yml in ci-workflows). Each monitor
-// owns its own marker namespace, title, and body; everything here is the part
-// that must behave identically for all of them, because a divergence in the
-// adoption or escaping rules is a security regression rather than a style
-// difference.
+// link-check.yml and standards-sync-stuck-automerge-alert.yml in ci-workflows).
+// Each monitor owns its own marker namespace, title, and body; everything here
+// is the part that must behave identically for all of them, because a
+// divergence in the adoption or escaping rules is a security regression rather
+// than a style difference.
 
 // GitHub's issue/comment write endpoints reject a body over 65536
 // characters (observed API error "Body is too long (maximum is 65536
