@@ -435,8 +435,6 @@ failed job or worker; see
 ## Further documentation
 
 - [Worker image and isolation contract](docs/worker-image.md)
-- [Queue-monitor behavior and scheduler limits](docs/queue-monitor.md)
-- [Actions budget monitor](docs/actions-budget-monitor.md)
 - [OpenTelemetry observability](docs/observability.md)
 - [Immutable releases, freshness, and rollback](docs/releases.md)
 - [Deferred capabilities and non-workaround boundaries](docs/roadmap.md)
