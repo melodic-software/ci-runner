@@ -55,9 +55,8 @@ longer fails the run. By-design reds here used to pollute fleet-wide failure
 dashboards and, since scheduled runs have no actor, reached nobody who wasn't
 watching the Actions tab. Detection instead upserts a marker-deduped incident
 issue in this repository — the fleet's established alert-per-incident pattern
-(see `link-check.yml`, `queue-monitor-liveness.yml`, and
-`standards-sync-stuck-automerge-alert.yml` in `melodic-software/ci-workflows`):
-one open issue per target owner, titled
+(see `link-check.yml` and `standards-sync-stuck-automerge-alert.yml` in
+`melodic-software/ci-workflows`): one open issue per target owner, titled
 `[Alert] Managed runner queue capacity — <owner>` and carrying a hidden
 `<!-- ci-runner:queued-job-monitor:incident:<owner> -->` marker in its body,
 silently updated in place on repeat detections (an edited issue body notifies

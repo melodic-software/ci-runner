@@ -161,12 +161,12 @@ function renderStuckMarkdownTable(stuck, { maxRows = MAX_STUCK_TABLE_ROWS, runUr
 }
 
 // Marker-deduped issue-per-incident alert channel (the fleet's established
-// pattern; see link-check.yml and queue-monitor-liveness.yml in ci-workflows).
-// Runs on the job's own GITHUB_TOKEN against the monitor's home repository —
-// distinct from the read-only, target-scoped observer token the detection
-// step uses, which cannot write issues here. Any thrown error here fails the
-// run: an incident-issue write failure is the monitor breaking, not a queue
-// alert.
+// pattern; see link-check.yml and standards-sync-stuck-automerge-alert.yml in
+// ci-workflows). Runs on the job's own GITHUB_TOKEN against the monitor's home
+// repository — distinct from the read-only, target-scoped observer token the
+// detection step uses, which cannot write issues here. Any thrown error here
+// fails the run: an incident-issue write failure is the monitor breaking, not a
+// queue alert.
 async function upsertIncident({ github, core, env = process.env, now = Date.now() }) {
   const targetOwner = env.TARGET_OWNER;
   const [homeOwner, homeRepo] = (env.GITHUB_REPOSITORY || '').split('/');
