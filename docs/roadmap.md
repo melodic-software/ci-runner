@@ -26,8 +26,9 @@ resource admission, and graceful drain. The audited hosted-only cutoff it used
 to have to preserve is gone: ci-perf Phase 7 retired the selector, so there is
 no eligibility to recompute on a rerun and no routing variable to cut over
 with. A backend that cannot serve a job leaves that job queued on the fleet
-label until it can, unless the consumer repository declares a
-`hosted-exception-required` key in its own `.github/runner-policy.json`.
+label until it can. No `hostedExceptionReasons` member expresses a fleet
+outage, so there is no consumer-side escape; a backend whose unavailability
+must not block CI needs that case designed in, not waived per repository.
 
 This work is motivated by GitHub's warning that self-hosted runners can be
 persistently compromised by workflow code and Docker's warning that daemon

@@ -73,12 +73,25 @@ A busy runner does not divert work. GitHub queues the job until matching
 capacity is available, which was already the behavior under the retired
 liveness rule and is now structural rather than policy-dependent.
 
-**Recovery from unavailable local capacity is a pull request, not a variable.**
-The audited `github-iac` routing-control procedure is deleted with the workflow
-that implemented it (github-iac#453, merged as
-`4c5937e6b6067552d11b87abef04620191dda503`). A job that must reach hosted
-capacity declares a `hosted-exception-required` key with a justification in its
-repository's own `.github/runner-policy.json`, which is reviewed in a diff.
+**There is no consumer-side recovery from an unavailable fleet.** The audited
+`github-iac` routing-control procedure is deleted with the workflow that
+implemented it (github-iac#453, merged as
+`4c5937e6b6067552d11b87abef04620191dda503`), and nothing replaces it. Affected
+jobs queue on the fleet label until a host returns.
+
+The `exceptions` mechanism does **not** cover this case, and reaching for it
+will fail. A job that needs hosted capacity declares an entry under `exceptions`
+in its repository's own `.github/runner-policy.json`, keyed
+`<workflow path>#<jobId>`, carrying a `justification` and a `reason` that must
+be a member of the closed `hostedExceptionReasons` set: `dependabot`,
+`docker-socket`, `job-container`, `privileged-control-plane`, `publication`,
+`service-container`, `windows`. **None of those expresses "the fleet is
+down"**, and a `reason` outside the set is rejected by the analyzer. Granting a
+fleet-outage escape would mean adding a member to that set, which is a governed
+change to `melodic-software/standards` and its synced `policy.json`, not
+something a consumer repository can do for itself.
+(`hosted-exception-required` is the finding the analyzer raises when a required
+entry is missing, not a key anyone writes.)
 A rerun changes nothing about placement: there is no selector verdict to
 recompute, so **Re-run all jobs** and a failed-job rerun are equivalent as far
 as routing is concerned. Do not re-run a stale run on a superseded head SHA in a
@@ -93,9 +106,10 @@ and [`workflow_dispatch` event
 context](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
 
 The two-minute `ubuntu-slim` selector control job is gone with the selector, so
-it no longer sits in front of a build. The decision record is
-[github-iac ADR 0014](https://github.com/melodic-software/github-iac/blob/main/docs/adr/0014-fleet-first-ci-for-private-repositories.md),
-which supersedes ADR 0004.
+it no longer sits in front of a build. The decision record is github-iac ADR
+0014, which supersedes ADR 0004. It is added by melodic-software/github-iac#466
+and is not on that repository's `main` yet, so cite the pull request until it
+merges.
 
 Authoritative behavior:
 
@@ -431,10 +445,12 @@ floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
 Rollback order is: drain without killing work, restore the prior immutable pair,
 restore the prior reusable-workflow SHA if needed, then use **Re-run all jobs**
 for affected workflows. The first step used to be flipping routing to
-`hosted-only`; there is no routing variable to flip, so a fleet the rollback
-cannot restore means the affected jobs queue until it is back, or a
-`hosted-exception-required` key lands in the consumer repository's own
-`.github/runner-policy.json`. Plan the rollback window accordingly.
+`hosted-only`; there is no routing variable to flip and no consumer-side
+substitute, so a fleet the rollback cannot restore means the affected jobs
+queue until it is back. Plan the rollback window accordingly: the fleet's
+availability is now the whole of private CI's availability, and the only
+shortcut is a governed change to the standards runner policy, not an edit in
+the affected repository.
 
 ## Troubleshooting
 
