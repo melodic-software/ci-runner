@@ -29,7 +29,7 @@ the exact-SHA-pinned reusable Go-quality workflow. Its repository-local build
 lane only cross-compiles the Windows executables, and active 30-second fuzzing
 per target runs only on the weekly schedule or a manual dispatch. A release tag
 still starts with a separate read-only job that reruns module verification, vet,
-tests, race tests, vulnerability scanning, queue-monitor tests, Actionlint with
+tests, race tests, vulnerability scanning, workflow-script tests, Actionlint with
 ShellCheck, Zizmor, Windows compilation, official-source dependency freshness,
 and a local worker-image contract build against that exact tag. Only the
 dependent publication job receives the combined job-scoped `contents:write`,
