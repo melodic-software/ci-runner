@@ -45,16 +45,21 @@ test('splitList accepts comma and newline separated configuration', () => {
   assert.deepEqual(splitList('medley, standards\nci-runner'), ['medley', 'standards', 'ci-runner']);
 });
 
-test('recovery requires a verified hosted-only cutoff and fresh selector evaluation', () => {
-  assert.match(routingRecoverySummary, /audited CI routing-control procedure/);
-  assert.match(routingRecoverySummary, /effective `CI_RUNNER_POLICY` value `hosted-only`/);
-  assert.match(routingRecoverySummary, /Re-run all jobs/);
-  assert.match(routingRecoverySummary, /guarantee that the selector executes again/);
-  assert.match(routingRecoverySummary, /partial-rerun dependency behavior/);
+test('recovery is bringing a host back, with no routing cutoff to reach for', () => {
+  assert.match(routingRecoverySummary, /no routing cutoff to reach for/);
+  assert.match(routingRecoverySummary, /Re-run all jobs.*are equivalent for routing/);
+  assert.match(routingRecoverySummary, /recovery is bringing a host back/);
+  assert.match(routingRecoverySummary, /not an incident-time action/);
   assert.match(routingRecoverySummary, /does not recover the original pull-request check/);
   assert.match(routingRecoverySummary, /at least `v0\.1\.21`/);
   assert.match(routingRecoverySummary, /Confirm the managed runner host is running a release/);
   assert.doesNotMatch(routingRecoverySummary, /retry(?:ing)? (?:the )?workload/i);
+  // Phase 7 deleted the selector and the routing-control procedure. Naming them
+  // as retired is fine; LINKING a responder to the dead procedure, or telling
+  // one to set the deleted variable, is what this guard forbids.
+  assert.doesNotMatch(routingRecoverySummary, /\]\(https:\/\/github\.com\/melodic-software\/github-iac[^)]*local-ci-routing-governance\)/);
+  assert.doesNotMatch(routingRecoverySummary, /make the affected repository's effective/);
+  assert.doesNotMatch(routingRecoverySummary, /`CI_RUNNER_POLICY` value `hosted-only`/);
 });
 
 test('queries every GitHub nonterminal run status and deduplicates runs', async () => {
