@@ -439,7 +439,7 @@ Releases produce an immutable pair:
   Set Client, Go, PowerShell, Buildx, BuildKit, and SBOM-generator pins together.
 
 Dependencies and Actions are exact pins. Daily official-source drift evidence
-opens an issue within 24 hours and hard-fails after 14 days; updates remain
+is uploaded as a workflow artifact and hard-fails after 14 days; updates remain
 reviewed and are never auto-merged. Deployment uses a versioned install
 directory plus `current` junction; how many known-good pairs are retained is a
 floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).

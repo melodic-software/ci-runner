@@ -36,7 +36,6 @@ const expectedCiWorkflowsCallers = [
   ["ci.yml", ".github/actions/typos"],
   ["ci.yml", ".github/workflows/go-quality.yml"],
   ["ci.yml", ".github/workflows/zizmor.yml"],
-  ["link-check.yml", ".github/workflows/link-check.yml"],
 ];
 
 function workflowSource(name) {
@@ -158,7 +157,7 @@ function ciWorkflowsPin() {
   assert.deepEqual(
     callers.sort(),
     expectedCiWorkflowsCallers,
-    "every lane, link-check and gate caller must stay inventoried; adding or removing one is a reviewed change",
+    "every lane and gate caller must stay inventoried; adding or removing one is a reviewed change",
   );
   assert.equal(
     new Set(references).size,

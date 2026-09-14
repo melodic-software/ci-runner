@@ -89,11 +89,6 @@
       "commit": "a1d282b36b6f3519aa1f3fc636f609c47dddb294"
     },
     {
-      "repository": "actions/github-script",
-      "version": "9.0.0",
-      "commit": "3a2844b7e9c422d3c10d287c895573f7108da1b3"
-    },
-    {
       "repository": "actions/setup-go",
       "version": "7.0.0",
       "commit": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
