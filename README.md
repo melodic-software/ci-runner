@@ -329,9 +329,8 @@ zero-margin behavior; the margin is required only by schema version 2.
 ## Credential boundary
 
 The organization host App has only organization **Self-hosted runners: write**;
-each physical host gets a distinct private key. A separate observer App is
-read-only. Personal-repository host credentials are introduced only after the
-organization soak gate.
+each physical host gets a distinct private key. Personal-repository host
+credentials are introduced only after the organization soak gate.
 
 `ci-runner secret import` validates RSA PKCS#1/PKCS#8 PEM, BitLocker protection,
 current-user DPAPI protection, and exact current-user/SYSTEM ACLs. Before it
@@ -439,7 +438,7 @@ Releases produce an immutable pair:
   Set Client, Go, PowerShell, Buildx, BuildKit, and SBOM-generator pins together.
 
 Dependencies and Actions are exact pins. Daily official-source drift evidence
-opens an issue within 24 hours and hard-fails after 14 days; updates remain
+is uploaded as a workflow artifact and hard-fails after 14 days; updates remain
 reviewed and are never auto-merged. Deployment uses a versioned install
 directory plus `current` junction; how many known-good pairs are retained is a
 floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
@@ -468,8 +467,6 @@ failed job or worker; see
 ## Further documentation
 
 - [Worker image and isolation contract](docs/worker-image.md)
-- [Queue-monitor behavior and scheduler limits](docs/queue-monitor.md)
-- [Actions budget monitor](docs/actions-budget-monitor.md)
 - [OpenTelemetry observability](docs/observability.md)
 - [Immutable releases, freshness, and rollback](docs/releases.md)
 - [Deferred capabilities and non-workaround boundaries](docs/roadmap.md)

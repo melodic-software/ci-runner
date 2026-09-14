@@ -77,11 +77,7 @@ documented in [Observability](observability.md).
 
 - [OpenTelemetry protocol specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md)
 
-## Independent monitor and cost evidence
-
-The public scheduled queue monitor cannot prove its own freshness. A future
-independent control plane may alert when that schedule is disabled or stale,
-but it must not depend on the monitored schedule or the local fleet.
+## Cost evidence
 
 Cost reporting may automate the same GitHub billing-usage summary used for the
 rollout baseline. It must keep private billing data out of this public
@@ -91,4 +87,3 @@ selector's two-minute `ubuntu-slim` control job is retired with the selector
 itself.
 
 - [GitHub billing usage API](https://docs.github.com/en/rest/billing/usage)
-- [GitHub scheduled-event limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
