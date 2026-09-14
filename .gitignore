@@ -2,7 +2,7 @@
 # the retired Compose era — keep it unstageable in this public repository.
 .env
 
-# Generated release and scheduled-monitor evidence.
+# Generated release and dependency freshness evidence.
 dist/
 dependency-drift.json
 

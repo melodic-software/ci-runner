@@ -23,12 +23,6 @@ const (
 	// the next save compacts it back under the cap instead of bricking the
 	// index until someone hand-edits state.
 	maximumJobStateLoad = 4 * maximumJobState
-
-	// MaximumJobStateBytes exports the save cap for read-only observers
-	// (health watch), which compare record subsets against it rather than
-	// restating the limit. It is the ceiling saves commit under, not the 4x
-	// load tolerance above.
-	MaximumJobStateBytes = maximumJobState
 )
 
 type FileStore struct {
@@ -197,28 +191,6 @@ func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, res
 	return merged, nil
 }
 
-// SnapshotBytes returns one committed jobs.json document, taken under the
-// store lock so the read can never collide with a concurrent save's atomic
-// replace (see readCatalogBytes for why out-of-lock reads are unsafe on
-// Windows). A missing file returns ErrNotFound. It is the read surface for
-// out-of-process observers (health watch); the raw bytes carry the on-disk
-// size, and DecodeCatalog turns them into records.
-func (s *FileStore) SnapshotBytes(ctx context.Context) (contents []byte, resultErr error) {
-	unlock, err := s.locker.Lock(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lock jobs index: %w", err)
-	}
-	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
-	contents, err = readCatalogBytes(filepath.Join(s.directory, jobsFilename))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return contents, nil
-}
-
 func (s *FileStore) loadUnlocked() (Catalog, error) {
 	contents, err := readCatalogBytes(filepath.Join(s.directory, jobsFilename))
 	if errors.Is(err, os.ErrNotExist) {
@@ -268,8 +240,7 @@ func readCatalogBytes(path string) (contents []byte, resultErr error) {
 
 // DecodeCatalog strictly decodes one jobs.json document and validates it,
 // enforcing the load safety limit. It performs no locking and no
-// assign-times hydration, so read-only observers (health watch) can decode a
-// snapshot without contending with the live controller.
+// assign-times hydration.
 func DecodeCatalog(contents []byte) (Catalog, error) {
 	if len(contents) > maximumJobStateLoad {
 		return Catalog{}, fmt.Errorf("jobs.json exceeds the %d-byte load safety limit", maximumJobStateLoad)
@@ -393,24 +364,13 @@ func encodeWithinCapacity(catalog *Catalog) ([]byte, []Record, error) {
 }
 
 // encodeCatalog is the one jobs.json encoding: every byte count compared
-// against MaximumJobStateBytes must come from this shape.
+// against the save cap must come from this shape.
 func encodeCatalog(catalog Catalog) ([]byte, error) {
 	encoded, err := json.MarshalIndent(catalog, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode jobs.json: %w", err)
 	}
 	return append(encoded, '\n'), nil
-}
-
-// EncodedCatalogSize returns the byte size the catalog would occupy on disk,
-// using the same encoding a save commits, so callers can compare a record
-// subset against MaximumJobStateBytes without re-deriving the format.
-func EncodedCatalogSize(catalog Catalog) (int, error) {
-	encoded, err := encodeCatalog(catalog)
-	if err != nil {
-		return 0, err
-	}
-	return len(encoded), nil
 }
 
 // compactOldestTombstones removes the oldest tombstoned records, sized from
@@ -448,14 +408,12 @@ func terminalTime(record Record) time.Time {
 }
 
 // CompactableUnderCapacityPressure reports whether a save that breaches
-// MaximumJobStateBytes may reclaim the record: tombstoned records (tier 1)
+// the save cap may reclaim the record: tombstoned records (tier 1)
 // and closed terminal records that are not still the durable active-job
 // mapping (tier 2). A finalized record whose job completion has not arrived
 // yet is still the mapping ActiveJob and worker enrichment rely on; evicting
 // it would unmark a busy worker until the event lands. Records outside this
-// predicate are the only ones that can permanently wedge index writes, which
-// makes it the boundary between designed cap saturation and a genuine
-// capacity fault for read-only observers (health watch).
+// predicate are the only ones that can permanently wedge index writes.
 func CompactableUnderCapacityPressure(record Record) bool {
 	if record.TombstonedAt != nil {
 		return true

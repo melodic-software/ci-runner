@@ -122,8 +122,8 @@ Authoritative references:
 
 ## Freshness policy
 
-The scheduled drift check runs every day against official release APIs, the
-Node.js LTS index, GHCR manifest, Go module proxy, analyzer release feeds, and GitHub's Ubuntu
+The release workflow's freshness gate runs on every publication against
+official release APIs, the Node.js LTS index, GHCR manifest, Go module proxy, analyzer release feeds, and GitHub's Ubuntu
 24.04 hosted-image manifest. PowerShell tracks the hosted manifest rather than
 getting ahead of it, preserving cloud parity. SBOM generation executes Anchore's
 exact Syft image digest with no network, a read-only filesystem, no capabilities,
@@ -141,9 +141,11 @@ installer or `latest`:
 
 A partial drain may advance mechanical toolchain and publication pins while
 holding a cross-repository SHA pin such as `melodic-software/ci-workflows`.
-Record the reviewed hold in `release/dependency-drift-review.json`; the daily
-freshness monitor continues to report the held row until a dedicated
-compatibility PR moves every reference together.
+Record the reviewed hold in `release/dependency-drift-review.json`; the release
+freshness gate continues to report the held row until a dedicated
+compatibility PR moves every reference together. No scheduled run exists; run
+`scripts/Test-DependencyFreshness.ps1` by hand to check freshness between
+releases.
 
 GitHub progressively deploys runner versions. A release PR therefore must also
 confirm the version offered in the organization runner setup UI/API before
@@ -154,8 +156,8 @@ update-disabled runners, which stops queuing jobs to a runner more than 30 days
 behind the latest release and pauses queuing immediately when a critical
 security update is published. The 14-day hard-fail satisfies the 30-day rule
 with margin. The critical/CVE clause has no grace period the drift check could
-beat: the check is daily-scheduled detection (up to ~24 h latency, alerting
-only — it neither rebuilds nor stops deployed workers), so the required
+beat: the check runs only when a release is published or someone runs it by
+hand, and it neither rebuilds nor stops deployed workers, so the required
 control for a critical release is the expedited rebuild fast-path in the
 provisioning rolling-upgrade runbook, with GitHub's platform-side queuing
 pause as the enforcement backstop. This reconciliation is a maintained

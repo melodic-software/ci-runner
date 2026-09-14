@@ -41,6 +41,9 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	if err := errors.Join(loadErr, closeErr); err != nil {
 		return reportConfigLoadFailure(out, errOut, requestsJSONConfigValidation(commandArgs), "load", configPath, err)
 	}
+	for _, warning := range cfg.Warnings {
+		writef(errOut, "warning: %s\n", warning)
+	}
 	if len(commandArgs) > 0 && commandArgs[0] == "config" {
 		return runConfigCommand(cfg, commandArgs[1:], out, errOut)
 	}
@@ -92,7 +95,6 @@ func RunMain(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 			Cleaner:             newWorkerArtifactMaintenance(cfg, acl, jobs),
 		},
 		Jobs: jobs,
-		ACL:  acl,
 		Doctor: NewLocalDoctorInspector(cfg, acl, bitLocker, secretStore, func(ctx context.Context) (string, string, error) {
 			return dockerruntime.ProbeLocal(ctx, buildinfo.Version)
 		}),

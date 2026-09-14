@@ -24,8 +24,8 @@ script runs inside the worker.
   compatibility packages come from Ubuntu 24.04.
 
 The immutable evidence and original source URLs are recorded in
-`release/dependencies.json`. The daily drift workflow independently resolves the
-official feeds and opens or refreshes an issue when a reviewed pin is behind.
+`release/dependencies.json`. The release workflow's freshness gate independently
+resolves the official feeds and blocks publication when a reviewed pin is stale.
 
 Authoritative references:
 
