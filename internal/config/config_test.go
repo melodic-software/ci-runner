@@ -111,23 +111,25 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultsHealthWatchdog(t *testing.T) {
+// TestLoadIgnoresLegacyHealthWatchdog proves a host configuration that still
+// carries the deprecated healthWatchdog block loads under strict decoding and
+// reports a warning, while a configuration without it reports none.
+func TestLoadIgnoresLegacyHealthWatchdog(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(strings.NewReader(validYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HealthWatchdog.CheckInterval.Duration != defaultHealthWatchCheckInterval {
-		t.Fatalf("checkInterval = %s, want %s", cfg.HealthWatchdog.CheckInterval.Duration, defaultHealthWatchCheckInterval)
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", cfg.Warnings)
 	}
-	if cfg.HealthWatchdog.HeartbeatStaleMultiplier != defaultHealthWatchHeartbeatMultiplier {
-		t.Fatalf("heartbeatStaleMultiplier = %d", cfg.HealthWatchdog.HeartbeatStaleMultiplier)
+	legacy := validYAML + "healthWatchdog:\n  alertWebhook: https://example.invalid/hook\n  checkInterval: 1m\n  heartbeatStaleMultiplier: 3\n  jobsSizeWarningPercent: 90\n"
+	cfg, err = Load(strings.NewReader(legacy))
+	if err != nil {
+		t.Fatalf("legacy healthWatchdog block must still load: %v", err)
 	}
-	if cfg.HealthWatchdog.WorkerDivergenceGrace.Duration != defaultHealthWatchWorkerDivergenceGrace {
-		t.Fatalf("workerDivergenceGrace = %s", cfg.HealthWatchdog.WorkerDivergenceGrace.Duration)
-	}
-	if cfg.HealthWatchdog.JobsSizeWarningPercent != defaultHealthWatchJobsSizeWarningPercent {
-		t.Fatalf("jobsSizeWarningPercent = %d", cfg.HealthWatchdog.JobsSizeWarningPercent)
+	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "healthWatchdog") {
+		t.Fatalf("warnings = %q, want one naming healthWatchdog", cfg.Warnings)
 	}
 }
 

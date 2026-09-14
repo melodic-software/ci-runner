@@ -20,7 +20,6 @@ import (
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/controller"
-	"github.com/melodic-software/ci-runner/internal/healthwatch"
 	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -75,7 +74,6 @@ type Dependencies struct {
 	ForceStop       ForceStopper
 	Logs            *FileLogs
 	Jobs            *jobindex.FileStore
-	ACL             healthwatch.AccessController
 	Control         ControllerControl
 	Doctor          DoctorInspector
 	Processes       host.ProcessObserver
@@ -157,8 +155,6 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 		return a.controllerCommand(ctx, args[1:])
 	case "reboot":
 		return a.reboot(ctx, args[1:])
-	case "health-watch":
-		return a.healthWatch(ctx, args[1:])
 	default:
 		writef(a.errOut, "unknown host command %q\n", args[0])
 		return ExitUsage
@@ -603,8 +599,6 @@ func (a *Application) usage() {
   ci-runner host controller restart
 	ci-runner host controller stop-for-update
   ci-runner host reboot [--timeout DURATION] [--force] [--dry-run]
-  ci-runner host health-watch check [--json] [--no-alert]
-  ci-runner host health-watch install-task --config PATH [--executable PATH]
   ci-runner secret import --file PATH
   ci-runner [--config PATH] config validate [--json]`)
 }

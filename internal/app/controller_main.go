@@ -74,6 +74,9 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 	logEvent := func(code, message string) {
 		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: code, Message: message})
 	}
+	for _, warning := range cfg.Warnings {
+		logEvent("config-warning", warning)
+	}
 	fail := func(code string, err error) error {
 		if err != nil {
 			logEvent(code, err.Error())

@@ -76,20 +76,25 @@ func (s *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type Config struct {
-	SchemaVersion  int            `yaml:"schemaVersion"`
-	Host           Host           `yaml:"host"`
-	Controller     Controller     `yaml:"controller"`
-	Release        Release        `yaml:"release"`
-	GitHub         GitHub         `yaml:"github"`
-	Resources      Resources      `yaml:"resources"`
-	Power          Power          `yaml:"power"`
-	Drain          Drain          `yaml:"drain"`
-	DockerDesktop  DockerDesktop  `yaml:"dockerDesktop"`
-	WorkerImage    WorkerImage    `yaml:"workerImage"`
-	Logs           Logs           `yaml:"logs"`
-	Telemetry      Telemetry      `yaml:"telemetry"`
-	HealthWatchdog HealthWatchdog `yaml:"healthWatchdog"`
-	Paths          Paths          `yaml:"paths"`
+	SchemaVersion int           `yaml:"schemaVersion"`
+	Host          Host          `yaml:"host"`
+	Controller    Controller    `yaml:"controller"`
+	Release       Release       `yaml:"release"`
+	GitHub        GitHub        `yaml:"github"`
+	Resources     Resources     `yaml:"resources"`
+	Power         Power         `yaml:"power"`
+	Drain         Drain         `yaml:"drain"`
+	DockerDesktop DockerDesktop `yaml:"dockerDesktop"`
+	WorkerImage   WorkerImage   `yaml:"workerImage"`
+	Logs          Logs          `yaml:"logs"`
+	Telemetry     Telemetry     `yaml:"telemetry"`
+	Paths         Paths         `yaml:"paths"`
+	// LegacyHealthWatchdog accepts the deprecated top-level healthWatchdog
+	// block so a host configuration written for an older release still loads
+	// under strict decoding. Its contents are ignored and Load adds a warning.
+	LegacyHealthWatchdog any `yaml:"healthWatchdog"`
+	// Warnings lists non-fatal problems Load found in the document.
+	Warnings []string `yaml:"-"`
 }
 
 type Telemetry struct {
@@ -329,36 +334,6 @@ type Paths struct {
 	Diagnostics string `yaml:"diagnostics"`
 }
 
-// HealthWatchdog configures the independent same-host health monitor invoked by
-// `ci-runner host health-watch check`. Every field is optional; Load applies
-// documented defaults when omitted.
-type HealthWatchdog struct {
-	AlertWebhook  string   `yaml:"alertWebhook"`
-	CheckInterval Duration `yaml:"checkInterval"`
-	// HeartbeatStaleMultiplier scales controller.reconcileInterval into the
-	// stale-heartbeat threshold. The effective threshold never drops below
-	// the host's derived observed-state freshness bound — the same bound
-	// doctor's observed-state check uses — because heartbeat age within that
-	// bound is legitimate load, not failure; raise the multiplier only to
-	// tolerate staleness beyond it.
-	HeartbeatStaleMultiplier int      `yaml:"heartbeatStaleMultiplier"`
-	WorkerDivergenceGrace    Duration `yaml:"workerDivergenceGrace"`
-	// JobsSizeWarningPercent thresholds the encoded size of the jobs.json
-	// records capacity compaction may never reclaim (open, or awaiting a
-	// terminal marker) as a percentage of the save cap — not the total file
-	// size, which the save loop pins at the cap by design at steady state.
-	JobsSizeWarningPercent int      `yaml:"jobsSizeWarningPercent"`
-	AlertCooldown          Duration `yaml:"alertCooldown"`
-}
-
-const (
-	defaultHealthWatchCheckInterval          = time.Minute
-	defaultHealthWatchHeartbeatMultiplier    = 3
-	defaultHealthWatchWorkerDivergenceGrace  = 5 * time.Minute
-	defaultHealthWatchJobsSizeWarningPercent = 90
-	defaultHealthWatchAlertCooldown          = 15 * time.Minute
-)
-
 // Load reads exactly one YAML document, rejects unknown fields, and validates
 // every field before returning it to policy code.
 func Load(r io.Reader) (Config, error) {
@@ -399,29 +374,15 @@ func Load(r io.Reader) (Config, error) {
 	if cfg.WorkerImage.PullTimeout.Duration == 0 {
 		cfg.WorkerImage.PullTimeout.Duration = defaultWorkerImagePullTimeout
 	}
-	applyHealthWatchdogDefaults(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
+	if len(document.Content) == 1 {
+		if _, present := yamlMappingValue(document.Content[0], "healthWatchdog"); present {
+			cfg.Warnings = append(cfg.Warnings, "healthWatchdog is no longer supported and is ignored; remove it from the host configuration")
+		}
+	}
 	return cfg, nil
-}
-
-func applyHealthWatchdogDefaults(cfg *Config) {
-	if cfg.HealthWatchdog.CheckInterval.Duration == 0 {
-		cfg.HealthWatchdog.CheckInterval.Duration = defaultHealthWatchCheckInterval
-	}
-	if cfg.HealthWatchdog.HeartbeatStaleMultiplier == 0 {
-		cfg.HealthWatchdog.HeartbeatStaleMultiplier = defaultHealthWatchHeartbeatMultiplier
-	}
-	if cfg.HealthWatchdog.WorkerDivergenceGrace.Duration == 0 {
-		cfg.HealthWatchdog.WorkerDivergenceGrace.Duration = defaultHealthWatchWorkerDivergenceGrace
-	}
-	if cfg.HealthWatchdog.JobsSizeWarningPercent == 0 {
-		cfg.HealthWatchdog.JobsSizeWarningPercent = defaultHealthWatchJobsSizeWarningPercent
-	}
-	if cfg.HealthWatchdog.AlertCooldown.Duration == 0 {
-		cfg.HealthWatchdog.AlertCooldown.Duration = defaultHealthWatchAlertCooldown
-	}
 }
 
 func validateResourceSchemaSyntax(document *yaml.Node) error {
@@ -745,7 +706,6 @@ func (c Config) Validate() error {
 		add(errors.New("logs.workerFinalizationTimeout: must be positive"))
 	}
 	add(validateTelemetry(c.Telemetry))
-	add(validateHealthWatchdog(c.HealthWatchdog))
 	paths := []struct {
 		name string
 		path string
@@ -803,32 +763,6 @@ func validateTelemetry(value Telemetry) error {
 		}
 		if value.MetricExportTimeout.Duration <= 0 {
 			problems = append(problems, errors.New("telemetry.metricExportTimeout: must be positive when metrics are enabled"))
-		}
-	}
-	return errors.Join(problems...)
-}
-
-func validateHealthWatchdog(value HealthWatchdog) error {
-	var problems []error
-	if value.CheckInterval.Duration <= 0 {
-		problems = append(problems, errors.New("healthWatchdog.checkInterval: must be positive"))
-	}
-	if value.HeartbeatStaleMultiplier < 1 {
-		problems = append(problems, errors.New("healthWatchdog.heartbeatStaleMultiplier: must be at least 1"))
-	}
-	if value.WorkerDivergenceGrace.Duration <= 0 {
-		problems = append(problems, errors.New("healthWatchdog.workerDivergenceGrace: must be positive"))
-	}
-	if value.JobsSizeWarningPercent < 1 || value.JobsSizeWarningPercent > 100 {
-		problems = append(problems, errors.New("healthWatchdog.jobsSizeWarningPercent: must be between 1 and 100"))
-	}
-	if value.AlertCooldown.Duration <= 0 {
-		problems = append(problems, errors.New("healthWatchdog.alertCooldown: must be positive"))
-	}
-	if value.AlertWebhook != "" {
-		u, err := url.Parse(value.AlertWebhook)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-			problems = append(problems, errors.New("healthWatchdog.alertWebhook: must be an http or https URL without credentials"))
 		}
 	}
 	return errors.Join(problems...)
