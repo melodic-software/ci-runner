@@ -61,7 +61,7 @@ publication job that performs this check.
 The image base, GitHub Actions, analyzers, and publication actions are immutable
 pins. Same-line release comments allow Dependabot to recognize SHA-pinned
 Actions. Every external Action also appears in `release/dependencies.json`; the
-daily official-release check validates its current tag and tag-to-commit
+release workflow's freshness gate validates its current tag and tag-to-commit
 mapping. Update PRs are review-only and are never auto-merged.
 
 On a first run, the workflow pushes the BuildKit result without a tag, pulls and
