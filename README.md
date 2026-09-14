@@ -329,9 +329,8 @@ zero-margin behavior; the margin is required only by schema version 2.
 ## Credential boundary
 
 The organization host App has only organization **Self-hosted runners: write**;
-each physical host gets a distinct private key. A separate observer App is
-read-only. Personal-repository host credentials are introduced only after the
-organization soak gate.
+each physical host gets a distinct private key. Personal-repository host
+credentials are introduced only after the organization soak gate.
 
 `ci-runner secret import` validates RSA PKCS#1/PKCS#8 PEM, BitLocker protection,
 current-user DPAPI protection, and exact current-user/SYSTEM ACLs. Before it
