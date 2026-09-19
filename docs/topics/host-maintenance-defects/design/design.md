@@ -148,7 +148,7 @@ no defensible value (see O1).
 
 **Stated residual:** a job whose artifact write outlives `policy.Retention` has its live temp deleted
 by the age lane. `config.go:774` validates only `Retention > 0`, so nothing forbids a retention
-shorter than a job. This is pre-existing behaviour, not introduced by Stage 2. See O1.
+shorter than a job. This is pre-existing behavior, not introduced by Stage 2. See O1.
 
 ### D3 — `referenced` is populated per-path, not all-or-nothing
 
@@ -266,7 +266,7 @@ housekeeping one.
   fourteen days — against a `cleanupEvery: 24h`. `artifacts_test.go` uses `Retention: time.Hour`, and
   `config.go:774` validates only `> 0`, so a tripping configuration is invited by the code but is not
   the one in force.
-- **O2 — is `CleanupNow`'s complete-inventory contract honoured by callers?** Carried unresolved from
+- **O2 — is `CleanupNow`'s complete-inventory contract honored by callers?** Carried unresolved from
   `CONSENSUS-precedence.md` §Could not verify. D1 raises its stakes: an incomplete inventory now
   costs a missing `referenced` entry, not just a missing candidate exclusion. The failure remains
   fail-safe in one direction only — a container absent from the inventory loses its protection.
@@ -283,7 +283,7 @@ window" — mechanism confirmed, **frequency effectively nil under the current n
 Consequences, and they cut both ways:
 
 - **D1's urgency drops.** Class 2 is a real hazard but a rare one, so the adoption-derived
-  `referenced` is defence-in-depth rather than the load-bearing protection revision 3 assumed.
+  `referenced` is defense-in-depth rather than the load-bearing protection revision 3 assumed.
   D1 is still worth implementing — it is cheap, fails safe, and closes class 3 for live workers as a
   side effect — but Phase 2.3 should not be blocked on it.
 - **The ordering claim above is weakened, not reversed.** "2.2 is separable from 2.3" now holds more
@@ -307,7 +307,7 @@ question O2 below.
 ## Answered while running this gate
 
 - **Can `OpenLog` write an artifact whose base name the adoption inventory cannot re-derive?** No.
-  `OpenLog` fails closed on degraded or partially-labelled metadata — see D1's load-bearing check.
+  `OpenLog` fails closed on degraded or partially-labeled metadata — see D1's load-bearing check.
 
 ## Answered, and closed
 
