@@ -1874,7 +1874,7 @@ func (r *blockingFinalizationTelemetry) WorkerFinalized(ctx context.Context, poo
 
 // captureLogs closes the sink's log writer as its last act before publishing
 // the capture result, so that close is the drain signal a test can wait on.
-// Signalling container exit before it lands opens the finalization deadline
+// Signaling container exit before it lands opens the finalization deadline
 // against a log goroutine that may not have been scheduled yet, which fails as
 // a stream that never closed rather than as the defect under test.
 type drainSignalingArtifacts struct {

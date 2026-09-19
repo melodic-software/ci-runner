@@ -62,12 +62,12 @@ directories conformant), and any change to `classifyAllShell`.
 `logs.go`).
 
 **Stage 2 order is audit-first, and that is load-bearing.** The audit is read-only and lands before
-either change to deletion behaviour, so it is the instrument that verifies them and lets the operator
+either change to deletion behavior, so it is the instrument that verifies them and lets the operator
 see which of the measured 2239 MiB is genuinely unreferenced *before* anything can act on it. It also
 supplies the only satisfiable form of Phase 2.2's check.
 
 **Design gate:** `/planning:design`, light, scoped to **all three Stage 2 phases** when Stage 2 is
-cut — not 2.1 and 2.3 only. Phase 2.2 carries the livelock and the `Merge`-signalling blast radius
+cut — not 2.1 and 2.3 only. Phase 2.2 carries the livelock and the `Merge`-signaling blast radius
 and is the phase that most needs it. Stage 1 is Tier C (localized fix, config, docs) and early-exits
 the gate.
 
@@ -248,7 +248,7 @@ machine's own `Permission Surface Edits` soft_deny by its own stated purpose.
 **Layer 1 is real enforcement, now grounded.** `RESEARCH-gate-semantics.md` §A settles what was
 DERIVED-not-stated: `classifyAllShell` is scoped to *allow* rules in both of its documentation
 surfaces, and nothing documents deny or ask as suspendable. `PLAN-REVIEW.md`'s "could not verify" on
-this point and `CONSENSUS-fresh.md` F7's contradiction are both resolved in the plan's favour.
+this point and `CONSENSUS-fresh.md` F7's contradiction are both resolved in the plan's favor.
 
 **This phase may not work, and that is stated up front.** A shipped `Read-Only Operations` allow entry
 was already present at index 4 when `gh issue list` was observed blocked, so layer 3 is the same shape
@@ -318,7 +318,7 @@ re-open proposal via D5. Read `design/design.md` before implementing any phase b
 
 ### Phase 2.1: First-class audit and reference-based purge [TODO]
 
-`ci-runner`. Lands **before** any change to deletion behaviour. `host logs --cleanup` cannot reach
+`ci-runner`. Lands **before** any change to deletion behavior. `host logs --cleanup` cannot reach
 orphans newer than the retention cutoff, has no dry-run, returns bare `error`, and discards the
 `referenced` set and `total` it already computes.
 
