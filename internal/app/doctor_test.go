@@ -647,6 +647,94 @@ func TestDoctorDoesNotReportCapacityStarvedWhileWorkIsActive(t *testing.T) {
 	}
 }
 
+func TestDoctorDisabledModeStaysHealthyAndNamesPostRebootEnable(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseDisabled))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseDisabled, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want healthy disabled mode; output:\n%s", code, out.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, out.String())
+	}
+	check := doctorCheckNamed(t, result.Checks, "desired-state")
+	if !check.Healthy {
+		t.Fatalf("desired-state = %#v, want healthy for an intentional disable", check)
+	}
+	if !strings.Contains(check.Detail, "host enable") || !strings.Contains(check.Detail, "reboot") || !strings.Contains(check.Detail, "desired.json") {
+		t.Fatalf("desired-state detail = %q, want host enable and reboot persistence", check.Detail)
+	}
+}
+
+func TestDoctorEnabledModeDoesNotRequireHostEnable(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+	_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now, model.PhaseReady))
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseReady, Version: "1.2.3"}}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json"}); code != ExitOK {
+		t.Fatalf("doctor exit code = %d, want healthy enabled mode; output:\n%s", code, out.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, out.String())
+	}
+	check := doctorCheckNamed(t, result.Checks, "desired-state")
+	if !check.Healthy || check.Detail != string(model.ModeEnabled) {
+		t.Fatalf("desired-state = %#v, want healthy detail %q", check, model.ModeEnabled)
+	}
+	if strings.Contains(check.Detail, "host enable") || strings.Contains(check.Detail, "reboot") {
+		t.Fatalf("enabled mode was told to enable or persist across reboot: %q", check.Detail)
+	}
+}
+
+func TestDoctorMissingDesiredStateSaysRebootDoesNotEnable(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := state.NewMemoryStore()
+	application, out, _ := newTestApplication(t, "", store, nil)
+	application.dependencies.Config = doctorTestConfig()
+	application.dependencies.Now = func() time.Time { return now }
+	application.dependencies.Control = doctorControlFake{err: control.ErrUnavailable}
+	application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusStopped}}
+	application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+	if code := application.Run(context.Background(), []string{"host", "doctor", "--json"}); code != ExitDegraded {
+		t.Fatalf("doctor exit code = %d, want degraded while desired state is missing; output:\n%s", code, out.String())
+	}
+	var result struct {
+		Checks []DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, out.String())
+	}
+	check := doctorCheckNamed(t, result.Checks, "desired-state")
+	if check.Healthy || !strings.Contains(check.Detail, "run host enable, disable, or game") || !strings.Contains(check.Detail, "reboot does not enable") {
+		t.Fatalf("desired-state = %#v, want uninitialized guidance that a reboot does not enable", check)
+	}
+}
+
 func doctorTestConfig() config.Config {
 	return config.Config{
 		Controller: config.Controller{
