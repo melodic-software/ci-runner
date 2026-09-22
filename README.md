@@ -159,16 +159,21 @@ drains capacity and restarts the machine without changing the file.
 `host enable` writes `desired.json` even when a reconcile pass is already in
 flight. The controller compares admission intent (mode, schema version, and
 any temporary capacity override) with the file it loaded for that pass and
-cancels the pass when they differ. The open listener poll then returns
-`context.Canceled`, the canceled pass is dropped, and reconciliation reruns
-immediately so the new mode is advertised without waiting out the poll. That
-cancellation is not a scale-set failure. It is not recorded as
-`desktop-final-status-error` or `worker-final-inventory-error`: those codes
-are written only when a pass that reaches the end of the step fails its final
-Docker Desktop status or managed-worker inventory call, and a safety-input
-cancellation returns before those calls. The canceled pass also does not
-persist `phase=degraded`. `host doctor` reads the current `observed.json`
-checkpoint, which stays at the previous pass until the retry writes a new one.
+cancels the pass when they differ. That cancellation is not a scale-set
+failure. `Step` reruns immediately so the new mode is advertised without
+waiting out the listener poll.
+
+If the file changes while that poll is still open, the pass returns before
+the final Docker Desktop status and managed-worker inventory calls. It does
+not record `desktop-final-status-error` or `worker-final-inventory-error`,
+and it does not persist `phase=degraded`. `observed.json` stays at the
+previous checkpoint until the retry writes a new one.
+
+If the file changes after that poll-time check, including during worker
+cleanup, the rest of the pass still runs. The final probes then see a
+canceled context and can record those two problem codes, and the checkpoint
+is persisted as `phase=degraded` before the retry replaces it. `host doctor`
+in that window reports the degraded checkpoint even though enable succeeded.
 
 No normal timeout implies force. Busy jobs finish naturally, including drains
 longer than the warning threshold. `force-stop` is a separate destructive path
