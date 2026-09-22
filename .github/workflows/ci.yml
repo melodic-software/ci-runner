@@ -37,9 +37,9 @@ permissions:
 #
 # Contract-only branch: `ci-contract-<pr>-<run_id>`, unique per run. No
 # contract-only run can be cancelled, evict anything, or be evicted. That is
-# deliberate. The previous shape relied on a contract-only run queueing behind
+# deliberate. The previous shape relied on a contract-only run queuing behind
 # the full run whose `ci-lanes` status it reads, but eviction of a PENDING run
-# is unconditional in GitHub's queueing ("any existing pending job or workflow
+# is unconditional in GitHub's queuing ("any existing pending job or workflow
 # in the same concurrency group will be canceled") and is NOT governed by
 # `cancel-in-progress`, so a shared group let one event evict another and leave
 # a check suite on the current head with no `ci-status` check run at all, a
@@ -53,7 +53,7 @@ permissions:
 # name from cancelling each other's required runs. The fallback term is the
 # per-repository push decision, and `github.run_id` is this repository's: every
 # push, schedule and dispatch run gets its own group and therefore no push-side
-# burst collapse, which is the behaviour the previous key already had.
+# burst collapse, which is the behavior the previous key already had.
 #
 # The cost of the branch: a contract-only run no longer queues behind the full
 # run whose `ci-lanes` status it carries forward, so the two race. The
