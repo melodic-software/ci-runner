@@ -149,6 +149,32 @@ Modes are persisted separately from checked-in configuration:
 - `gaming` drains CI, stops Docker Desktop, shuts down every WSL distribution,
   verifies both are down, and remains down across logons.
 
+Desired mode is `state\desired.json`, and that file survives reboot. This
+module does not rewrite it to `enabled` when the machine boots or when the
+`ci-runner-fleet` logon task starts the controller. A host left `disabled` by
+`host disable` therefore comes back disabled, and `ci-runner host enable` is
+required before CI resumes. `gaming` persists the same way. `host reboot`
+drains capacity and restarts the machine without changing the file.
+
+`host enable` writes `desired.json` even when a reconcile pass is already in
+flight. The controller compares admission intent (mode, schema version, and
+any temporary capacity override) with the file it loaded for that pass and
+cancels the pass when they differ. That cancellation is not a scale-set
+failure. `Step` reruns immediately so the new mode is advertised without
+waiting out the listener poll.
+
+If the file changes while that poll is still open, the pass returns before
+the final Docker Desktop status and managed-worker inventory calls. It does
+not record `desktop-final-status-error` or `worker-final-inventory-error`,
+and it does not persist `phase=degraded`. `observed.json` stays at the
+previous checkpoint until the retry writes a new one.
+
+If the file changes after that poll-time check, including during worker
+cleanup, the rest of the pass still runs. The final probes then see a
+canceled context and can record those two problem codes, and the checkpoint
+is persisted as `phase=degraded` before the retry replaces it. `host doctor`
+in that window reports the degraded checkpoint even though enable succeeded.
+
 No normal timeout implies force. Busy jobs finish naturally, including drains
 longer than the warning threshold. `force-stop` is a separate destructive path
 that inventories affected jobs and requires typed confirmation. `Ctrl+C` while
@@ -202,6 +228,15 @@ window, invoke a shell, request elevation or UAC, or terminate the draining
 controller. Battery, resource admission, drain, Docker Desktop, and WSL policy
 remain in the shared Go state machine.
 
+The logon task `ci-runner-enable-on-logon` is installed by
+[melodic-software/provisioning](https://github.com/melodic-software/provisioning),
+not by this module, and this repository does not define its exit codes. When
+that task was started while Docker Desktop's engine was down, it exited 5:
+`wsl.exe` in Docker's context failed with "The file cannot be accessed by the
+system". The recovery that restored the host was `docker desktop restart`,
+then a stop and start of the `ci-runner-fleet` task, then
+`ci-runner host enable --wait`.
+
 ## Configuration and ownership
 
 The checked-in, nonsecret host YAML is owned by
@@ -224,7 +259,7 @@ Mutable local state is separate:
 
 ```text
 %LOCALAPPDATA%\ci-runner\
-  state\desired.json       # user-owned mode and temporary capacity override
+  state\desired.json       # user-owned mode; survives reboot (enable to leave disabled)
   state\observed.json      # controller heartbeat, pools, workers, problems, drain reason
   state\jobs.json          # exact job-to-artifact correlation
   state\restart-completed.json # last authenticated restart completion receipt
@@ -237,6 +272,12 @@ Mutable local state is separate:
 Permanent capacity and threshold changes are YAML changes, never source-code
 changes. A menu capacity override is local state and can be reset to the
 checked-in value. Provisioning must not overwrite desired mode.
+
+`state\desired.json` keeps the last operator mode across reboot. Boot and
+logon do not flip a persisted `disabled` mode to `enabled`; `host enable` is
+required to resume runners. A missing file is not created as `enabled`: the
+next reconcile writes `disabled` as a fail-safe, which still does not resume
+CI.
 
 One diagnostics policy governs both copied runner stdout and compressed `_diag`
 archives. `maxFileSize`, `rawDiagnosticMaxInput`, retention, total-cap, and

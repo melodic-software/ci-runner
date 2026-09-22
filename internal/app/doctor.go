@@ -26,6 +26,17 @@ type DoctorCheck struct {
 	Detail   string `json:"detail"`
 }
 
+func desiredStateDetail(mode model.Mode) string {
+	switch mode {
+	case model.ModeDisabled:
+		return "disabled; persisted in desired.json across reboot; ci-runner host enable is required to resume runners"
+	case model.ModeGaming:
+		return "gaming; persisted in desired.json across reboot"
+	default:
+		return string(mode)
+	}
+}
+
 func (a *Application) doctor(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("host doctor", flag.ContinueOnError)
 	flags.SetOutput(a.errOut)
@@ -43,12 +54,12 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	desiredValid := false
 	switch {
 	case errors.Is(desiredErr, state.ErrNotFound):
-		checks = append(checks, DoctorCheck{Name: "desired-state", Healthy: false, Detail: "not initialized; run host enable, disable, or game"})
+		checks = append(checks, DoctorCheck{Name: "desired-state", Healthy: false, Detail: "not initialized; run host enable, disable, or game; a reboot does not enable the host"})
 	case desiredErr != nil:
 		checks = append(checks, DoctorCheck{Name: "desired-state", Healthy: false, Detail: desiredErr.Error()})
 	default:
 		desiredValid = desired.Mode.Valid()
-		checks = append(checks, DoctorCheck{Name: "desired-state", Healthy: desiredValid, Detail: string(desired.Mode)})
+		checks = append(checks, DoctorCheck{Name: "desired-state", Healthy: desiredValid, Detail: desiredStateDetail(desired.Mode)})
 	}
 
 	var liveStatus *control.Status
