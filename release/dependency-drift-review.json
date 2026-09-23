@@ -1,111 +1,61 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-21T07:40:00.0000000Z",
-  "issue": 283,
-  "cycle": "2026-08-21",
+  "reviewedAt": "2026-09-23T12:00:00.0000000Z",
+  "issue": null,
+  "cycle": "2026-09-23",
   "held": [],
   "bumped": [
     {
-      "dependency": "go",
-      "from": "1.26.6",
-      "to": "1.27.1",
-      "reviewedAt": "2026-09-02T06:00:00.0000000Z",
-      "cycle": "2026-09-02",
+      "dependency": "docker-buildx",
+      "from": "0.36.1",
+      "to": "0.37.1",
       "decision": "bump",
-      "rationale": "The 2026-08-21 hold's recorded exit condition is met: golangci-lint v2.13.0 (go1.27 support, golangci/golangci-lint#6643) shipped 2026-08-19 and v2.13.1 on 2026-08-20, and ci-workflows v0.17.2 (already on main after #309) absorbs 2.13.1 into the shared go-quality reusable, so CI and the AGENTS.md local contract can both lint a go1.27 module. The coupled qualification the hold called for was performed rather than assumed: go1.27.1 build, vet, and the full test suite pass, the CGO_ENABLED=0 GOOS=windows cross-compile of ./cmd/... succeeds, and golangci-lint v2.13.1 built with GOTOOLCHAIN=go1.27.1 reports 0 issues, matching the v2.12.2/go1.26.6 baseline — the feared errcheck 1.10->1.20 and exhaustruct-deprecation delta surfaces no findings on this codebase. Go 1.27.1 is chosen over 1.27.0 because the 2026-09-01 patch (https://go.dev/doc/devel/release) includes encoding/json and net/http regression fixes versus 1.27.0 (2026-08-19); this module parses compatibility manifests, Docker API responses, and runner job JSON and speaks HTTP as a client, so the patch is the safer adoption target. Go 1.27's encoding/json v2 switch (rejects invalid UTF-8 and duplicate object names) is the one behavior change with real exposure here; the existing suite, including the internal/control transport fuzz corpus, is the qualification surface. This bump also relieves freshness pressure: go1.26.7 (2026-08-19) and go1.27.0 (2026-08-19) published the same day, go1.27.1 followed on 2026-09-01, and the freshness check dates the row from the earliest unadopted tag, so holding 1.26.6 trips the 14-day hard fail.",
+      "rationale": "Release-gate drain for v0.1.25: v0.37.0 (2026-09-02) is the first unadopted release, so the row passed the 14-day hard fail. v0.37.1 (2026-09-11, https://github.com/docker/buildx/releases/tag/v0.37.1) is the latest stable release. The buildx-v0.37.1.linux-amd64 checksum 9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b matches the GitHub release asset digest, the release checksums.txt, and an independent download hash. The v0.37.0 and v0.37.1 notes document no provenance, SBOM, or imagetools behavior change; v0.37.1 fixes builder-removal cleanup being tied to the status timeout. scripts/install-verified-buildx.sh reads the version and checksum from this manifest, so no script change is needed.",
       "requiresFleetRollout": true,
-      "rolloutNote": "Go is a compatibility-pair input (release/dependencies.json go.version flows into compatibility.json). Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
+      "rolloutNote": "Buildx version and checksum are compatibility-pair inputs (scripts/New-CompatibilityManifest.ps1). Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
     },
     {
-      "dependency": "github-action:docker/setup-buildx-action",
-      "from": "4.2.0",
-      "to": "4.3.0",
+      "dependency": "moby-buildkit",
+      "from": "0.32.2",
+      "to": "0.33.0",
       "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. v4.3.0 (2026-08-19) is JS dependency updates only (@docker/actions-toolkit 0.92.0→0.95.0, brace-expansion, js-yaml, postcss, undici) with no input/behavior changes. Tag v4.3.0 resolves to commit 37fe631027851001ddb9b187196cc803df7f5f0e. Frontier consensus (Fable + Sol) unanimously chose BUMP_BUILDX."
+      "rationale": "Release-gate drain for v0.1.25: v0.33.0 (2026-09-02, https://github.com/moby/buildkit/releases/tag/v0.33.0) is the latest stable release and passed the 14-day hard fail. `docker buildx imagetools inspect moby/buildkit:v0.33.0` against Docker Hub returns OCI index digest sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 and linux/amd64 manifest digest sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d; the manifest and all three builder driver-opts pins (ci.yml worker-image lane, release.yml twice) move together, which also clears the moby-buildkit-image-digest integrity row. The notes update the built-in Dockerfile frontend to v1.27.0 and raise the maximum exporter attestation size to 80 MiB; no provenance buildType or SBOM-generator protocol change is documented. The CI worker-image lane builds with provenance and SBOM disabled, so only a release run exercises the attestation path on this BuildKit.",
+      "requiresFleetRollout": true,
+      "rolloutNote": "BuildKit version and digests are compatibility-pair inputs (scripts/New-CompatibilityManifest.ps1). Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
     },
     {
       "dependency": "repository-pin:melodic-software/ci-workflows",
-      "from": "7107b34832a7b6db5d08d3b132621c599fbe5e50",
-      "fromVersion": "v0.14.2",
-      "to": "d26c750691b5498fab529d115b63f84aa7aecebe",
-      "toVersion": "v0.17.0",
+      "from": "2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3",
+      "fromVersion": "v0.24.0",
+      "to": "de644a0a80d78096a9f6074710f913eed13c9a91",
+      "toVersion": "v0.26.0",
       "decision": "bump",
-      "rationale": "The 2026-08-14 hold's recorded exit condition is met: ci-workflows published v0.17.0 targeting exactly d26c750691b5498fab529d115b63f84aa7aecebe. Every uses: reference moves together in this dedicated compatibility PR. Gate reusables (semantic-pr, do-not-merge-gate, pr-issue-linkage, link-check, zizmor) are unchanged vs v0.14.2; go-quality.yml carries the already-reviewed govulncheck update. Frontier consensus (Fable + Sol) unanimously chose BUMP_CI_WORKFLOWS."
+      "rationale": "Release-gate drain for v0.1.25: the first unadopted commit after v0.24.0 dated past the 14-day hard fail. Pinned to the published v0.26.0 release (2026-09-22), whose tag resolves to de644a0a80d78096a9f6074710f913eed13c9a91 (gh api repos/melodic-software/ci-workflows/commits/v0.26.0); every ci.yml uses: reference and the repositoryPins entry move together, and managed-files-guard.yml stays on its standards-sync pin. Compare 2c1de45...de644a0 (16 commits, v0.25.0 and v0.26.0) reviewed for caller impact: the breaking #585/#586 deletions remove lefthook-validate, tsc, link-check.yml, drift trackers, and Claude lanes, none of which this repository calls, and a clone at de644a0 shows no consumed composite or reusable references a deleted file. Among consumed components, go-quality.yml is byte-identical, zizmor.yml only bumps github/codeql-action/upload-sarif to v4.38.0, check-jsonschema adds an optional default-filetype input and setup-uv v10.1.0, typos adds an optional hidden input defaulting to false, and markdown changes a comment only. No input, secret, or permission change requires a caller edit. Default-branch HEAD 3e12cd1 is 9 unreleased commits past v0.26.0, dated from 2026-09-22, so the row reports as drift below the hard fail until the next published release.",
+      "requiresFleetRollout": false
     },
     {
-      "dependency": "github-hosted-powershell",
-      "from": "7.6.4",
-      "to": "7.6.5",
-      "reviewedAt": "2026-08-27T08:00:00.0000000Z",
-      "cycle": "2026-08-27",
+      "dependency": "govulncheck",
+      "from": "1.7.0",
+      "to": "1.8.0",
       "decision": "bump",
-      "rationale": "PowerShell tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity. The manifest at commit c5170d2845dc0eb0f22853ec70bd4f1c891112ca (2026-08-21) lists PowerShell 7.6.5, so adopting 7.6.5 restores parity rather than leading it. v7.6.5 is a servicing patch over v7.6.4: one engine fix (dot-sourcing behavior of `pwsh -file` for advanced-function scripts), .NET SDK 10.0.302, Microsoft.PowerShell.Archive 1.2.6, and packaging changes; the release notes document no breaking change and no security fix. The archive checksum was verified independently by downloading the asset and hashing it, not only by reading the release metadata. The same manifest still lists GitHub CLI 2.97.0, so the gh version pin is unchanged and only its hostedImageManifestCommit evidence reference moves to the manifest actually consulted.",
-      "requiresFleetRollout": true,
-      "rolloutNote": "PowerShell is baked into the worker image (Dockerfile POWERSHELL_VERSION / POWERSHELL_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
-      "reviewNote": "Recorded by an automated drain lane and proposed, not promoted: it ships as a review-only pull request carrying the do-not-merge label, per the docs/releases.md rule that controller, runner, image, toolchain, Scale Set Client, Action, and release changes are never auto-merged. The go hold above is unchanged by this row and is addressed in its own pull request."
-    },
-    {
-      "dependency": "actions-runner",
-      "from": "2.336.0",
-      "to": "2.337.0",
-      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
-      "cycle": "2026-09-02",
-      "decision": "bump",
-      "rationale": "Dependabot PR #316 cannot land: it only rewrote the Dockerfile FROM line to ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 and left release/dependencies.json, OCI base labels, and docs/worker-image.md on 2.336.0. Test-ReleasePins.ps1 and verify-worker-image.sh require those files to move with the image. Org still offers 2.337.0 (gh api orgs/melodic-software/actions/runners/downloads linux-x64). GHCR multi-platform index digest sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4 was confirmed from the GHCR OCI index Docker-Content-Digest header and the tagged GHCR package version. linux-x64 archive sha256 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 matches the org download checksum, the GitHub release asset digest, and an independent download hash. The drift table HARD FAIL on 2.337.0 is a regex false positive: Test-DependencyFreshness.ps1 treats a release body matching (?i)\\bcritical\\b|\\bsecurity\\b|CVE-[0-9]{4}-[0-9]+ as critical, and v2.337.0 notes include Dependabot bumps of System.Security.Cryptography.Pkcs and System.Security.Cryptography.ProtectedData. The upstream release (https://github.com/actions/runner/releases/tag/v2.337.0) is not a critical/CVE: no CVE identifier, no security advisory, routine SDK/tooling/dependency updates plus VSock secret notifier, websocket retry NRE fix, DAP debugger masking, HTTP Retry-After, and Docker/Buildx updates.",
-      "requiresFleetRollout": true,
-      "rolloutNote": "The official runner binary and GHCR base image are baked into the worker image. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
-      "reviewNote": "Do not treat #316 as the complete pin bump."
+      "rationale": "Release-gate drain for v0.1.25: golang.org/x/vuln v1.8.0 was published 2026-09-08 (https://proxy.golang.org/golang.org/x/vuln/@v/v1.8.0.info, tag hash 709015412431dd2b5b28a53c06c70bc02d49074c) and passed the 14-day hard fail. The release.yml publication step and this manifest move together. `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` against this branch reports no vulnerabilities. Publication analyzer only: no fleet rollout.",
+      "requiresFleetRollout": false
     },
     {
       "dependency": "github-hosted-gh",
-      "from": "2.97.0",
-      "to": "2.98.0",
-      "reviewedAt": "2026-09-02T06:30:00.0000000Z",
-      "cycle": "2026-09-02",
+      "from": "2.98.0",
+      "to": "2.100.0",
       "decision": "bump",
-      "rationale": "GitHub CLI tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it, preserving cloud parity (same policy as PowerShell). The current hosted rail at runner-images commit cbb8df97e1dd32af7cb23a90590f12734ec11d0b (2026-08-28) lists GitHub CLI 2.98.0, so adopting 2.98.0 restores parity rather than leading it. The linux_amd64 archive checksum 3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de was verified independently by downloading gh_2.98.0_linux_amd64.tar.gz and hashing it, and it matches both the GitHub release asset digest and gh_2.98.0_checksums.txt. v2.98.0 also documents GHSA-vfhh-p7hm-pxfh (gh codespace ports forward binding the local forwarded port to all interfaces); hosted-image parity is still the adoption gate.",
+      "rationale": "GitHub CLI tracks GitHub's Ubuntu 24.04 hosted-image manifest rather than getting ahead of it. The latest manifest commit the freshness script resolves, actions/runner-images cf6f08e1bc2b902d44a33500d2c4c63b65882bce (2026-09-11, https://github.com/actions/runner-images/blob/cf6f08e1bc2b902d44a33500d2c4c63b65882bce/images/ubuntu/Ubuntu2404-Readme.md), lists GitHub CLI 2.100.0, and v2.99.0 (2026-09-01) is the first unadopted eligible release, so the row passed the 14-day hard fail. The gh_2.100.0_linux_amd64.tar.gz checksum e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be matches the GitHub release asset digest, gh_2.100.0_checksums.txt, and an independent download hash. The v2.99.0 and v2.100.0 notes carry no security advisory or documented breaking change. The same manifest still lists PowerShell 7.6.5, so the PowerShell pin is unchanged and only its hostedImageManifestCommit evidence reference moves to the manifest consulted.",
       "requiresFleetRollout": true,
-      "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone.",
-      "reviewNote": "Recorded together with the actions-runner 2.337.0 bump because both are worker-image pins."
-    },
-    {
-      "dependency": "github-action:zizmorcore/zizmor-action",
-      "from": "0.6.2",
-      "to": "0.6.3",
-      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
-      "cycle": "2026-09-02",
-      "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. v0.6.3 (2026-08-30) sets zizmor 1.30.0 as the default wrapper version; the action.yml input contract is unchanged. Lightweight tag v0.6.3 resolves to commit 70fb788f84895a7701f5643d103d587e460b5c99. CI-only Action: no worker-image or fleet rollout.",
-      "requiresFleetRollout": false
-    },
-    {
-      "dependency": "zizmor",
-      "from": "1.29.0",
-      "to": "1.30.0",
-      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
-      "cycle": "2026-09-02",
-      "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. v1.30.0 (2026-08-30) adds the self-repository audit plus pre-commit-config support for several existing audits; the release workflow already passes an explicit version: input to zizmor-action. Analyzer used at publication time only: no fleet rollout.",
-      "requiresFleetRollout": false
-    },
-    {
-      "dependency": "syft",
-      "from": "1.51.0",
-      "to": "1.51.1",
-      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
-      "cycle": "2026-09-02",
-      "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. v1.51.1 (2026-08-27) is a patch with cataloger bug fixes and three remediated Go advisories (GO-2026-5158, GO-2026-6179, GO-2026-6180). GHCR tag v1.51.1 index digest sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c was verified from the official registry (docker-content-digest) and the GitHub Packages version name. Publication SBOM generator only: no fleet rollout. buildkit-syft-scanner remains at 1.12.0.",
-      "requiresFleetRollout": false
+      "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
     },
     {
       "dependency": "node-lts",
-      "from": "24.19.0",
-      "to": "24.20.0",
-      "reviewedAt": "2026-09-02T06:40:00.0000000Z",
-      "cycle": "2026-09-02",
+      "from": "24.20.0",
+      "to": "24.21.0",
       "decision": "bump",
-      "rationale": "Mechanical publication-toolchain pin. Node.js 24.20.0 (Krypton LTS, 2026-08-26) is listed on the official dist index and https://nodejs.org/dist/v24.20.0/. Every workflow node-version field and release/dependencies.json move together. Used only by actions/setup-node in CI and the Release workflow to run .github/scripts tests: not baked into the worker image, so no fleet rollout.",
+      "rationale": "Mechanical publication-toolchain pin. Node.js 24.21.0 (Krypton LTS, 2026-09-07) is the newest LTS entry on https://nodejs.org/dist/index.json and passed the 14-day hard fail. Every workflow node-version field and this manifest move together. Used only by actions/setup-node in CI and the Release workflow to run .github/scripts tests: not baked into the worker image, so no fleet rollout.",
       "requiresFleetRollout": false
     }
   ]
