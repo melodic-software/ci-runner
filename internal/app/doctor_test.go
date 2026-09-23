@@ -343,6 +343,52 @@ func TestDoctorRejectsStaleObservedHeartbeatDespiteLiveControlPlane(t *testing.T
 	}
 }
 
+func TestDoctorReconcileLiveness(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		heartbeatAge time.Duration
+		wantCode     int
+		wantLine     string
+	}{
+		{"stalled", 9 * time.Minute, ExitDegraded, "[FAIL] controller-reconcile-liveness: heartbeatAge=9m0s maximumAge=5m0s"},
+		{"fresh", 5 * time.Second, ExitOK, "[PASS] controller-reconcile-liveness: heartbeatAge=5s maximumAge=5m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+			store := state.NewMemoryStore()
+			_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
+			_ = store.SaveObserved(context.Background(), healthyDoctorObserved(now.Add(-tc.heartbeatAge), model.PhaseReady))
+			application, out, _ := newTestApplication(t, "", store, nil)
+			application.dependencies.Config = doctorTestConfig()
+			application.dependencies.Now = func() time.Time { return now }
+			application.dependencies.Control = doctorControlFake{status: control.Status{ProcessID: 42, Phase: model.PhaseReady, Version: "1.2.3"}}
+			application.dependencies.Gaming = fakeGamingHost{inventory: host.GamingInventory{DesktopStatus: host.DesktopStatusRunning, DockerReachable: true}}
+			application.dependencies.Doctor = &doctorInspectorFake{checks: []DoctorCheck{{Name: "environment", Healthy: true, Detail: "verified"}}}
+
+			if code := application.Run(context.Background(), []string{"host", "doctor"}); code != tc.wantCode {
+				t.Fatalf("doctor exit code = %d, want %d; output:\n%s", code, tc.wantCode, out.String())
+			}
+			if !strings.Contains(out.String(), tc.wantLine) || !strings.Contains(out.String(), "[PASS] observed-state") {
+				t.Fatalf("doctor output missing %q or a passing observed-state check:\n%s", tc.wantLine, out.String())
+			}
+		})
+	}
+}
+
+func TestReconcileLivenessLimitScalesTheIntervalAboveAFloor(t *testing.T) {
+	t.Parallel()
+	cfg := doctorTestConfig()
+	if got := reconcileLivenessLimit(cfg); got != reconcileLivenessFloor {
+		t.Fatalf("liveness limit at 5s interval = %s, want floor %s", got, reconcileLivenessFloor)
+	}
+	cfg.Controller.ReconcileInterval.Duration = 2 * time.Minute
+	if got := reconcileLivenessLimit(cfg); got != 12*time.Minute {
+		t.Fatalf("liveness limit at 2m interval = %s, want 12m", got)
+	}
+}
+
 func TestDoctorRequiresLocalEngineOnlyForEnabledComputePhase(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
