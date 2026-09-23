@@ -97,6 +97,16 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		}
 		detail := fmt.Sprintf("phase=%s version=%s heartbeat=%s age=%s maximumAge=%s", observed.Phase, displayValue(observed.Version), observed.HeartbeatAt.Format(time.RFC3339), age.Round(time.Second), maximumAge)
 		checks = append(checks, DoctorCheck{Name: "observed-state", Healthy: healthy, Detail: detail})
+		// A live control plane over a stale heartbeat is the #331 wedge: the
+		// process answers while its reconcile loop has stopped.
+		if liveStatus != nil && !liveStatus.ShuttingDown {
+			livenessLimit := reconcileLivenessLimit(a.dependencies.Config)
+			checks = append(checks, DoctorCheck{
+				Name:    "controller-reconcile-liveness",
+				Healthy: !observed.HeartbeatAt.IsZero() && age <= livenessLimit,
+				Detail:  fmt.Sprintf("heartbeatAge=%s maximumAge=%s", age.Round(time.Second), livenessLimit),
+			})
+		}
 		// desired=disabled with observed disabled is a legitimate idle host.
 		// desired=enabled while observed is still disabled is the #277
 		// never-ready wedge: the control plane answers, so
@@ -339,6 +349,22 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 			max(len(cfg.GitHub.Targets), 1),
 		),
 	)
+}
+
+// reconcileLivenessIntervals is how many reconcile intervals the heartbeat may
+// miss before the doctor calls the reconcile loop stalled.
+const reconcileLivenessIntervals = 6
+
+// reconcileLivenessFloor keeps a very short reconcile interval from turning
+// ordinary scheduling and disk latency into a reported stall.
+const reconcileLivenessFloor = time.Minute
+
+// reconcileLivenessLimit bounds heartbeat age for a live controller. Unlike
+// observedFreshnessLimit it carries no GitHub retry budget: an open listener
+// poll refreshes the heartbeat every reconcile interval, so a heartbeat older
+// than a few intervals means the loop itself has stopped.
+func reconcileLivenessLimit(cfg config.Config) time.Duration {
+	return max(reconcileLivenessFloor, saturatingScaleDuration(cfg.Controller.ReconcileInterval.Duration, reconcileLivenessIntervals))
 }
 
 // saturatingFreshnessDuration bounds retryUnits attempts of a retryable GitHub
