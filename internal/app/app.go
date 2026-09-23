@@ -50,6 +50,7 @@ type ForceStopper interface {
 type ControllerControl interface {
 	Status(context.Context) (control.Status, error)
 	Shutdown(context.Context, string, control.Status, bool) (control.Status, error)
+	GoroutineDump(context.Context) (string, error)
 }
 
 type RestartReceiptReader interface {

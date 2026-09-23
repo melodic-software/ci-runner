@@ -175,6 +175,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		Logs:         logs,
 		Telemetry:    telemetryProvider,
 		EngineMemory: host.NewEngineMemoryProbe(),
+		ACL:          acl,
 	})
 	if err != nil {
 		_ = workers.Close()
@@ -719,6 +720,7 @@ func runControllerLoop(
 	defer stopServer()
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(serverContext) }()
+	go reconciler.WatchHeartbeat(serverContext)
 
 	shutdown := func(signal controller.ShutdownSignal, awaitServer bool) error {
 		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "controller-draining", Message: signal.Reason})

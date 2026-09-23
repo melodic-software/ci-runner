@@ -292,6 +292,20 @@ func (c *Client) ForceStopExecute(ctx context.Context, expected []ForceStopTarge
 	return append([]ForceStopTarget(nil), response.ForceStopTargets...), nil
 }
 
+// GoroutineDump asks the controller to write its goroutine stacks under its
+// diagnostics directory and returns the written path.
+func (c *Client) GoroutineDump(ctx context.Context) (string, error) {
+	requestID, err := newRequestID()
+	if err != nil {
+		return "", err
+	}
+	response, err := c.roundTrip(ctx, Request{SchemaVersion: SchemaVersion, RequestID: requestID, Operation: OperationGoroutineDump})
+	if err != nil {
+		return "", err
+	}
+	return response.GoroutineDump, nil
+}
+
 func (c *Client) roundTrip(ctx context.Context, request Request) (Response, error) {
 	if err := request.Validate(); err != nil {
 		return Response{}, err

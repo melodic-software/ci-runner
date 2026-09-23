@@ -108,6 +108,16 @@ func (a *Application) stopController(ctx context.Context, restart bool) int {
 	exitCode, err := handle.Wait(ctx)
 	if err != nil {
 		writef(a.errOut, "wait for controller exit: %v\n", err)
+		// The wait ended without the drain completing; capture the controller's
+		// goroutines while its control plane may still answer.
+		dumpContext, cancelDump := a.localProbeContext(context.WithoutCancel(ctx))
+		path, dumpErr := a.dependencies.Control.GoroutineDump(dumpContext)
+		cancelDump()
+		if dumpErr != nil {
+			writef(a.errOut, "warning: controller goroutine dump failed: %v\n", dumpErr)
+		} else {
+			writef(a.errOut, "Controller goroutine dump: %s\n", path)
+		}
 		return ExitRuntime
 	}
 	if !restart && exitCode != 0 {

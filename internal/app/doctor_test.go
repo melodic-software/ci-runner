@@ -24,6 +24,9 @@ func (f doctorControlFake) Status(context.Context) (control.Status, error) { ret
 func (doctorControlFake) Shutdown(context.Context, string, control.Status, bool) (control.Status, error) {
 	return control.Status{}, errors.New("not implemented")
 }
+func (doctorControlFake) GoroutineDump(context.Context) (string, error) {
+	return "", errors.New("not implemented")
+}
 
 type doctorInspectorFake struct {
 	beforeInspect  func()

@@ -47,6 +47,7 @@ type fakeControllerControl struct {
 	statusErr            error
 	statusCalls          int
 	shutdownCalls        int
+	dumpCalls            int
 	omitRestartRequestID bool
 }
 
@@ -79,6 +80,11 @@ func (f *fakeControllerControl) Shutdown(_ context.Context, _ string, expected c
 	return status, nil
 }
 
+func (f *fakeControllerControl) GoroutineDump(context.Context) (string, error) {
+	f.dumpCalls++
+	return `C:\diagnostics\controller-goroutines.txt`, nil
+}
+
 type fakeRestartReceiptReader struct {
 	receipt model.RestartReceipt
 	err     error
@@ -96,12 +102,13 @@ func (f fakeProcessObserver) Open(uint32) (host.ProcessHandle, error) { return f
 
 type fakeProcessHandle struct {
 	exitCode uint32
+	waitErr  error
 	waited   bool
 }
 
 func (f *fakeProcessHandle) Wait(context.Context) (uint32, error) {
 	f.waited = true
-	return f.exitCode, nil
+	return f.exitCode, f.waitErr
 }
 func (*fakeProcessHandle) Close() error { return nil }
 
@@ -442,6 +449,24 @@ func TestControllerRestartExplicitlyStartsCanonicalTaskAfterCleanHandshake(t *te
 		!strings.Contains(out.String(), "Starting canonical scheduled task") || !strings.Contains(out.String(), "pid 200") ||
 		!strings.Contains(out.String(), "Desired mode is unchanged") {
 		t.Fatalf("restart did not report explicit verified task recovery:\n%s", out.String())
+	}
+}
+
+func TestControllerRestartRequestsGoroutineDumpWhenDrainWaitEnds(t *testing.T) {
+	application, _, errOut := newTestApplication(t, "", state.NewMemoryStore(), nil)
+	controlClient := &fakeControllerControl{statuses: []control.Status{{ProcessID: 100, Version: buildinfo.Version, Phase: model.PhaseReady}}}
+	tasks := &fakeTaskStarter{}
+	application.dependencies.Control = controlClient
+	application.dependencies.Processes = fakeProcessObserver{handle: &fakeProcessHandle{waitErr: context.Canceled}}
+	application.dependencies.Tasks = tasks
+	if code := application.Run(context.Background(), []string{"host", "controller", "restart"}); code != ExitRuntime {
+		t.Fatalf("exit code %d, want %d", code, ExitRuntime)
+	}
+	if controlClient.dumpCalls != 1 || !strings.Contains(errOut.String(), "Controller goroutine dump: ") {
+		t.Fatalf("dump calls = %d, stderr:\n%s", controlClient.dumpCalls, errOut.String())
+	}
+	if len(tasks.names) != 0 {
+		t.Fatalf("scheduled task started after an unfinished drain: %#v", tasks.names)
 	}
 }
 

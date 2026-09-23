@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/buildinfo"
@@ -38,6 +39,10 @@ type Dependencies struct {
 	// engine VM's real total memory. Optional: absent, the budget is trusted
 	// as configured.
 	EngineMemory EngineMemoryProbe
+	// ACL hardens goroutine dumps to the private runtime ACL that doctor
+	// verifies on every diagnostics entry. Optional: absent, dumps keep the
+	// directory's inherited ACL.
+	ACL Hardener
 }
 
 type Reconciler struct {
@@ -89,6 +94,10 @@ type Reconciler struct {
 	// without deleting the scale set.
 	staleHandshakeCycles int
 	reregisterListeners  bool
+
+	// heartbeat holds the UnixNano HeartbeatAt of the last persisted observed
+	// state; WatchHeartbeat reads it without taking any reconciler lock.
+	heartbeat atomic.Int64
 }
 
 const handshakeStaleCycleLimit = 3
@@ -1469,7 +1478,11 @@ const StepDetachedPersistDrain = 3 * ObservedPersistTimeout
 func (r *Reconciler) persistObserved(ctx context.Context, observed model.ObservedState) error {
 	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), ObservedPersistTimeout)
 	defer cancel()
-	return r.deps.State.SaveObserved(persistContext, observed)
+	if err := r.deps.State.SaveObserved(persistContext, observed); err != nil {
+		return err
+	}
+	r.heartbeat.Store(observed.HeartbeatAt.UnixNano())
+	return nil
 }
 
 func (r *Reconciler) persistPollCheckpoint(ctx context.Context, observed model.ObservedState) error {

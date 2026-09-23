@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/melodic-software/ci-runner/internal/control"
 	"github.com/melodic-software/ci-runner/internal/model"
@@ -45,6 +46,15 @@ func (h *ControlHandler) ShutdownRequests() <-chan ShutdownSignal { return h.shu
 func (h *ControlHandler) Handle(ctx context.Context, request control.Request) control.Response {
 	if err := request.Validate(); err != nil {
 		return control.ErrorResponse(request.RequestID, "invalid-request", err)
+	}
+	if request.Operation == control.OperationGoroutineDump {
+		// Answered before status, which reads observed state under the state
+		// lock a wedged controller may be holding.
+		path, err := h.reconciler.writeGoroutineDump(ctx, "control-request", time.Now())
+		if err != nil {
+			return control.ErrorResponse(request.RequestID, "goroutine-dump-error", err)
+		}
+		return control.Response{SchemaVersion: control.SchemaVersion, RequestID: request.RequestID, OK: true, GoroutineDump: path}
 	}
 	status, err := h.status(ctx)
 	if err != nil {
