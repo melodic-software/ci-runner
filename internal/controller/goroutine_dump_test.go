@@ -62,6 +62,8 @@ func TestControlHandlerGoroutineDumpWritesUnderDiagnostics(t *testing.T) {
 	harness := newHarness(t, model.ModeEnabled)
 	diagnostics := t.TempDir()
 	harness.controller.config.Paths.Diagnostics = diagnostics
+	acl := &recordingHardener{}
+	harness.controller.deps.ACL = acl
 	handler, err := NewControlHandler(harness.controller, 1234)
 	if err != nil {
 		t.Fatal(err)
@@ -75,4 +77,14 @@ func TestControlHandlerGoroutineDumpWritesUnderDiagnostics(t *testing.T) {
 	if dumps := goroutineDumps(t, diagnostics); len(dumps) != 1 || dumps[0] != response.GoroutineDump {
 		t.Fatalf("dumps = %v, want [%s]", dumps, response.GoroutineDump)
 	}
+	if len(acl.paths) != 1 || acl.paths[0] != response.GoroutineDump {
+		t.Fatalf("hardened = %v, want [%s]", acl.paths, response.GoroutineDump)
+	}
+}
+
+type recordingHardener struct{ paths []string }
+
+func (h *recordingHardener) Harden(path string) error {
+	h.paths = append(h.paths, path)
+	return nil
 }

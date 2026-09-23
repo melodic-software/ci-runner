@@ -175,6 +175,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		Logs:         logs,
 		Telemetry:    telemetryProvider,
 		EngineMemory: host.NewEngineMemoryProbe(),
+		ACL:          acl,
 	})
 	if err != nil {
 		_ = workers.Close()

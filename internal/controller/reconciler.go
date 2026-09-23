@@ -39,6 +39,10 @@ type Dependencies struct {
 	// engine VM's real total memory. Optional: absent, the budget is trusted
 	// as configured.
 	EngineMemory EngineMemoryProbe
+	// ACL hardens goroutine dumps to the private runtime ACL that doctor
+	// verifies on every diagnostics entry. Optional: absent, dumps keep the
+	// directory's inherited ACL.
+	ACL Hardener
 }
 
 type Reconciler struct {

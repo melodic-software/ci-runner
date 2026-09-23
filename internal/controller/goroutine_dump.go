@@ -12,29 +12,38 @@ import (
 
 // heartbeatStallIntervals is how many reconcile intervals may pass without a
 // persisted observed-state heartbeat before WatchHeartbeat captures a
-// goroutine dump. Listener polls checkpoint the heartbeat every interval, so
-// only a Step stuck outside a poll, or a wedged loop, goes this long silent.
+// goroutine dump. Listener polls checkpoint the heartbeat every interval, but
+// a legitimately long Step outside a poll (a Docker Desktop start or worker
+// image pull) also goes this long silent and costs one dump per occurrence;
+// raise this if those dumps prove noisy.
 const heartbeatStallIntervals = 12
+
+type Hardener interface {
+	Harden(string) error
+}
 
 // dumpGoroutines writes every goroutine's stack (the runtime/pprof
 // goroutine profile at debug=2) to a new file under directory and returns its
 // path. Top-level regular files there are bounded by the diagnostics
 // retention and total-cap sweeps.
-func dumpGoroutines(directory, reason string, at time.Time) (string, error) {
+func dumpGoroutines(directory, reason string, at time.Time, acl Hardener) (string, error) {
 	path := filepath.Join(directory, fmt.Sprintf("controller-goroutines-%s-%s.txt", reason, at.UTC().Format("20060102T150405.000000000Z")))
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create goroutine dump: %w", err)
 	}
-	writeErr := pprof.Lookup("goroutine").WriteTo(file, 2)
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return "", fmt.Errorf("write goroutine dump %q: %w", path, err)
+	err = errors.Join(pprof.Lookup("goroutine").WriteTo(file, 2), file.Close())
+	if err == nil && acl != nil {
+		err = acl.Harden(path)
+	}
+	if err != nil {
+		return "", errors.Join(fmt.Errorf("write goroutine dump %q: %w", path, err), os.Remove(path))
 	}
 	return path, nil
 }
 
 func (r *Reconciler) writeGoroutineDump(ctx context.Context, reason string, at time.Time) (string, error) {
-	path, err := dumpGoroutines(r.config.Paths.Diagnostics, reason, at)
+	path, err := dumpGoroutines(r.config.Paths.Diagnostics, reason, at, r.deps.ACL)
 	if err != nil {
 		r.writeLog(ctx, LogEvent{At: at.UTC(), Code: "goroutine-dump-error", Message: err.Error()})
 		return "", err
