@@ -322,12 +322,12 @@ func (s *FileArtifactSink) Finalize(ctx context.Context, metadata ArtifactMetada
 }
 
 func (s *FileArtifactSink) AdoptAndCleanup(ctx context.Context, adopted []ArtifactMetadata) error {
-	adoptedIDs, err := s.indexAdopted(ctx, adopted)
+	adoptedIDs, catalog, err := s.indexAdopted(ctx, adopted)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
-	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
+	if err := s.reconcileStaleOpen(ctx, catalog, adoptedIDs, now); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -349,12 +349,12 @@ func (s *FileArtifactSink) AdoptAndCleanup(ctx context.Context, adopted []Artifa
 // provide a fresh fixed-endpoint Docker inventory; all listed containers are
 // durably marked open and excluded before cleanup begins.
 func (s *FileArtifactSink) CleanupNow(ctx context.Context, adopted []ArtifactMetadata) error {
-	adoptedIDs, err := s.indexAdopted(ctx, adopted)
+	adoptedIDs, catalog, err := s.indexAdopted(ctx, adopted)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
-	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
+	if err := s.reconcileStaleOpen(ctx, catalog, adoptedIDs, now); err != nil {
 		return err
 	}
 	if err := s.cleanup(ctx, adopted, now); err != nil {
@@ -366,29 +366,51 @@ func (s *FileArtifactSink) CleanupNow(ctx context.Context, adopted []ArtifactMet
 	return nil
 }
 
-func (s *FileArtifactSink) indexAdopted(ctx context.Context, adopted []ArtifactMetadata) (map[string]struct{}, error) {
+// indexAdopted returns the adopted container IDs and the catalog as it stands
+// after adoption. It loads the catalog once and calls Upsert only for records
+// the patch would change; Upsert re-merges under the store lock, so the
+// pre-merge here only skips the full load a no-op Upsert would spend.
+func (s *FileArtifactSink) indexAdopted(ctx context.Context, adopted []ArtifactMetadata) (map[string]struct{}, jobindex.Catalog, error) {
+	catalog, err := s.jobs.Load(ctx)
+	if err != nil && !errors.Is(err, jobindex.ErrNotFound) {
+		return nil, jobindex.Catalog{}, err
+	}
+	indexes := make(map[string]int, len(catalog.Records))
+	for index, record := range catalog.Records {
+		indexes[record.PoolID+"\x00"+record.RunnerName] = index
+	}
+	now := time.Now().UTC()
 	adoptedIDs := make(map[string]struct{}, len(adopted))
 	for _, metadata := range adopted {
 		adoptedIDs[metadata.ContainerID] = struct{}{}
 		open := true
-		if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
+		patch := jobindex.Patch{
 			PoolID: metadata.PoolID, RunnerName: metadata.WorkerName, ContainerID: metadata.ContainerID,
 			ArtifactStartedAt: metadata.StartedAt, Open: &open,
-		}); err != nil {
-			return nil, fmt.Errorf("adopt worker artifact record: %w", err)
+		}
+		key := patch.PoolID + "\x00" + patch.RunnerName
+		index, found := indexes[key]
+		if found {
+			current := catalog.Records[index]
+			if merged, err := jobindex.Merge(current, patch, now); err == nil && merged == current {
+				continue
+			}
+		}
+		record, err := s.jobs.Upsert(ctx, patch)
+		if err != nil {
+			return nil, jobindex.Catalog{}, fmt.Errorf("adopt worker artifact record: %w", err)
+		}
+		if found {
+			catalog.Records[index] = record
+		} else {
+			indexes[key] = len(catalog.Records)
+			catalog.Records = append(catalog.Records, record)
 		}
 	}
-	return adoptedIDs, nil
+	return adoptedIDs, catalog, nil
 }
 
-func (s *FileArtifactSink) reconcileStaleOpen(ctx context.Context, adopted map[string]struct{}, now time.Time) error {
-	catalog, err := s.jobs.Load(ctx)
-	if errors.Is(err, jobindex.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+func (s *FileArtifactSink) reconcileStaleOpen(ctx context.Context, catalog jobindex.Catalog, adopted map[string]struct{}, now time.Time) error {
 	closed := false
 	for _, record := range catalog.Records {
 		if !record.Open || record.ContainerID == "" || record.TombstonedAt != nil {

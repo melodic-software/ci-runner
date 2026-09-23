@@ -135,7 +135,17 @@ func (s *FileStore) ActiveJob(ctx context.Context, poolID, runnerName string) (s
 	if err != nil {
 		return "", false, err
 	}
-	for _, record := range catalog.Records {
+	jobID, active := catalog.ActiveJob(poolID, runnerName)
+	return jobID, active, nil
+}
+
+// ActiveJob reports the job a runner's live record holds and whether that
+// job is still running.
+func (c Catalog) ActiveJob(poolID, runnerName string) (string, bool) {
+	if poolID == "" || runnerName == "" {
+		return "", false
+	}
+	for _, record := range c.Records {
 		// A tombstoned record is dead bookkeeping and must not shadow its key,
 		// matching FindByJobID and FindByRunner. It can legitimately still look
 		// active: FinalizedAt and CompletedAt have independent producers, so a
@@ -144,9 +154,9 @@ func (s *FileStore) ActiveJob(ctx context.Context, poolID, runnerName string) (s
 		if record.PoolID != poolID || record.RunnerName != runnerName || record.TombstonedAt != nil {
 			continue
 		}
-		return record.JobID, record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero(), nil
+		return record.JobID, record.JobID != "" && !record.JobStartedAt.IsZero() && record.CompletedAt.IsZero()
 	}
-	return "", false, nil
+	return "", false
 }
 
 func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, resultErr error) {

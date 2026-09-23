@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -669,6 +670,55 @@ func TestCleanupPerPathReferenceSurvivesSiblingPathStatError(t *testing.T) {
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("valid referenced log was removed after sibling path validation failed: %v", err)
 	}
+}
+
+func TestAdoptAndCleanupLoadsTheCatalogOnceIndependentOfContainerCount(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{1, 8} {
+		root := t.TempDir()
+		store := &countingJobStore{Store: newTestJobStore(t, filepath.Join(root, "state"))}
+		sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+		adopted := make([]ArtifactMetadata, 0, count)
+		for index := range count {
+			adopted = append(adopted, testArtifactMetadata(fmt.Sprintf("container-%d", index), fmt.Sprintf("runner-%d", index)))
+		}
+		if err := sink.AdoptAndCleanup(context.Background(), adopted); err != nil {
+			t.Fatal(err)
+		}
+		store.loads, store.upserts = 0, 0
+		if err := sink.AdoptAndCleanup(context.Background(), adopted); err != nil {
+			t.Fatal(err)
+		}
+		if store.loads != 1 || store.upserts != 0 {
+			t.Fatalf("%d containers, unchanged: loads=%d upserts=%d, want 1 and 0", count, store.loads, store.upserts)
+		}
+		store.loads, store.upserts = 0, 0
+		adopted = append(adopted, testArtifactMetadata("container-new", "runner-new"))
+		if err := sink.AdoptAndCleanup(context.Background(), adopted); err != nil {
+			t.Fatal(err)
+		}
+		if store.loads != 1 || store.upserts != 1 {
+			t.Fatalf("%d containers, one new: loads=%d upserts=%d, want 1 and 1", count, store.loads, store.upserts)
+		}
+		if record, err := store.FindByRunner(context.Background(), "org", "runner-new"); err != nil || !record.Open {
+			t.Fatalf("new adopted record = %#v, %v; want open", record, err)
+		}
+	}
+}
+
+type countingJobStore struct {
+	jobindex.Store
+	loads, upserts int
+}
+
+func (s *countingJobStore) Load(ctx context.Context) (jobindex.Catalog, error) {
+	s.loads++
+	return s.Store.Load(ctx)
+}
+
+func (s *countingJobStore) Upsert(ctx context.Context, patch jobindex.Patch) (jobindex.Record, error) {
+	s.upserts++
+	return s.Store.Upsert(ctx, patch)
 }
 
 type failingJobStore struct{ jobindex.Store }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/melodic-software/ci-runner/internal/buildinfo"
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	statepkg "github.com/melodic-software/ci-runner/internal/state"
@@ -1581,12 +1582,15 @@ func mayHaveManagedWorkers(desktop model.DesktopStatus, statusKnown bool) bool {
 
 func (r *Reconciler) enrichWorkerJobs(ctx context.Context, workers []model.Worker) ([]model.Worker, error) {
 	result := append([]model.Worker(nil), workers...)
+	if len(result) == 0 {
+		return result, nil
+	}
+	catalog, err := r.deps.Jobs.Load(ctx)
+	if err != nil && !errors.Is(err, jobindex.ErrNotFound) {
+		return nil, err
+	}
 	for index := range result {
-		jobID, found, err := r.deps.Jobs.ActiveJob(ctx, result[index].PoolID, result[index].Name)
-		if err != nil {
-			return nil, err
-		}
-		if found {
+		if jobID, found := catalog.ActiveJob(result[index].PoolID, result[index].Name); found {
 			result[index].JobID = jobID
 			result[index].State = model.WorkerBusy
 		}
