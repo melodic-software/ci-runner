@@ -56,11 +56,9 @@ released as v0.23.0), and melodic-software/standards#556 (merged as
 `771a796628f325c3c418c7b397d09fb7211e2972`) removed the selector grammar from
 the runner-policy component. The three policies this section used to document,
 `hosted-only`, `prefer-self-hosted` and `self-hosted-only`, no longer exist. The
-`CI_RUNNER_POLICY` organization variable that chose between them still exists at
-`self-hosted-only` and reads nowhere: the selector that consumed it is deleted,
-and its removal from the Pulumi program is decided pending the owner's Phase 7
-step 5 apply, so changing it changes nothing. github-iac `OrgCiRouting.cs` still
-declares it, unprotected ahead of that apply.
+`CI_RUNNER_POLICY` organization variable that chose between them, and its
+declaration in github-iac `OrgCiRouting.cs`, were deleted on 2026-09-08
+(github-iac#467).
 
 An eligible private-repository job names the governed fleet label
 `melodic-ubuntu-24.04-x64` as a literal in its own `runs-on`. GitHub queues the
