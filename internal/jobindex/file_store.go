@@ -176,6 +176,9 @@ func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, res
 	if err != nil {
 		return Record{}, err
 	}
+	if index >= 0 && merged == current {
+		return merged, nil
+	}
 	if index < 0 {
 		catalog.Records = append(catalog.Records, merged)
 	} else {

@@ -78,6 +78,7 @@ func Merge(existing Record, patch Patch, now time.Time) (Record, error) {
 	if now.IsZero() {
 		return Record{}, errors.New("job patch time is required")
 	}
+	original := existing
 	if existing.PoolID == "" {
 		existing.PoolID = patch.PoolID
 		existing.RunnerName = patch.RunnerName
@@ -121,7 +122,11 @@ func Merge(existing Record, patch Patch, now time.Time) (Record, error) {
 		existing.TombstonedAt = &value
 		existing.Open = false
 	}
-	existing.UpdatedAt = now.UTC()
+	// A patch that moves no field leaves UpdatedAt alone, so Upsert can skip
+	// the durable save instead of rewriting the whole catalog.
+	if existing != original {
+		existing.UpdatedAt = now.UTC()
+	}
 	return existing, nil
 }
 
