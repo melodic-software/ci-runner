@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	statepkg "github.com/melodic-software/ci-runner/internal/state"
@@ -15,7 +16,7 @@ type ScaleSetClient interface{ scaleset.Client }
 type StateStore interface{ statepkg.Store }
 
 type ActiveJobLookup interface {
-	ActiveJob(context.Context, string, string) (string, bool, error)
+	Load(context.Context) (jobindex.Catalog, error)
 }
 
 type StartWorkerRequest struct {

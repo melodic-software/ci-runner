@@ -12,6 +12,7 @@ import (
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
+	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	statepkg "github.com/melodic-software/ci-runner/internal/state"
@@ -986,6 +987,26 @@ func TestUnregisteredWorkerPersistsWhenRemovalAndFinalInventoryFail(t *testing.T
 	assertProblemCode(t, result.Observed.Problems, "worker-final-inventory-error")
 }
 
+func TestStepLoadsTheJobCatalogIndependentOfWorkerCount(t *testing.T) {
+	t.Parallel()
+	loads := func(workers int) int {
+		harness := newHarness(t, model.ModeDisabled)
+		for index := range workers {
+			name := fmt.Sprintf("runner-%d", index)
+			harness.runtime.workers = append(harness.runtime.workers, model.Worker{ID: name, Name: name, PoolID: "org", RunnerID: int64(index + 1), State: model.WorkerIdle})
+			harness.jobs.active["org\x00"+name] = "job-" + name
+		}
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return harness.jobs.loadCount()
+	}
+	one, many := loads(1), loads(8)
+	if one == 0 || one != many {
+		t.Fatalf("catalog loads per Step: 1 worker = %d, 8 workers = %d; want equal and non-zero", one, many)
+	}
+}
+
 func TestDurableActiveJobOverridesJobWritableIdleState(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeDisabled)
@@ -1951,16 +1972,28 @@ type testJobLookup struct {
 	mu     sync.Mutex
 	active map[string]string
 	err    error
+	loads  int
 }
 
-func (l *testJobLookup) ActiveJob(_ context.Context, poolID, runnerName string) (string, bool, error) {
+func (l *testJobLookup) Load(context.Context) (jobindex.Catalog, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.loads++
 	if l.err != nil {
-		return "", false, l.err
+		return jobindex.Catalog{}, l.err
 	}
-	jobID, found := l.active[poolID+"\x00"+runnerName]
-	return jobID, found, nil
+	catalog := jobindex.Catalog{SchemaVersion: jobindex.SchemaVersion}
+	for key, jobID := range l.active {
+		poolID, runnerName, _ := strings.Cut(key, "\x00")
+		catalog.Records = append(catalog.Records, jobindex.Record{PoolID: poolID, RunnerName: runnerName, JobID: jobID, JobStartedAt: time.Unix(1, 0)})
+	}
+	return catalog, nil
+}
+
+func (l *testJobLookup) loadCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.loads
 }
 
 func validControllerConfig() config.Config {

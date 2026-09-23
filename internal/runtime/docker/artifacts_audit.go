@@ -84,12 +84,12 @@ func (s *FileArtifactSink) Audit(ctx context.Context, adopted []ArtifactMetadata
 }
 
 func (s *FileArtifactSink) PurgeUnreferencedNow(ctx context.Context, adopted []ArtifactMetadata, dryRun bool) (ArtifactPurgeResult, error) {
-	adoptedIDs, err := s.indexAdopted(ctx, adopted)
+	adoptedIDs, snapshot, err := s.indexAdopted(ctx, adopted)
 	if err != nil {
 		return ArtifactPurgeResult{DryRun: dryRun}, err
 	}
 	now := time.Now().UTC()
-	if err := s.reconcileStaleOpen(ctx, adoptedIDs, now); err != nil {
+	if err := s.reconcileStaleOpen(ctx, snapshot, adoptedIDs, now); err != nil {
 		return ArtifactPurgeResult{DryRun: dryRun}, err
 	}
 	catalog, err := s.loadCatalogStrict(ctx)
