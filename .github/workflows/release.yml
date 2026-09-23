@@ -50,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.20.0
+          node-version: 24.21.0
           package-manager-cache: false
 
       - name: Install checksum-verified Buildx
@@ -61,7 +61,7 @@ jobs:
         with:
           cache-binary: false
           driver-opts: |
-            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+            image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
           # Supplying this explicit safe flag resets the action's default
           # network.host/security.insecure daemon entitlements.
           buildkitd-flags: --debug=false
@@ -92,7 +92,7 @@ jobs:
           go vet ./...
           go test ./...
           go test -race ./...
-          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
       - name: Test workflow scripts and resumable release transaction
         run: node --test .github/scripts/*.test.cjs
@@ -106,7 +106,7 @@ jobs:
       - name: Audit workflow security
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
-          version: 1.30.0
+          version: 1.30.1
           persona: pedantic
           advanced-security: false
           annotations: true
@@ -177,7 +177,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.20.0
+          node-version: 24.21.0
           package-manager-cache: false
 
       - name: Resolve and verify an existing immutable release
@@ -197,7 +197,7 @@ jobs:
         with:
           cache-binary: false
           driver-opts: |
-            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+            image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
           buildkitd-flags: --debug=false
 
       - name: Build and push untagged worker candidate
