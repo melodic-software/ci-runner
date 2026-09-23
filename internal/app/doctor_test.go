@@ -351,8 +351,8 @@ func TestDoctorReconcileLiveness(t *testing.T) {
 		wantCode     int
 		wantLine     string
 	}{
-		{"stalled", 2*time.Minute + 17*time.Second, ExitDegraded, "[FAIL] controller-reconcile-liveness: heartbeatAge=2m17s maximumAge=1m0s"},
-		{"fresh", 5 * time.Second, ExitOK, "[PASS] controller-reconcile-liveness: heartbeatAge=5s maximumAge=1m0s"},
+		{"stalled", 9 * time.Minute, ExitDegraded, "[FAIL] controller-reconcile-liveness: heartbeatAge=9m0s maximumAge=5m0s"},
+		{"fresh", 5 * time.Second, ExitOK, "[PASS] controller-reconcile-liveness: heartbeatAge=5s maximumAge=5m0s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -383,9 +383,9 @@ func TestReconcileLivenessLimitScalesTheIntervalAboveAFloor(t *testing.T) {
 	if got := reconcileLivenessLimit(cfg); got != reconcileLivenessFloor {
 		t.Fatalf("liveness limit at 5s interval = %s, want floor %s", got, reconcileLivenessFloor)
 	}
-	cfg.Controller.ReconcileInterval.Duration = time.Minute
-	if got := reconcileLivenessLimit(cfg); got != 6*time.Minute {
-		t.Fatalf("liveness limit at 1m interval = %s, want 6m", got)
+	cfg.Controller.ReconcileInterval.Duration = 2 * time.Minute
+	if got := reconcileLivenessLimit(cfg); got != 12*time.Minute {
+		t.Fatalf("liveness limit at 2m interval = %s, want 12m", got)
 	}
 }
 

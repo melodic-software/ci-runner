@@ -355,9 +355,10 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 // miss before the doctor calls the reconcile loop stalled.
 const reconcileLivenessIntervals = 6
 
-// reconcileLivenessFloor keeps a very short reconcile interval from turning
-// ordinary scheduling and disk latency into a reported stall.
-const reconcileLivenessFloor = time.Minute
+// reconcileLivenessFloor keeps a short reconcile interval from reporting a
+// stall during Step phases that write no heartbeat (Docker Desktop start, JIT
+// config requests, image pulls).
+const reconcileLivenessFloor = 5 * time.Minute
 
 // reconcileLivenessLimit bounds heartbeat age for a live controller. Unlike
 // observedFreshnessLimit it carries no GitHub retry budget: an open listener
