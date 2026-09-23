@@ -719,6 +719,7 @@ func runControllerLoop(
 	defer stopServer()
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(serverContext) }()
+	go reconciler.WatchHeartbeat(serverContext)
 
 	shutdown := func(signal controller.ShutdownSignal, awaitServer bool) error {
 		_ = logs.Write(context.Background(), controller.LogEvent{At: time.Now().UTC(), Code: "controller-draining", Message: signal.Reason})

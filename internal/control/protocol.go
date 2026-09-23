@@ -23,6 +23,7 @@ const (
 	OperationShutdown         Operation = "shutdown"
 	OperationForceStopPreview Operation = "force-stop-preview"
 	OperationForceStopExecute Operation = "force-stop-execute"
+	OperationGoroutineDump    Operation = "goroutine-dump"
 )
 
 type Request struct {
@@ -63,6 +64,7 @@ type Response struct {
 	Error            string            `json:"error,omitempty"`
 	Status           *Status           `json:"status,omitempty"`
 	ForceStopTargets []ForceStopTarget `json:"forceStopTargets,omitempty"`
+	GoroutineDump    string            `json:"goroutineDump,omitempty"`
 }
 
 type Status struct {
@@ -124,6 +126,10 @@ func (r Request) Validate() error {
 	case OperationForceStopPreview:
 		if r.Shutdown != nil || r.ForceStop != nil {
 			return errors.New("force-stop preview must not include operation data")
+		}
+	case OperationGoroutineDump:
+		if r.Shutdown != nil || r.ForceStop != nil {
+			return errors.New("goroutine dump request must not include operation data")
 		}
 	case OperationForceStopExecute:
 		if r.Shutdown != nil || r.ForceStop == nil {
