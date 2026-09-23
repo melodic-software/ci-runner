@@ -408,6 +408,47 @@ func TestFileStoreHardensAndVerifiesDirectoryTemporaryAndFinalState(t *testing.T
 	}
 }
 
+func TestNoOpUpsertSkipsDurableSaveAndRealChangeStampsUpdatedAt(t *testing.T) {
+	t.Parallel()
+	acl := &recordingIndexACL{}
+	store, err := NewFileStore(t.TempDir(), &testLocker{}, acl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	store.now = func() time.Time { return now }
+	patch := Patch{PoolID: "org", RunnerName: "runner", JobID: "job", RunnerAssignedAt: now}
+	first, err := store.Upsert(context.Background(), patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.UpdatedAt.Equal(now) {
+		t.Fatalf("first insert updatedAt = %v, want %v", first.UpdatedAt, now)
+	}
+	writes := len(acl.hardened)
+	now = now.Add(time.Minute)
+	noOp, err := store.Upsert(context.Background(), patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acl.hardened) != writes {
+		t.Fatalf("no-op upsert performed a durable write: ACL calls %v", acl.hardened[writes:])
+	}
+	if !noOp.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("no-op upsert updatedAt = %v, want unchanged %v", noOp.UpdatedAt, first.UpdatedAt)
+	}
+	changed, err := store.Upsert(context.Background(), Patch{PoolID: "org", RunnerName: "runner", JobStartedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acl.hardened) == writes {
+		t.Fatal("real change skipped the durable write")
+	}
+	if !changed.UpdatedAt.Equal(now) {
+		t.Fatalf("real change updatedAt = %v, want %v", changed.UpdatedAt, now)
+	}
+}
+
 type testLocker struct{ mu sync.Mutex }
 
 func (l *testLocker) Lock(context.Context) (func() error, error) {
