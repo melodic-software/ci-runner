@@ -10,6 +10,7 @@ import (
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
+	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
@@ -100,7 +101,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 		// A live control plane over a stale heartbeat is the #331 wedge: the
 		// process answers while its reconcile loop has stopped.
 		if liveStatus != nil && !liveStatus.ShuttingDown {
-			livenessLimit := reconcileLivenessLimit(a.dependencies.Config)
+			livenessLimit := controller.ReconcileLivenessLimit(a.dependencies.Config.Controller.ReconcileInterval.Duration)
 			checks = append(checks, DoctorCheck{
 				Name:    "controller-reconcile-liveness",
 				Healthy: !observed.HeartbeatAt.IsZero() && age <= livenessLimit,
@@ -349,23 +350,6 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 			max(len(cfg.GitHub.Targets), 1),
 		),
 	)
-}
-
-// reconcileLivenessIntervals is how many reconcile intervals the heartbeat may
-// miss before the doctor calls the reconcile loop stalled.
-const reconcileLivenessIntervals = 6
-
-// reconcileLivenessFloor keeps a short reconcile interval from reporting a
-// stall during Step phases that write no heartbeat (Docker Desktop start, JIT
-// config requests, image pulls).
-const reconcileLivenessFloor = 5 * time.Minute
-
-// reconcileLivenessLimit bounds heartbeat age for a live controller. Unlike
-// observedFreshnessLimit it carries no GitHub retry budget: an open listener
-// poll refreshes the heartbeat every reconcile interval, so a heartbeat older
-// than a few intervals means the loop itself has stopped.
-func reconcileLivenessLimit(cfg config.Config) time.Duration {
-	return max(reconcileLivenessFloor, saturatingScaleDuration(cfg.Controller.ReconcileInterval.Duration, reconcileLivenessIntervals))
 }
 
 // saturatingFreshnessDuration bounds retryUnits attempts of a retryable GitHub

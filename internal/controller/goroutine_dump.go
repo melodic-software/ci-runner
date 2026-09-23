@@ -4,19 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"time"
 )
 
-// heartbeatStallIntervals is how many reconcile intervals may pass without a
-// persisted observed-state heartbeat before WatchHeartbeat captures a
-// goroutine dump. Listener polls checkpoint the heartbeat every interval, but
-// a legitimately long Step outside a poll (a Docker Desktop start or worker
-// image pull) also goes this long silent and costs one dump per occurrence;
-// raise this if those dumps prove noisy.
-const heartbeatStallIntervals = 12
+// ReconcileLivenessIntervals is how many reconcile intervals the heartbeat may
+// miss before the reconcile loop counts as stalled.
+const ReconcileLivenessIntervals = 6
+
+// ReconcileLivenessFloor keeps a short reconcile interval from reporting a
+// stall during Step phases that write no heartbeat (Docker Desktop start, JIT
+// config requests, image pulls).
+const ReconcileLivenessFloor = 5 * time.Minute
+
+// ReconcileLivenessLimit bounds heartbeat age for a live controller. Listener
+// polls checkpoint the heartbeat every interval, so a heartbeat older than
+// this means the loop itself has stopped. WatchHeartbeat dumps goroutines and
+// host doctor reports FAIL at this same age. The product saturates at the
+// largest representable time.Duration instead of overflowing.
+func ReconcileLivenessLimit(interval time.Duration) time.Duration {
+	if interval > math.MaxInt64/ReconcileLivenessIntervals {
+		return math.MaxInt64
+	}
+	return max(ReconcileLivenessFloor, interval*ReconcileLivenessIntervals)
+}
 
 type Hardener interface {
 	Harden(string) error
@@ -61,6 +75,10 @@ type heartbeatWatch struct {
 	dumped     bool
 }
 
+func (r *Reconciler) newHeartbeatWatch(started time.Time) heartbeatWatch {
+	return heartbeatWatch{reconciler: r, threshold: ReconcileLivenessLimit(r.config.Controller.ReconcileInterval.Duration), started: started}
+}
+
 func (w *heartbeatWatch) check(ctx context.Context, now time.Time) {
 	last := time.Unix(0, w.reconciler.heartbeat.Load())
 	if last.Before(w.started) {
@@ -82,9 +100,8 @@ func (w *heartbeatWatch) check(ctx context.Context, now time.Time) {
 // the diagnostics directory when the reconcile heartbeat stalls. It takes no
 // reconciler lock, so it keeps running when the reconcile loop is wedged.
 func (r *Reconciler) WatchHeartbeat(ctx context.Context) {
-	interval := r.config.Controller.ReconcileInterval.Duration
-	watch := heartbeatWatch{reconciler: r, threshold: heartbeatStallIntervals * interval, started: time.Now()}
-	ticker := time.NewTicker(interval)
+	watch := r.newHeartbeatWatch(time.Now())
+	ticker := time.NewTicker(r.config.Controller.ReconcileInterval.Duration)
 	defer ticker.Stop()
 	for {
 		select {
