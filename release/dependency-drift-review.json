@@ -51,6 +51,14 @@
       "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
     },
     {
+      "dependency": "zizmor",
+      "from": "1.30.0",
+      "to": "1.30.1",
+      "decision": "bump",
+      "rationale": "Mechanical publication-toolchain pin, added after the first gate run on this branch showed the row at 13 days: v1.30.1 was published 2026-09-09T05:34:10Z (https://github.com/zizmorcore/zizmor/releases/tag/v1.30.1), so it hard-fails from 2026-09-23T05:34Z. The patch fixes a pre-commit input crash and marks self-repository auto-fixes unsafe; no audit or CLI contract change. The release.yml zizmor-action version input and this manifest move together; the pinned zizmor-action v0.6.4 already carries 1.30.1 in its support/versions digest table, and that digest, sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101, matches `docker buildx imagetools inspect ghcr.io/zizmorcore/zizmor:1.30.1`. Analyzer used at publication time only: no fleet rollout.",
+      "requiresFleetRollout": false
+    },
+    {
       "dependency": "node-lts",
       "from": "24.20.0",
       "to": "24.21.0",
