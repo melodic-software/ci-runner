@@ -36,22 +36,26 @@ func TestHeartbeatWatchWritesOneDumpPerStallEpisode(t *testing.T) {
 	diagnostics := t.TempDir()
 	harness.controller.config.Paths.Diagnostics = diagnostics
 	start := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
-	watch := heartbeatWatch{reconciler: harness.controller, threshold: time.Minute, started: start}
+	watch := harness.controller.newHeartbeatWatch(start)
+	limit := ReconcileLivenessLimit(harness.controller.config.Controller.ReconcileInterval.Duration)
+	if watch.threshold != limit || limit != ReconcileLivenessFloor {
+		t.Fatalf("watch threshold = %s, want the doctor liveness limit %s at the 5m floor", watch.threshold, limit)
+	}
 	ctx := context.Background()
 
-	watch.check(ctx, start.Add(59*time.Second))
+	watch.check(ctx, start.Add(limit-time.Second))
 	if dumps := goroutineDumps(t, diagnostics); len(dumps) != 0 {
 		t.Fatalf("dumped before the stall threshold: %v", dumps)
 	}
-	watch.check(ctx, start.Add(time.Minute))
-	watch.check(ctx, start.Add(2*time.Minute))
+	watch.check(ctx, start.Add(limit))
+	watch.check(ctx, start.Add(2*limit))
 	if dumps := goroutineDumps(t, diagnostics); len(dumps) != 1 {
 		t.Fatalf("dumps after one stall episode = %v, want exactly one", dumps)
 	}
 
-	harness.controller.heartbeat.Store(start.Add(3 * time.Minute).UnixNano())
-	watch.check(ctx, start.Add(3*time.Minute+time.Second))
-	watch.check(ctx, start.Add(4*time.Minute+time.Second))
+	harness.controller.heartbeat.Store(start.Add(3 * limit).UnixNano())
+	watch.check(ctx, start.Add(3*limit+time.Second))
+	watch.check(ctx, start.Add(4*limit+time.Second))
 	if dumps := goroutineDumps(t, diagnostics); len(dumps) != 2 {
 		t.Fatalf("dumps after recovery and a second stall = %v, want two", dumps)
 	}

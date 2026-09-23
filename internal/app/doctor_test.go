@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/control"
+	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/host"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/state"
@@ -382,13 +384,14 @@ func TestDoctorReconcileLiveness(t *testing.T) {
 
 func TestReconcileLivenessLimitScalesTheIntervalAboveAFloor(t *testing.T) {
 	t.Parallel()
-	cfg := doctorTestConfig()
-	if got := reconcileLivenessLimit(cfg); got != reconcileLivenessFloor {
-		t.Fatalf("liveness limit at 5s interval = %s, want floor %s", got, reconcileLivenessFloor)
+	if got := controller.ReconcileLivenessLimit(doctorTestConfig().Controller.ReconcileInterval.Duration); got != 5*time.Minute {
+		t.Fatalf("liveness limit at 5s interval = %s, want floor 5m", got)
 	}
-	cfg.Controller.ReconcileInterval.Duration = 2 * time.Minute
-	if got := reconcileLivenessLimit(cfg); got != 12*time.Minute {
+	if got := controller.ReconcileLivenessLimit(2 * time.Minute); got != 12*time.Minute {
 		t.Fatalf("liveness limit at 2m interval = %s, want 12m", got)
+	}
+	if got := controller.ReconcileLivenessLimit(math.MaxInt64 / 2); got != math.MaxInt64 {
+		t.Fatalf("liveness limit at a huge interval = %s, want math.MaxInt64", got)
 	}
 }
 
