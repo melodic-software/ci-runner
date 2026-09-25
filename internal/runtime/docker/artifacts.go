@@ -105,9 +105,8 @@ func (s *FileArtifactSink) OpenLog(ctx context.Context, metadata ArtifactMetadat
 	}); err != nil {
 		return nil, fmt.Errorf("index worker log: %w", err)
 	}
-	// ContainerLogs replays retained output when a controller adopts or retries.
-	// Capture into a same-directory temporary file so an interrupted retry never
-	// destroys the prior complete artifact.
+	// ContainerLogs replays retained output on adopt or retry; a same-directory
+	// temporary file keeps an interrupted retry from destroying the prior artifact.
 	writer, err := statefs.DurableWrite{
 		Directory:        s.logDirectory,
 		Target:           path,
@@ -182,9 +181,8 @@ func (s *FileArtifactSink) WriteDiagnostics(ctx context.Context, metadata Artifa
 			}
 			return nil
 		},
-		// A committed archive that cannot be hardened is withdrawn; one that is
-		// hardened but whose directory flush fails stays, because the bytes are
-		// already protected and the unreferenced sweep reclaims them.
+		// An archive that cannot be hardened is withdrawn; a failed directory flush
+		// leaves hardened bytes in place for the unreferenced sweep to reclaim.
 		HardenAfterReplace: func(committedPath string) error {
 			if err := hardenAndVerify(s.acl, committedPath); err != nil {
 				_ = os.Remove(committedPath)
@@ -272,9 +270,8 @@ func (s *FileArtifactSink) WriteResourceEvidence(_ context.Context, metadata Art
 			}
 			return nil
 		},
-		// A retry short-circuits on an existing parseable file, so evidence
-		// that committed and then failed verification or the directory flush
-		// is withdrawn rather than frozen as the worker's final resource state.
+		// A retry short-circuits on an existing parseable file, so evidence that failed
+		// after commit is withdrawn rather than frozen as the worker's final state.
 		OnCommitFailure: func(committedPath string) { _ = os.Remove(committedPath) },
 		Labels: statefs.DurableWriteLabels{
 			CreateTemporary: "create temporary worker resource evidence",
@@ -366,10 +363,8 @@ func (s *FileArtifactSink) CleanupNow(ctx context.Context, adopted []ArtifactMet
 	return nil
 }
 
-// indexAdopted returns the adopted container IDs and the catalog as it stands
-// after adoption. It loads the catalog once and calls Upsert only for records
-// the patch would change; Upsert re-merges under the store lock, so the
-// pre-merge here only skips the full load a no-op Upsert would spend.
+// indexAdopted calls Upsert only for records the patch would change. Upsert
+// re-merges under the store lock, so the pre-merge only skips no-op loads.
 func (s *FileArtifactSink) indexAdopted(ctx context.Context, adopted []ArtifactMetadata) (map[string]struct{}, jobindex.Catalog, error) {
 	catalog, err := s.jobs.Load(ctx)
 	if err != nil && !errors.Is(err, jobindex.ErrNotFound) {
@@ -695,9 +690,8 @@ func saturatingSub(left, right uint64) uint64 {
 	return left - right
 }
 
-// sweepOrphans removes unreferenced artifacts past the retention cutoff from
-// both roots. A nil referenced set means nothing is referenced, not that the
-// sweep should be skipped.
+// A nil referenced set means nothing is referenced, not that the sweep should
+// be skipped.
 func (s *FileArtifactSink) sweepOrphans(referenced map[string]struct{}, now time.Time) error {
 	cutoff := now.Add(-s.policy.Retention)
 	return errors.Join(

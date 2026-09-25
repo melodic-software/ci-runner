@@ -162,9 +162,6 @@ func (a *Application) runHost(ctx context.Context, args []string) int {
 	}
 }
 
-// writeIndentedJSON encodes value as pretty-printed JSON to a.out. On
-// encoder failure it reports the error on a.errOut, naming the failed
-// operation, and returns ExitRuntime; on success it returns ExitOK.
 func (a *Application) writeIndentedJSON(value any, operation string) int {
 	if err := encodeJSON(a.out, value); err != nil {
 		writef(a.errOut, "write %s: %v\n", operation, err)

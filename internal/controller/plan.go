@@ -93,9 +93,8 @@ func EffectiveMaximumConcurrentWorkers(resources config.Resources, desired model
 	return resources.MaximumConcurrentWorkers
 }
 
-// quiesce records why this plan drains. The first reason wins so that a
-// multi-pool reconcile reports its highest-priority cause deterministically
-// instead of whichever pool happened to be evaluated last.
+// quiesce records why this plan drains. The first reason wins so a multi-pool reconcile
+// reports its highest-priority cause deterministically.
 func (p *Plan) quiesce(reason model.QuiesceReason) {
 	if p.QuiesceReason == "" {
 		p.QuiesceReason = reason
@@ -208,11 +207,8 @@ func BuildPlan(input PlanInput) Plan {
 		plan.Phase = model.PhasePowerSuspended
 		return plan
 	}
-	// Docker Desktop is a host prerequisite, not a worker-admission decision, so
-	// its start must precede the resource gate: a blocked gate (for example the
-	// invalid observation that intentional teardown produces) must never prevent
-	// the start that re-enable depends on. The gate still fails closed for worker
-	// scheduling below once the desktop is up.
+	// Docker Desktop's start must precede the resource gate: a blocked gate must never prevent the
+	// start re-enable depends on. The gate still fails closed for worker scheduling below.
 	if !input.Desktop.DesktopRunning || !input.Desktop.EngineReachable {
 		plan.StartDesktop = true
 		plan.Phase = model.PhaseStarting
@@ -321,10 +317,8 @@ func BuildPlan(input PlanInput) Plan {
 		memoryRemaining -= uint64(starts) * uint64(workerMemory)
 	}
 
-	// Reserve every authoritative assignment before allocating a single warm
-	// idle worker. Capacity is advertised across independent scale-set
-	// listeners, so a high-priority pool's idle preference must never consume a
-	// slot already assigned to another ready pool.
+	// Reserve every authoritative assignment before allocating a single warm idle worker, so a
+	// high-priority pool's idle preference never consumes a slot assigned to another ready pool.
 	for _, target := range targets {
 		if !ready[target.ID] {
 			continue
@@ -374,21 +368,13 @@ func BuildPlan(input PlanInput) Plan {
 		if active < desired {
 			plan.Start = append(plan.Start, StartDecision{PoolID: target.ID, Count: desired - active})
 		}
-		// A single excess registered worker is useful burst inventory. Keep it
-		// eligible instead of taking the entire pool to zero just to retire one
-		// runner. The next job can consume that ephemeral runner and converge the
-		// pool naturally without a deregistration race or availability blackout.
-		//
-		// Larger or explicit zero-capacity downscales still quiesce. Reconciler
-		// requires two authoritative zero-assignment polls plus durable
-		// no-active-job evidence before any selected worker is deregistered and
-		// removed.
+		// A single excess registered worker stays eligible as burst inventory instead of taking the pool
+		// to zero. Larger or explicit zero-capacity downscales still quiesce.
 		if active > desired {
 			excess := active - desired
 			if excess == 1 && hostLimit > 0 && target.MaxCapacity > 0 && !capacityDebt && ready[target.ID] && !assignmentOverCap[target.ID] {
-				// Begin with this pool's globally allocated worker demand. A later
-				// pass represents the retained excess worker only if capacity remains
-				// in the single host-wide advertisement budget.
+				// Begin with this pool's globally allocated worker demand. A later pass represents the retained
+				// excess worker only if the host-wide advertisement budget has capacity left.
 				plan.AdvertisedCapacity[target.ID] = desired
 				advertisable[target.ID] = true
 				burstCandidates = append(burstCandidates, burstCandidate{
@@ -410,12 +396,8 @@ func BuildPlan(input PlanInput) Plan {
 		}
 	}
 
-	// Desired worker allocation is globally bounded, but each retained excess
-	// worker belongs to an independent listener. Representing every excess in
-	// its pool capacity without a shared budget can therefore over-advertise the
-	// host. Preserve zero-warm pools first so they can converge naturally, then
-	// spend any remaining budget in target priority order. A zero-warm pool that
-	// cannot receive even one safe slot falls back to exact-runner quiescence.
+	// Retained excess workers share one host-wide advertisement budget: zero-warm pools first, then
+	// target priority. A zero-warm pool with no safe slot falls back to exact-runner quiescence.
 	advertisedBudget := hostLimit
 	for _, capacity := range plan.AdvertisedCapacity {
 		advertisedBudget -= capacity
@@ -443,13 +425,8 @@ func BuildPlan(input PlanInput) Plan {
 		}
 	}
 
-	// GitHub's scale-set listener capacity is the maximum number of assigned
-	// jobs the host can service, not the number of workers that should exist
-	// before assignment. ARC advertises maxRunners to the listener and computes
-	// its actual worker count separately as minRunners+assigned. Preserve that
-	// split here: desired workers remain assigned+warm-idle, while additional
-	// host- and memory-bounded slots are advertised without prestarting them.
-	// A gate, capacity debt, or per-pool quiesce still leaves capacity at zero.
+	// Listener capacity is the most assigned jobs the host can service (ARC's maxRunners), not a
+	// prestart count: extra host- and memory-bounded slots are advertised without starting workers.
 	if !capacityDebt {
 		serviceSlots := hostLimit - activeWorkers
 		for _, decision := range plan.Start {
@@ -465,9 +442,8 @@ func BuildPlan(input PlanInput) Plan {
 			additionalLimit = min(additionalLimit, advertisedBudget)
 			workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 			rawAffordable := affordableWorkerCount(memoryRemaining, workerMemory)
-			// Memory-backed capacity decreases immediately at the raw slot
-			// boundary. Growth requires extra headroom, while an already
-			// advertised slot remains stable inside that Schmitt-trigger band.
+			// Memory-backed capacity decreases immediately at the raw slot boundary. Growth needs extra
+			// headroom, while an advertised slot holds inside that Schmitt-trigger band.
 			held := min(additionalLimit, max(previousCapacityByPool[target.ID]-currentCapacity, 0))
 			held = min(held, rawAffordable)
 			memoryAfterHeld := memoryRemaining - uint64(held)*uint64(workerMemory)
@@ -479,10 +455,8 @@ func BuildPlan(input PlanInput) Plan {
 					input.Config.Resources.MemoryCapacityIncreaseMarginPct,
 				),
 			)
-			// The floor backstop stops advertised growth but never withdraws
-			// already-acknowledged (held) capacity: withdrawal under a transient
-			// host-memory dip would flap listeners the Schmitt trigger exists to
-			// keep stable.
+			// The floor backstop stops advertised growth but never withdraws held capacity: withdrawal
+			// under a transient host-memory dip would flap listeners.
 			if gate.floorBlocked {
 				growth = 0
 			}
@@ -515,11 +489,8 @@ func BuildPlan(input PlanInput) Plan {
 	return plan
 }
 
-// applyOutstandingAssignments closes the gap between the official client
-// acquiring a job and the worker hook reporting "busy". Capacity remains zero,
-// but existing nonbusy workers are retained and missing one-job workers are
-// started up to the last nonzero acknowledged capacity that could have caused
-// the assignment.
+// applyOutstandingAssignments covers the gap between job acquisition and the hook reporting busy:
+// nonbusy workers are kept, and missing ones started up to the last nonzero acknowledged capacity.
 func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[string][]model.Worker, known map[string]struct{}, activeWorkers int) bool {
 	poolByID := make(map[string]PoolSnapshot, len(input.Pools))
 	reservations := make(map[string]int, len(input.Pools))
@@ -545,9 +516,8 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	remaining := max(input.Config.Resources.MaximumConcurrentWorkers-activeWorkers, 0)
 	gate := evaluateMemoryBasis(input)
 	memoryRemaining := gate.remaining
-	// The static budget stays authoritative even when the host observation is
-	// invalid; the legacy host basis must not treat its synthetic zero headroom
-	// as authoritative for work GitHub already assigned.
+	// The static budget stays authoritative even for an invalid host observation; the legacy basis
+	// must not trust its synthetic zero headroom for work GitHub already assigned.
 	memoryObservationValid := gate.budgetActive ||
 		(input.Resources.TotalMemoryBytes > 0 &&
 			input.Resources.AvailableMemoryBytes <= input.Resources.TotalMemoryBytes)
@@ -567,11 +537,8 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		serviceable := min(uncovered, pool.DrainServiceCapacity, target.MaxCapacity)
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		start := min(max(0, serviceable-nonbusy), remaining)
-		// An assignment can win the race with a fail-closed poll cancellation.
-		// When physical-memory telemetry is valid, keep using the exact target
-		// profile to rank what can start now. When it is invalid, do not treat
-		// the synthetic zero headroom as authoritative for work GitHub already
-		// assigned under the last acknowledged, memory-bounded capacity.
+		// An assignment can win the race with a fail-closed poll cancellation: invalid telemetry's
+		// synthetic zero headroom must not block work GitHub already assigned.
 		if memoryObservationValid {
 			start = min(start, affordableWorkerCount(memoryRemaining, workerMemory))
 		}
@@ -625,9 +592,8 @@ func appendSafeRemovals(plan *Plan, workersByPool map[string][]model.Worker, kno
 	}
 }
 
-// sortedTargetsByPriority returns a copy of targets ordered by ascending
-// priority, breaking ties by ID for deterministic allocation order. Lower
-// priority values are allocated first.
+// sortedTargetsByPriority returns a copy of targets ordered by ascending priority, breaking
+// ties by ID.
 func sortedTargetsByPriority(targets []config.Target) []config.Target {
 	sorted := append([]config.Target(nil), targets...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -701,15 +667,8 @@ func evaluateResourceGate(previous model.ResourceGateState, snapshot model.Resou
 	return state, false, ""
 }
 
-// memoryBasis is the memory admission input for one plan. With a configured
-// WorkerMemoryBudget the slot math runs on remaining = budget minus every
-// active worker's reservation: a static basis the workers' own host footprint
-// (vmmem) cannot erode, unlike host AvailablePhysical, which falls as workers
-// run and re-clamps capacity under exactly the load it should serve. The host
-// snapshot then only backs a coarse hard floor that blocks NEW starts and
-// advertised growth when the host is genuinely out of memory; the floor sits
-// far below any level worker growth alone can reach because the VM's size caps
-// the workers' total host footprint.
+// memoryBasis is one plan's memory admission input. With a WorkerMemoryBudget, slots come from the
+// budget minus active reservations, and the host snapshot only backs a hard floor for new starts.
 type memoryBasis struct {
 	budgetActive  bool
 	budgetClamped bool
@@ -735,18 +694,8 @@ func evaluateMemoryBasis(input PlanInput) memoryBasis {
 	return basis
 }
 
-// activeWorkerReservations sums the memory reservation of every busy, starting,
-// and idle worker. A static budget seed must subtract busy workers explicitly:
-// the legacy host reading excluded them implicitly because their consumption had
-// already lowered AvailablePhysical.
-//
-// A worker's own runtime-reported limit wins over the configured profile, so a
-// worker started under a larger profile keeps charging what it actually holds
-// after the controller restarts onto a smaller one. Without that, the sum
-// undercharges those workers and can fund slots above the real VM budget until
-// they drain. Workers with no reported limit fall back to their pool profile,
-// and workers in unknown pools still occupy VM memory, so they reserve the
-// global default profile.
+// activeWorkerReservations sums busy, starting, and idle reservations. A worker's reported limit
+// wins over its profile; no limit falls back to the pool profile, an unknown pool to the default.
 func activeWorkerReservations(cfg config.Config, workers []model.Worker) uint64 {
 	memoryByPool := make(map[string]config.ByteSize, len(cfg.GitHub.Targets))
 	for _, target := range cfg.GitHub.Targets {
@@ -770,9 +719,8 @@ func activeWorkerReservations(cfg config.Config, workers []model.Worker) uint64 
 	return total
 }
 
-// hostMemoryAtFloor reports the budget-basis backstop: host AvailablePhysical
-// at or below the MinimumAvailableMemoryPct reserve. Invalid observations are
-// not judged here; evaluateResourceGate already fails them closed.
+// hostMemoryAtFloor reports host AvailablePhysical at or below the MinimumAvailableMemoryPct
+// reserve. Invalid observations are not judged here; evaluateResourceGate fails them closed.
 func hostMemoryAtFloor(snapshot model.ResourceSnapshot, policy config.Resources) bool {
 	if snapshot.TotalMemoryBytes == 0 || snapshot.AvailableMemoryBytes > snapshot.TotalMemoryBytes {
 		return false

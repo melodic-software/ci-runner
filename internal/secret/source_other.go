@@ -8,9 +8,8 @@ import (
 	"os"
 )
 
-// Private-key import is a Windows-only operation because its production
-// prerequisites are current-user DPAPI and BitLocker. Refuse to emulate the
-// identity-bound delete contract with a pathname-only unlink on other hosts.
+// Refuse to emulate the identity-bound delete contract with a pathname-only
+// unlink; private-key import needs Windows DPAPI and BitLocker.
 func openPrivateKeySource(path string) (privateKeySource, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

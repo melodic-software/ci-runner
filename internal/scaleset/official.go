@@ -124,9 +124,8 @@ func (c *OfficialClient) Ensure(ctx context.Context, definition Definition, prev
 	if previous != nil && previous.ScaleSetID > 0 {
 		current, err = target.api.GetRunnerScaleSetByID(ctx, int(previous.ScaleSetID))
 		if err != nil {
-			// A lookup by the configured immutable identity distinguishes a deleted
-			// scale set from a general authentication/transport failure without
-			// creating a duplicate.
+			// Lookup by immutable name tells a deleted scale set from an
+			// auth/transport failure without creating a duplicate.
 			current, err = target.api.GetRunnerScaleSet(ctx, groupID, definition.ScaleSetName)
 		}
 	} else {
@@ -219,9 +218,8 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	if message.Statistics == nil {
 		return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "poll", Err: errors.New("message did not contain authoritative statistics")}
 	}
-	// Validate the whole lifecycle batch before the first durable write. A
-	// malformed completion must not leave a newly-started job active forever
-	// merely because its start happened earlier in this same message.
+	// Validate the whole batch before the first durable write, so a malformed
+	// completion cannot strand an earlier start in this message as active.
 	startedJobIDs := make(map[string]struct{}, len(message.JobStartedMessages))
 	for _, started := range message.JobStartedMessages {
 		if started == nil || strings.TrimSpace(started.JobID) == "" {
@@ -243,10 +241,8 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 			if _, alreadyActive := c.activeRunnerForJob(target.definition.TargetID, jobID); alreadyActive {
 				return Statistics{}, &Error{Kind: ErrorInvalid, Operation: "validate job-completed event", Err: errors.New("anonymous completion conflicts with an active runner job")}
 			}
-			// GitHub emits a terminal completion with no runner identity when a
-			// job is canceled before assignment. It has no runner-index state to
-			// persist or clear, but is still a valid lifecycle event that must not
-			// poison message acknowledgement and later capacity updates.
+			// A job canceled before assignment completes with no runner identity:
+			// valid, with no runner-index state, and must not block acknowledgement.
 			continue
 		}
 		identifiedCompletions = append(identifiedCompletions, completed)
@@ -263,26 +259,21 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 			return Statistics{}, &Error{Kind: ErrorTransport, Operation: "persist job-completed event", Err: err}
 		}
 	}
-	// Update the in-memory acceleration map immediately after the durable sink.
-	// DeleteMessage is irreversible: if a later AcquireJobs call fails, this
-	// message will not replay and delaying these updates would forget lifecycle
-	// state until process restart. Redelivery remains idempotent.
+	// Update the in-memory map now: after the irreversible DeleteMessage, a failed
+	// AcquireJobs will not replay this message.
 	for _, started := range message.JobStartedMessages {
 		c.setActiveJob(target.definition.TargetID, started.RunnerName, started.JobID)
 	}
 	for _, completed := range identifiedCompletions {
 		c.clearActiveJob(target.definition.TargetID, completed.RunnerName)
 	}
-	// Preserve the pinned official listener's acknowledge-before-acquire order.
-	// Lifecycle evidence above is persisted first to close the crash gap; if the
-	// acknowledgement fails, no acquisition occurs and redelivery is idempotent.
+	// Preserve the official listener's acknowledge-before-acquire order; a failed
+	// acknowledgement acquires nothing, and redelivery is idempotent.
 	if err := target.session.DeleteMessage(context.WithoutCancel(ctx), message.MessageID); err != nil {
 		return Statistics{}, translateOfficialError("acknowledge message", err)
 	}
-	// Additive telemetry follows the irreversible acknowledgement. Durable
-	// lifecycle writes above remain intentionally idempotent on redelivery, but
-	// observing before DeleteMessage would double-count an acknowledgement
-	// failure and replay.
+	// Telemetry follows the acknowledgement; observing before DeleteMessage would
+	// double-count an acknowledgement failure and its replay.
 	jobStartObservedAt := time.Now().UTC()
 	for _, started := range message.JobStartedMessages {
 		visibilityLag := time.Duration(0)
@@ -308,11 +299,8 @@ func (c *OfficialClient) Statistics(ctx context.Context, identity Identity, maxC
 	return Statistics{TotalAssignedJobs: target.statistics.TotalAssignedJobs}, nil
 }
 
-// validateJobCompletion returns true only when the completion has an exact
-// runner identity that belongs in the durable runner/job index. GitHub's
-// canceled-before-assignment event deliberately has neither identity field;
-// accepting that shape is restricted to a real job ID, cancellation result,
-// and the absence of a runner-assignment timestamp.
+// validateJobCompletion reports whether completed has a runner identity to index;
+// a runner-less completion is valid only as a cancellation with a job ID and no assign time.
 func validateJobCompletion(completed *actionsscale.JobCompleted) (bool, error) {
 	if completed == nil {
 		return false, errors.New("job-completed event is nil")
@@ -378,10 +366,8 @@ func (c *OfficialClient) RunnerRegistered(ctx context.Context, poolID string, ru
 	}
 	runner, err := target.api.GetRunner(ctx, int(runnerID))
 	if err != nil {
-		// Only the Scale Set Client's parsed AgentNotFoundException proves
-		// this exact registration is gone. A generic HTTP 404 can come from
-		// token refresh, admin-connection discovery, or a wrong scope and must
-		// remain an error so cleanup fails closed.
+		// Only a parsed AgentNotFoundException proves the registration is gone;
+		// a generic 404 stays an error so cleanup fails closed.
 		if errors.Is(err, actionsscale.RunnerNotFoundError) {
 			return false, nil
 		}
@@ -574,9 +560,8 @@ func translateOfficialError(operation string, err error) error {
 		return err
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		// The official client has its own configured request deadline. The outer
-		// retry loop's context check prevents retrying a caller deadline, while an
-		// internal HTTP deadline is a safe transport retry.
+		// The outer loop's context check stops a caller deadline; the client's own
+		// request deadline is a safe transport retry.
 		return &Error{Kind: ErrorTransport, Operation: operation, Err: err}
 	}
 	var rateLimit *officialRateLimitError
@@ -665,14 +650,8 @@ func (f *defaultOfficialFactory) New(_ context.Context, definition Definition, k
 	return &officialAPIWrapper{Client: client}, nil
 }
 
-// hardenListenerTransport arms the shared scale-set HTTP transport against a
-// half-open poll socket. A home-network blip can leave the listener long poll's
-// TCP connection half-open with no server RST; a blocked read would otherwise
-// wait out the OS default keepalive window (hours). It tightens TCP keepalive and
-// enables HTTP/2 health-check pings so a dead peer surfaces in well under a
-// minute. Both are inert on a healthy connection: an idle-but-live long poll
-// answers keepalive probes and PING frames, and neither shortens a legitimately
-// fast JIT request, which the shared per-request timeout continues to bound.
+// hardenListenerTransport makes a half-open long-poll socket fail in under a
+// minute rather than the OS keepalive window (hours); inert on a live connection.
 func hardenListenerTransport(client *http.Client) {
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {

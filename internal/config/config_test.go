@@ -111,9 +111,8 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 }
 
-// TestLoadIgnoresLegacyHealthWatchdog proves a host configuration that still
-// carries the deprecated healthWatchdog block loads under strict decoding and
-// reports a warning, while a configuration without it reports none.
+// TestLoadIgnoresLegacyHealthWatchdog pins that the deprecated healthWatchdog
+// block still loads under strict decoding, with one warning.
 func TestLoadIgnoresLegacyHealthWatchdog(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(strings.NewReader(validYAML))
@@ -133,13 +132,8 @@ func TestLoadIgnoresLegacyHealthWatchdog(t *testing.T) {
 	}
 }
 
-// TestLoadDefaultsOmittedWorkerImagePullTimeout proves WorkerImage.PullTimeout
-// is the one deliberate exception to this schema's otherwise-universal
-// "every Duration is explicit/required" convention (see WorkerImage's doc
-// comment): a host YAML that omits workerImage entirely must still load
-// successfully, with PullTimeout defaulted to defaultWorkerImagePullTimeout,
-// rather than failing Validate the way an omitted dockerDesktop.startTimeout
-// or drain.warningAfter would.
+// TestLoadDefaultsOmittedWorkerImagePullTimeout pins PullTimeout as the one
+// optional Duration: omitting workerImage loads with the default.
 func TestLoadDefaultsOmittedWorkerImagePullTimeout(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "workerImage:\n  pullTimeout: 20m\n", "", 1)
@@ -155,14 +149,8 @@ func TestLoadDefaultsOmittedWorkerImagePullTimeout(t *testing.T) {
 	}
 }
 
-// TestValidateRejectsNegativeWorkerImagePullTimeout proves an explicitly
-// negative PullTimeout is still rejected. This is unreachable through the
-// ordinary Load path -- Duration.UnmarshalYAML already refuses any
-// non-positive explicit YAML value before Validate ever runs -- so, mirroring
-// TestTargetWorkerOverridesUseGlobalValidationContract's load-then-mutate-
-// then-Validate pattern below, this constructs the invalid value directly in
-// Go and calls Validate itself, the only way a negative value can reach it
-// (e.g. a future non-YAML config source).
+// TestValidateRejectsNegativeWorkerImagePullTimeout sets the value in Go because
+// YAML decoding rejects a negative Duration before Validate runs.
 func TestValidateRejectsNegativeWorkerImagePullTimeout(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(strings.NewReader(validYAML))
@@ -198,10 +186,8 @@ func TestLoadOptionalElevatedProbeTimeout(t *testing.T) {
 	}
 }
 
-// TestValidateRejectsNegativeElevatedProbeTimeout mirrors
-// TestValidateRejectsNegativeWorkerImagePullTimeout: the value is optional, so
-// Validate is the only guard against a negative one reaching a consumer, and
-// only a non-YAML construction can produce it.
+// TestValidateRejectsNegativeElevatedProbeTimeout pins Validate as the only guard
+// against a negative optional value, which only non-YAML construction produces.
 func TestValidateRejectsNegativeElevatedProbeTimeout(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(strings.NewReader(validYAML))

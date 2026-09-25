@@ -44,9 +44,8 @@ func TestShutdownDrainsTransientlyAndClosesAdapters(t *testing.T) {
 func TestShutdownTerminatesOnPersistentStepErrors(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
-	// The desktop stays up, so every Step probes worker inventory and every probe
-	// fails: without a bound the drain loop would spin forever (issue #66). A
-	// controller-restart signal must still exit, so Shutdown must terminate.
+	// Every Step's inventory probe fails, so without a bound the drain loop would spin forever
+	// (issue #66). A controller-restart signal must still exit, so Shutdown must terminate.
 	harness.runtime.listErr = errors.New("persistent worker inventory failure")
 	scaleSets := &closingScaleSet{Client: harness.scaleSets}
 	harness.controller.deps.ScaleSets = scaleSets
@@ -55,9 +54,8 @@ func TestShutdownTerminatesOnPersistentStepErrors(t *testing.T) {
 	go func() { done <- harness.controller.Shutdown(context.Background()) }()
 	select {
 	case err := <-done:
-		// The bounded escape must not present an unverified drain as a clean
-		// stop: restart handling accepts the sentinel, everything else fails
-		// closed on it.
+		// Restart handling accepts this sentinel and everything else fails closed on it, so the bounded
+		// escape never presents an unverified drain as a clean stop.
 		if !errors.Is(err, ErrShutdownDegraded) {
 			t.Fatalf("Shutdown returned %v, want ErrShutdownDegraded for the bounded escape", err)
 		}

@@ -8,12 +8,8 @@ import (
 	"time"
 )
 
-// TestWindowsMutexAttributesWin32MutexWait covers the second wait stage, which
-// only a second process can normally reach: NewPlatformLocker deliberately
-// shares one in-process token per mutex name, so an in-process contender always
-// blocks at the earlier stage. Constructing the contender directly with its own
-// free token reproduces the cross-process shape -- token available, kernel
-// mutex held elsewhere -- inside one test process.
+// TestWindowsMutexAttributesWin32MutexWait gives the contender its own free token
+// so it reaches the kernel-mutex stage that normally only a second process can.
 func TestWindowsMutexAttributesWin32MutexWait(t *testing.T) {
 	locker, err := NewPlatformLocker("lock-wait-attribution-win32-test")
 	if err != nil {

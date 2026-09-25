@@ -133,12 +133,8 @@ func (a *Application) stopController(ctx context.Context, restart bool) int {
 	cancelReceipt()
 	receiptVerified := receiptErr == nil && receipt.SchemaVersion == 1 && !receipt.CompletedAt.IsZero() &&
 		receipt.RequestID == restartRequestID && receipt.ProcessID == status.ProcessID && receipt.Version == status.Version
-	// The durable receipt, not the process exit code, is the restart
-	// authorization: the receipt is written only after the drain, runtime
-	// close, and listener close all completed, while the exit code can be
-	// clobbered by an external termination racing a finished drain. A
-	// verified receipt therefore authorizes the task start even under a
-	// non-restart exit code; without one the command still fails closed.
+	// A verified receipt, not the exit code, authorizes the task start: the receipt is written only
+	// after a complete drain, while an external termination can clobber the exit code.
 	if exitCode != ControllerRestartExitCode {
 		if receiptVerified {
 			writef(a.out, "Controller exited with code %d instead of dedicated restart code %d, but the exact durable completion receipt is verified; starting the scheduled task.\n", exitCode, ControllerRestartExitCode)
@@ -168,14 +164,8 @@ func (a *Application) stopController(ctx context.Context, restart bool) int {
 	return a.startControllerTaskAndWait(ctx, buildinfo.Version, status.ProcessID)
 }
 
-// startControllerTaskAndWait explicitly invokes the canonical current-user
-// task at most four times, with exponential backoff, until the authenticated
-// control plane proves that a different process is running at the exact
-// expected version. Task Scheduler can still be finishing the prior instance
-// when ProcessHandle.Wait returns; with MultipleInstances=IgnoreNew an
-// otherwise successful /Run request is then a no-op. Bounded retries close that
-// race without creating a task-start storm, starting the controller directly,
-// elevating, or terminating either controller process.
+// startControllerTaskAndWait retries the task up to four times: with MultipleInstances=IgnoreNew,
+// a /Run while the prior instance is still finishing is a silent no-op.
 func (a *Application) startControllerTaskAndWait(ctx context.Context, expectedVersion string, previousProcessID uint32) int {
 	interval := a.dependencies.Config.Controller.ShutdownPollInterval.Duration
 	timeout := a.dependencies.Config.Controller.StartupTimeout.Duration

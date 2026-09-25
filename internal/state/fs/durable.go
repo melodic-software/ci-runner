@@ -175,8 +175,6 @@ func (w *DurableWriter) Commit() error {
 	return nil
 }
 
-// withdraw runs the caller's post-commit cleanup for a target that committed
-// and then failed a later stage.
 func (w *DurableWriter) withdraw(err error) error {
 	if w.plan.OnCommitFailure != nil {
 		w.plan.OnCommitFailure(w.plan.Target)

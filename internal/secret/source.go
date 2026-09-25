@@ -6,9 +6,8 @@ import (
 	"os"
 )
 
-// privateKeySource keeps the exact source object open from validation through
-// deletion. CommitRemoval must delete only that opened object; it must never
-// fall back to deleting the original pathname after an identity ambiguity.
+// privateKeySource stays open from validation through deletion. CommitRemoval
+// deletes only that opened object, never the original pathname.
 type privateKeySource interface {
 	io.Reader
 	CommitRemoval() error

@@ -8,16 +8,13 @@ readonly marker_prefix=ci-runner-resource-evidence-v1:
 readonly maximum_evidence_bytes=32768
 readonly container_stdout=/proc/1/fd/1
 
-# Resource evidence is operational telemetry, not a security boundary. Workflow
-# code shares the disposable runner identity, so refuse a replaced state path
-# and leave controller-side fallback classification to the host.
+# Telemetry, not a security boundary: workflow code shares this identity, so
+# refuse a replaced state path and leave fallback classification to the host.
 if [[ ! -d "$state_directory" || -L "$state_directory" ]]; then
   exit 0
 fi
 
 missing=()
-# Accept a decimal integer or record the field as missing. Shared by scalar
-# files and key/value stat maps so the degrade path stays one shape.
 take_numeric() {
   local name="$1" value="${2:-}"
   if [[ "$value" =~ ^[0-9]+$ ]]; then
@@ -38,11 +35,6 @@ read_scalar() {
   take_numeric "$name" "$value"
 }
 
-# Load a whitespace key/value cgroup file into a nameref associative array.
-# Bash read stays in-process; the previous per-key awk fork (five of them on
-# the complete path) is the spawn-census hotspot this replaces. GNU Bash
-# namerefs: https://www.gnu.org/software/bash/manual/html_node/Shell-Parameters.html
-# Line iteration: https://mywiki.wooledge.org/BashFAQ/001
 read_map() {
   local read_map_path="$1"
   local -n read_map_dest="$2"
@@ -128,10 +120,6 @@ fi
 umask 077
 temporary="$(mktemp "$state_directory/.cgroup-terminal.XXXXXX")" || exit 0
 trap 'rm --force "$temporary"' EXIT
-# --args is jq's documented way to pass remaining argv as $ARGS.positional
-# (https://jqlang.github.io/jq/manual/#invoking-jq). That replaces a nested
-# jq --raw-input --slurp over printf, which spawn-census counted as a second
-# jq on every path including unavailable.
 if ! jq --compact-output --null-input \
   --arg status "$status" \
   --argjson memory_peak "$memory_peak" \
@@ -180,10 +168,6 @@ if IFS= read -r evidence <"$final_path"; then
   if [[ ! "$pipe_buffer" =~ ^[0-9]+$ ]] || ((${#marker} + 1 > pipe_buffer)); then
     exit 0
   fi
-  # The pinned runner redirects completion-hook stdout/stderr into its job log
-  # pipeline. PID 1 is the same-UID runner launcher for the container lifetime,
-  # and its stdout is Docker's logging pipe. Open that pipe directly so the
-  # controller can observe one PIPE_BUF-bounded atomic marker write.
   { printf '%s\n' "$marker" >"$container_stdout"; } 2>/dev/null || true
 fi
 exit 0

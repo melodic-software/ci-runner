@@ -11,10 +11,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// windowsPrivateKeySource requests read and delete access without sharing
-// write or delete access. Per CreateFile's documented share-mode contract,
-// the pathname therefore cannot be written, renamed, or deleted while this
-// handle remains open. CommitRemoval marks this exact handle for deletion.
+// windowsPrivateKeySource's handle shares neither write nor delete access, so per
+// CreateFile's share-mode contract the path cannot change while it is open.
 type windowsPrivateKeySource struct {
 	path string
 	file *os.File
@@ -99,9 +97,8 @@ func (s *windowsPrivateKeySource) CommitRemoval() error {
 		return err
 	}
 
-	// FILE_DISPOSITION_INFO contains one Win32 BOOL. SetFileInformationByHandle
-	// applies deletion to the file object represented by this handle rather
-	// than performing a second pathname lookup.
+	// FILE_DISPOSITION_INFO is one Win32 BOOL. Deleting by handle avoids a second
+	// pathname lookup.
 	deleteFile := uint32(1)
 	if err := windows.SetFileInformationByHandle(
 		windows.Handle(s.file.Fd()),

@@ -20,21 +20,12 @@ import (
 
 const maximumDoctorACLEntries = 100_000
 
-// defaultElevatedProbeTimeout budgets the doctor's one elevated check on human
-// time rather than machine time. It spans the whole sequence the operator sits
-// through: the secure-desktop transition, a person noticing the prompt and
-// answering it, an elevated Windows PowerShell starting, and the BitLocker
-// module import plus CIM query behind Get-BitLockerVolume. The human term
-// dominates and the machine terms are seconds, so this is deliberately far
-// above controller.localProbeTimeout, which bounds probes no person
-// participates in and stays short so a hung host is detected quickly.
-// controller.elevatedProbeTimeout overrides it per host.
+// defaultElevatedProbeTimeout is sized for a person answering a UAC prompt, so it sits far above
+// controller.localProbeTimeout; controller.elevatedProbeTimeout overrides it per host.
 const defaultElevatedProbeTimeout = 2 * time.Minute
 
-// errElevatedProbeTimedOut is the cause attached to the elevated probe's
-// context. The bare DeadlineExceeded sentinel serves every deadline and so
-// cannot say which one expired, and the probe's callee cannot see the doctor's
-// budgets at all -- it reports whatever cause the context carries.
+// errElevatedProbeTimedOut names which deadline expired; a bare DeadlineExceeded cannot, and the
+// probe reports whatever cause its context carries.
 var errElevatedProbeTimedOut = errors.New("elevated host probe did not complete within its deadline, which spans answering the Administrator UAC prompt")
 
 type doctorACLVerifier interface {
@@ -171,10 +162,8 @@ func (i *LocalDoctorInspector) Inspect(ctx context.Context, request DoctorInspec
 	return append(checks, i.bitLockerCheck(ctx, request))
 }
 
-// bitLockerCheck runs last because it is the only check that can block on a
-// person: every other result is computed and recorded before the UAC prompt
-// takes the screen, so a slow or unanswered prompt costs nothing but its own
-// row.
+// bitLockerCheck runs last: it can block on a person answering UAC, and every other result is
+// recorded before the prompt takes the screen.
 func (i *LocalDoctorInspector) bitLockerCheck(ctx context.Context, request DoctorInspection) DoctorCheck {
 	switch {
 	case !request.IncludeElevated:
@@ -194,10 +183,7 @@ func (i *LocalDoctorInspector) bitLockerCheck(ctx context.Context, request Docto
 	return DoctorCheck{Name: "bitlocker", Healthy: true, Detail: "secret volume is fully encrypted and protection is on"}
 }
 
-// probe derives one check's deadline from the caller's context so no check can
-// spend another's budget: on a single shared deadline the first probe to
-// exhaust it leaves every later check failing on a spent context without ever
-// running.
+// probe gives each check its own deadline so one check cannot spend another's budget.
 func (i *LocalDoctorInspector) probe(ctx context.Context) (context.Context, context.CancelFunc) {
 	return budgetedProbe(ctx, i.Config.Controller.LocalProbeTimeout.Duration, host.ErrProbeTimedOut)
 }
@@ -217,10 +203,8 @@ func budgetedProbe(ctx context.Context, budget time.Duration, cause error) (cont
 	return context.WithTimeoutCause(ctx, budget, cause)
 }
 
-// pendingRebootCheck surfaces pending-OS-reboot state as advisory only: with
-// updates auto-installed but never auto-rebooted while a session exists, a
-// pending reboot is the expected standing residual the operator finishes
-// during a deliberate drain window, not a fault.
+// pendingRebootCheck is advisory: updates install but never auto-reboot while a session exists,
+// so a pending reboot is expected until the next drain window.
 func (i *LocalDoctorInspector) pendingRebootCheck() DoctorCheck {
 	check := DoctorCheck{Name: "pending-os-reboot", Advisory: true}
 	if i.PendingReboot == nil {

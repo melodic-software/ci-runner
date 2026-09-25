@@ -8,10 +8,8 @@ import (
 	"time"
 )
 
-// TestPlatformLockerAttributesInProcessTokenWait covers the first of the two
-// wait stages on every platform: NewPlatformLocker hands both lockers the same
-// in-process token for one scope, so a second acquisition can only ever block
-// there.
+// TestPlatformLockerAttributesInProcessTokenWait pins the in-process token stage:
+// lockers on one scope share a token, so a second acquisition blocks there.
 func TestPlatformLockerAttributesInProcessTokenWait(t *testing.T) {
 	holder, err := NewPlatformLocker("lock-wait-attribution-token-test")
 	if err != nil {
@@ -37,10 +35,6 @@ func TestPlatformLockerAttributesInProcessTokenWait(t *testing.T) {
 	assertLockWait(t, lockErr, LockWaitInProcess, context.DeadlineExceeded)
 }
 
-// assertLockWait states the full contract a wait attribution must satisfy: the
-// class is exact, the duration is real, both reach the operator through the
-// message an unstructured wrapper preserves, and the context cause still
-// unwraps for callers that classify on it.
 func assertLockWait(t *testing.T, err error, class LockWaitClass, cause error) {
 	t.Helper()
 	var wait *LockWaitError

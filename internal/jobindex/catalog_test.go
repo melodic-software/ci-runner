@@ -16,8 +16,7 @@ import (
 )
 
 // legacyRecord and legacyCatalog mirror the schema-version-1 shapes v0.1.9
-// decodes with DisallowUnknownFields; rollback-readability tests decode
-// current jobs.json bytes through them.
+// decodes with DisallowUnknownFields, for rollback-readability tests.
 type legacyRecord struct {
 	PoolID            string     `json:"poolId"`
 	RunnerName        string     `json:"runnerName"`
@@ -318,10 +317,8 @@ func TestActiveJobIgnoresATombstonedRecordRatherThanFailing(t *testing.T) {
 	}
 }
 
-// A record can be tombstoned while it still looks active: FinalizedAt and
-// CompletedAt have independent producers, and retention tombstones on
-// FinalizedAt alone. Reaching the caller, that state aborted every worker
-// enrichment pass for the key.
+// A tombstoned record can still look active (FinalizedAt and CompletedAt have
+// independent producers); returning it aborted every enrichment pass for the key.
 func TestActiveJobIgnoresATombstonedRecordWhoseCompletionNeverArrived(t *testing.T) {
 	t.Parallel()
 	store := newFileStoreForTest(t, t.TempDir())
@@ -568,9 +565,8 @@ func TestSaveCompactsOldestCompletedRecordsWhenNoTombstonesRemain(t *testing.T) 
 	store := newFileStoreForTest(t, directory)
 	now := time.Unix(550, 0).UTC()
 	store.now = func() time.Time { return now }
-	// The #98 incident shape: a catalog over the save cap made entirely of
-	// completed, never-tombstoned records, plus an open record and an active
-	// (started, not completed) record that must both survive compaction.
+	// The #98 incident shape: over the cap with only completed records, plus
+	// an open and an active record that must both survive compaction.
 	catalog := Catalog{SchemaVersion: SchemaVersion}
 	padding := strings.Repeat("w", 512)
 	recordCount := maximumJobState/len(padding) + 64

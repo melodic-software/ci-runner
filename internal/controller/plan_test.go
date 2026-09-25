@@ -844,12 +844,8 @@ func TestBusyWorkersRemainWhenLimitDropsBelowBusyCount(t *testing.T) {
 	}
 }
 
-// TestEffectiveMaximumConcurrentWorkersPrefersOverride proves
-// EffectiveMaximumConcurrentWorkers -- the resolution BuildPlan applies and
-// internal/app's reconcile-step watchdog mirrors to size its JIT-start
-// budget -- returns the desired state's TemporaryCapacityOverride when an
-// operator has set one, even when it is larger than the static configured
-// cap, and falls back to the static cap only when no override is set.
+// TestEffectiveMaximumConcurrentWorkersPrefersOverride pins that the desired state's
+// TemporaryCapacityOverride wins, even above the static cap, which applies only without one.
 func TestEffectiveMaximumConcurrentWorkersPrefersOverride(t *testing.T) {
 	t.Parallel()
 	resources := config.Resources{MaximumConcurrentWorkers: 1}
@@ -946,10 +942,8 @@ func TestBuildPlanStartsDesktopDespiteInvalidResourceObservation(t *testing.T) {
 	}
 }
 
-// budgetInput mirrors the live 3-pool host shape measured in Phase 1 of the
-// runner-performance effort: 2GiB default workers, a static budget sized above
-// the worst-case reservation sum, and a host snapshot whose low
-// AvailablePhysical would clamp the legacy host-basis slot math.
+// budgetInput mirrors a live 3-pool host: 2GiB default workers, a static budget above the worst-case
+// reservation sum, and low AvailablePhysical that would clamp the legacy host-basis slot math.
 func budgetInput() PlanInput {
 	input := healthyInput()
 	input.Config.Resources.MaximumConcurrentWorkers = 12
@@ -977,9 +971,8 @@ func TestBudgetBasisAdvertisesFullPoolMaxAcrossHeterogeneousPools(t *testing.T) 
 
 	plan := BuildPlan(input)
 
-	// Worst-case reservations 8*2GiB + 2*4GiB + 2*4GiB = 32GiB fit the 36GiB
-	// budget, so the memory term must not bind even though the host snapshot
-	// (17GiB available, 15% floor) would fund only 3 legacy slots.
+	// Worst-case reservations 8*2GiB + 2*4GiB + 2*4GiB = 32GiB fit the 36GiB budget, while the host
+	// snapshot (17GiB available, 15% floor) would fund only 3 legacy slots.
 	if plan.AdvertisedCapacity["default"] != 8 || plan.AdvertisedCapacity["build"] != 2 || plan.AdvertisedCapacity["review"] != 2 {
 		t.Fatalf("advertised = %#v, want full pool max 8/2/2", plan.AdvertisedCapacity)
 	}
@@ -1010,9 +1003,8 @@ func TestBudgetBasisSubtractsAllActiveWorkersUpFrontWithoutDoubleCounting(t *tes
 
 	plan := BuildPlan(input)
 
-	// Budget 8GiB minus 3 active reservations (2GiB each) funds exactly one new
-	// start. Counting the idle worker again inside allocation would fund zero;
-	// not subtracting busy workers up front would fund two.
+	// 8GiB budget minus 3 active 2GiB reservations funds exactly one start. Counting the idle worker
+	// again would fund zero; not subtracting busy workers up front would fund two.
 	if got := totalStarts(plan.Start); got != 1 {
 		t.Fatalf("starts = %d, want exactly 1", got)
 	}
@@ -1026,10 +1018,8 @@ func TestBudgetBasisSubtractsAllActiveWorkersUpFrontWithoutDoubleCounting(t *tes
 
 func TestBudgetBasisChargesWorkersTheMemoryLimitTheyWereStartedWith(t *testing.T) {
 	t.Parallel()
-	// The controller has restarted onto a 2GiB profile while two workers started
-	// under the previous 4GiB profile are still active. Reserving the current
-	// profile for them would undercharge 4GiB of the 8GiB budget and fund two
-	// starts the VM cannot actually hold.
+	// Two workers started under the previous 4GiB profile outlive a restart onto 2GiB. Reserving the
+	// current profile would undercharge 4GiB of the 8GiB budget and fund two starts the VM cannot hold.
 	input := budgetInput()
 	input.Config.Resources.MaximumConcurrentWorkers = 4
 	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
@@ -1052,12 +1042,8 @@ func TestBudgetBasisChargesWorkersTheMemoryLimitTheyWereStartedWith(t *testing.T
 
 func TestBudgetBasisChargesMixedProfileWorkersEachTheirOwnLimit(t *testing.T) {
 	t.Parallel()
-	// A rolling profile change leaves workers from several profiles active at
-	// once, plus one the runtime reports no limit for. Each must charge its own
-	// reservation rather than one profile standing in for all of them: 4GiB and
-	// 1GiB from the reported limits, and the 2GiB effective profile for the
-	// worker without one, leaving 1GiB of the 8GiB budget - short of the 2GiB a
-	// further start would need.
+	// Each worker charges its own reservation: 4GiB and 1GiB reported limits, plus the 2GiB profile for the
+	// worker with none, leaving 1GiB of the 8GiB budget, short of a further 2GiB start.
 	input := budgetInput()
 	input.Config.Resources.MaximumConcurrentWorkers = 4
 	input.Config.Resources.WorkerMemoryBudget = config.ByteSize(8 << 30)
@@ -1105,9 +1091,8 @@ func TestBudgetBasisFloorGateBlocksNewStartsAndGrowthWhenHostMemoryCritical(t *t
 	t.Parallel()
 	input := budgetInput()
 	input.Config.GitHub.Targets[0].WarmIdle = 4
-	// 9GiB available is at or below the 15% floor of 64GiB (9.6GiB): the
-	// backstop must stop new starts and advertised growth while holding the
-	// previously acknowledged capacity.
+	// 9GiB available is at or below the 15% floor of 64GiB (9.6GiB): the backstop stops new
+	// starts and advertised growth but holds the previously acknowledged capacity.
 	input.Resources.AvailableMemoryBytes = 9 << 30
 	input.Previous.Pools = []model.PoolObservation{{ID: "default", MaxCapacity: 3, CapacityAcknowledged: true}}
 
@@ -1309,9 +1294,8 @@ func TestQuiesceReasonDistinguishesOperatorDrainFromConvergenceQuiesce(t *testin
 	}
 }
 
-// The #102 wedge shape: a lone excess worker is burst-eligible, but the
-// host-wide advertisement budget is already spent, so its pool falls back to
-// quiescence with capacity pinned at zero.
+// The #102 wedge shape: a lone burst-eligible excess worker whose host-wide advertisement budget
+// is already spent falls back to quiescence with capacity pinned at zero.
 func TestQuiesceReasonNamesAnExhaustedAdvertisementBudget(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()
@@ -1336,9 +1320,8 @@ func TestQuiesceReasonNamesAnExhaustedAdvertisementBudget(t *testing.T) {
 	}
 }
 
-// Phase selection gives problems priority over draining, so a wedged controller
-// can report "degraded". The reason must survive that overlay: the moment the
-// controller is both wedged and degraded is exactly when it is being diagnosed.
+// Problems outrank draining in phase selection. The quiesce reason must survive that overlay:
+// a wedged and degraded controller is exactly when it is being diagnosed.
 func TestQuiesceReasonSurvivesTheDegradedPhaseOverlay(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()

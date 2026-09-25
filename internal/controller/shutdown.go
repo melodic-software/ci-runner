@@ -17,9 +17,8 @@ func (r *Reconciler) BeginShutdown() {
 	cancel := r.currentStepCancel
 	r.stateMu.Unlock()
 	if cancel != nil {
-		// Interrupt an in-flight long poll immediately. The app-level loop also
-		// cancels its step context after the acceptance response is flushed, but
-		// BeginShutdown cannot depend on scheduling order for responsiveness.
+		// Interrupt an in-flight long poll immediately; BeginShutdown cannot depend on the app-level
+		// loop's later step-context cancel for responsiveness.
 		cancel(errShutdownRequested)
 	}
 }
@@ -30,13 +29,8 @@ func (r *Reconciler) ShuttingDown() bool {
 	return r.shuttingDown
 }
 
-// shutdownDegradedStepBudget bounds how many consecutive erroring drain Steps
-// Shutdown tolerates before terminating. A clean drain is verified only through
-// Step, but persistently failing probes (for example after Docker Desktop was
-// intentionally stopped, or an external dependency is down) can make Step return
-// an error forever. Rather than loop until the process is externally killed, the
-// controller terminates the drain after this many consecutive failures. A clean
-// Step resets the count, so transient blips never trip it.
+// shutdownDegradedStepBudget bounds how many consecutive erroring drain Steps Shutdown
+// tolerates before terminating. A clean Step resets the count.
 const shutdownDegradedStepBudget = 3
 
 // ErrShutdownDegraded reports that Shutdown terminated through the bounded

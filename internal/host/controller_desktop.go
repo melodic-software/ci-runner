@@ -72,8 +72,7 @@ func (a ControllerDesktopAdapter) ShutdownAllWSL(ctx context.Context) error {
 	return a.WSL.Shutdown(ctx)
 }
 
-// probe reports Docker Desktop's current status and engine reachability. ok
-// is false when either query failed, so Start/Stop's poll predicates keep
+// ok is false when either query failed, so Start/Stop's poll predicates keep
 // polling on a transient query error rather than treating it as ready.
 func (a ControllerDesktopAdapter) probe(ctx context.Context) (status DesktopStatus, reachable bool, ok bool) {
 	status, err := a.Desktop.Status(ctx)

@@ -103,8 +103,6 @@ func cloneObserved(in model.ObservedState) model.ObservedState {
 	return out
 }
 
-// clonePointer copies the pointed-to value so callers cannot mutate stored
-// state through a shared pointer. nil stays nil.
 func clonePointer[T any](in *T) *T {
 	if in == nil {
 		return nil

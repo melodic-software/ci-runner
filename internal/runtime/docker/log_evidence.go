@@ -11,10 +11,8 @@ const (
 	maximumResourceEvidenceLogLineSize = maximumResourceEvidenceBytes + len(resourceEvidenceLogMarker) + 64
 )
 
-// resourceEvidenceLogObserver forwards the Docker log stream unchanged while
-// retaining only one bounded line at a time. Workflow code can emit the same
-// marker, so this is capacity telemetry transport rather than an attestation.
-// The official completion hook's last schema-valid marker wins.
+// Workflow code can emit the same marker, so this is capacity telemetry rather
+// than an attestation; the completion hook's last schema-valid marker wins.
 type resourceEvidenceLogObserver struct {
 	destination io.Writer
 	line        []byte

@@ -97,11 +97,8 @@ func (m *WindowsMutex) Lock(ctx context.Context) (func() error, error) {
 	}, nil
 }
 
-// acquireOnOwnedThread keeps WaitForSingleObject and ReleaseMutex on the same
-// native thread. A Win32 mutex is owned by the acquiring thread, not by the Go
-// goroutine; returning a raw release closure lets the goroutine migrate and can
-// fail with ERROR_NOT_OWNER. The dedicated owner accepts release through a
-// channel so callers may safely unlock from any goroutine.
+// acquireOnOwnedThread: a Win32 mutex belongs to its acquiring OS thread, and a
+// release from any other thread fails with ERROR_NOT_OWNER.
 func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- windowsMutexAcquisition) {
 	runtime.LockOSThread()
 	terminateOwnedThread := false
@@ -128,14 +125,8 @@ func (m *WindowsMutex) acquireOnOwnedThread(ctx context.Context, result chan<- w
 		result <- windowsMutexAcquisition{err: err}
 		return
 	}
-	// CreateMutexW returns a usable handle to the pre-existing object and sets
-	// ERROR_ALREADY_EXISTS whenever another process created the mutex first, and
-	// x/sys reports that as an error alongside the valid handle. Treating it as a
-	// failure defeats the entire point of a named mutex: every process but the
-	// first aborted here instead of entering the wait below, so nothing ever
-	// serialized across processes and the handle leaked. Opening the existing
-	// object ignores the security descriptor above and inherits the creator's --
-	// the same DACL, because the name is salted with the current user's SID.
+	// ERROR_ALREADY_EXISTS comes with a valid handle to another process's mutex
+	// (same DACL: the name is SID-salted); failing on it breaks serialization.
 	handle, err := windows.CreateMutex(&attributes, false, name)
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		result <- windowsMutexAcquisition{err: fmt.Errorf("CreateMutexW: %w", err)}

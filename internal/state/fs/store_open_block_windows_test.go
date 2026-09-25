@@ -4,9 +4,8 @@ package statefs
 
 import "golang.org/x/sys/windows"
 
-// blockObservedOpen holds an exclusive read handle so a concurrent os.Open
-// surfaces the same sharing-violation class of failure seen under concurrent
-// state-directory writes on Windows hosts.
+// blockObservedOpen holds an exclusive handle so a concurrent os.Open hits the
+// sharing violation seen under concurrent state-directory writes on Windows.
 func blockObservedOpen(path string) (func(), error) {
 	pathUTF16, err := windows.UTF16PtrFromString(path)
 	if err != nil {

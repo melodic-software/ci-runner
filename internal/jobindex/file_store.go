@@ -18,10 +18,8 @@ import (
 const (
 	jobsFilename    = "jobs.json"
 	maximumJobState = 8 << 20
-	// The load tolerance exceeds the save cap so a file that breached the cap
-	// under an older controller (or was restored from a backup) still loads;
-	// the next save compacts it back under the cap instead of bricking the
-	// index until someone hand-edits state.
+	// Over-cap files still load so the next save compacts them instead of
+	// bricking the index.
 	maximumJobStateLoad = 4 * maximumJobState
 )
 
@@ -146,11 +144,8 @@ func (c Catalog) ActiveJob(poolID, runnerName string) (string, bool) {
 		return "", false
 	}
 	for _, record := range c.Records {
-		// A tombstoned record is dead bookkeeping and must not shadow its key,
-		// matching FindByJobID and FindByRunner. It can legitimately still look
-		// active: FinalizedAt and CompletedAt have independent producers, so a
-		// lost completion event leaves JobID and JobStartedAt set with
-		// CompletedAt zero, and retention tombstones it on FinalizedAt alone.
+		// Skip tombstones like FindByJobID and FindByRunner: after a lost
+		// completion event a tombstoned record can still look active.
 		if record.PoolID != poolID || record.RunnerName != runnerName || record.TombstonedAt != nil {
 			continue
 		}
@@ -224,13 +219,8 @@ func (s *FileStore) loadUnlocked() (Catalog, error) {
 	return catalog, nil
 }
 
-// readCatalogBytes reads a jobs.json bounded by the load safety limit, so a
-// runaway file never fills memory before DecodeCatalog rejects it. The
-// caller must hold the store lock: on Windows any open handle on the file —
-// share mode notwithstanding, verified empirically against MoveFileEx — makes
-// a concurrent save's atomic replace fail with a sharing violation, so an
-// out-of-lock read turns a read-only observer into a writer fault. A missing
-// file surfaces as os.ErrNotExist.
+// readCatalogBytes needs the store lock held: on Windows any open handle, whatever
+// its share mode, makes a concurrent save's MoveFileEx fail with a sharing violation.
 func readCatalogBytes(path string) (contents []byte, resultErr error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -268,8 +258,6 @@ func DecodeCatalog(contents []byte) (Catalog, error) {
 	return catalog, nil
 }
 
-// decodeStrictJSON decodes exactly one JSON document into value, rejecting
-// unknown fields and trailing values; name labels errors ("decode <name>: ...").
 func decodeStrictJSON(contents []byte, name string, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
@@ -314,9 +302,6 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 			}
 			return nil
 		},
-		// The drop journal and the assign-times sidecar describe the catalog
-		// that just committed, so they are written between the replace and the
-		// directory flush that closes the save.
 		AfterReplace: func() error {
 			appendDropJournal(s.directory, s.acl, dropped, s.now())
 			return saveAssignTimesUnlocked(s.directory, s.acl, catalog)
@@ -342,18 +327,8 @@ func (s *FileStore) saveUnlocked(catalog Catalog) error {
 	}.WriteBytes(encoded)
 }
 
-// encodeWithinCapacity marshals the catalog, compacting records when the
-// encoding would exceed the save cap. Tombstoned records go first: they are
-// dead bookkeeping whose only remaining value is retention history. When no
-// tombstones remain, the oldest completed records go next — the catalog keys
-// one record per ephemeral JIT runner per job, so completed records grow with
-// job churn (not concurrent worker count) and can saturate the cap before the
-// artifact-retention pass ever tombstones them. In both tiers capacity
-// pressure outranks the retention window: without compaction, jobs.json
-// reaches the safety limit, every subsequent index write fails permanently,
-// and worker finalization retries livelock reconciliation. The cap can then
-// only be exceeded by open or still-running records alone, which the
-// concurrent worker ceiling makes unreachable at supported worker counts.
+// encodeWithinCapacity lets capacity outrank retention: an over-cap jobs.json
+// fails every later write and livelocks reconciliation.
 func encodeWithinCapacity(catalog *Catalog) ([]byte, []Record, error) {
 	var dropped []Record
 	for {
@@ -386,9 +361,6 @@ func encodeCatalog(catalog Catalog) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-// compactOldestTombstones removes the oldest tombstoned records, sized from
-// the average encoded record so one pass usually suffices; the caller's
-// re-encode loop guarantees convergence regardless.
 func compactOldestTombstones(catalog *Catalog, overshootBytes, encodedBytes int) (removed int) {
 	tombstoned := make([]int, 0, len(catalog.Records))
 	for i, record := range catalog.Records {
@@ -437,12 +409,6 @@ func CompactableUnderCapacityPressure(record Record) bool {
 	return record.JobID == "" || record.JobStartedAt.IsZero() || !record.CompletedAt.IsZero()
 }
 
-// compactOldestCompleted removes the oldest terminal (closed and completed or
-// finalized, never tombstoned) records once no tombstones remain to compact.
-// Evicting a terminal record before its artifacts are cleaned leaves those
-// files to the age-based orphan sweep instead of record-driven cleanup — an
-// accepted trade against livelocking the index. Open records and records
-// without a terminal marker are never touched here.
 func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) (removed []Record) {
 	completed := make([]int, 0, len(catalog.Records))
 	for i, record := range catalog.Records {
@@ -468,9 +434,8 @@ func compactOldestCompleted(catalog *Catalog, overshootBytes, encodedBytes int) 
 	return compactOldestFirst(catalog, completed, overshootBytes, encodedBytes)
 }
 
-// compactOldestFirst drops the oldest-first candidate record indices from
-// catalog.Records, capped at a count sized from the average encoded record so
-// the caller's re-encode loop usually converges in one compaction pass.
+// compactOldestFirst sizes its drop count from the average encoded record so
+// the caller's re-encode loop usually converges in one pass.
 func compactOldestFirst(catalog *Catalog, oldestFirst []int, overshootBytes, encodedBytes int) (removed []Record) {
 	averageRecordBytes := max(encodedBytes/len(catalog.Records), 1)
 	dropCount := min(overshootBytes/averageRecordBytes+1, len(oldestFirst))

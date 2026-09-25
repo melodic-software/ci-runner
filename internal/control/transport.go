@@ -162,11 +162,8 @@ type Client struct {
 	dial func(context.Context) (net.Conn, error)
 }
 
-// legacyShutdownEnvelope is the exact shutdown wire shape shipped through
-// v0.1.7. A replacement CLI first attempts the current identity-bound request,
-// then uses this shape only when an older controller explicitly rejects one of
-// the added identity fields before dispatch. That preserves stop-for-update
-// across the upgrade boundary without weakening current-controller preflight.
+// legacyShutdownEnvelope is the shutdown wire shape through v0.1.7, sent only
+// after an older controller rejects the identity-bound request's added fields.
 type legacyShutdownEnvelope struct {
 	SchemaVersion int                   `json:"schemaVersion"`
 	RequestID     string                `json:"requestId"`

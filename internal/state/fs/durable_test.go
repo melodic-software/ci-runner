@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// newDurableWriteForTest builds a plan that appends every stage it reaches to
-// stages, so a test can pin the order the shared sequence runs them in.
 func newDurableWriteForTest(directory, target string, stages *[]string) DurableWrite {
 	record := func(stage string) { *stages = append(*stages, stage) }
 	return DurableWrite{
@@ -51,11 +49,8 @@ func newDurableWriteForTest(directory, target string, stages *[]string) DurableW
 	}
 }
 
-// TestDurableWriteRunsSeamsInOrder pins the sequence every migrated state
-// writer now depends on: the temporary is hardened before content reaches it
-// and again before the replace, the destination recheck lands immediately
-// before the commit, and dependent sidecars are published between the replace
-// and the hardening of the committed file.
+// TestDurableWriteRunsSeamsInOrder pins stage order: harden before write and before
+// replace, recheck just before commit, sidecars between replace and final harden.
 func TestDurableWriteRunsSeamsInOrder(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -82,10 +77,8 @@ func TestDurableWriteRunsSeamsInOrder(t *testing.T) {
 	}
 }
 
-// TestDurableWriteRemovesTemporaryWhenAStageFails pins the cleanup contract
-// each migrated writer relied on before the sequence was shared: a failure
-// before the replace propagates the caller's error, removes the temporary, and
-// leaves no committed file behind.
+// TestDurableWriteRemovesTemporaryWhenAStageFails pins that a pre-replace failure
+// returns the caller's error, removes the temporary, and commits nothing.
 func TestDurableWriteRemovesTemporaryWhenAStageFails(t *testing.T) {
 	t.Parallel()
 	hardenFailure := errors.New("harden refused")
@@ -119,9 +112,8 @@ func TestDurableWriteRemovesTemporaryWhenAStageFails(t *testing.T) {
 	}
 }
 
-// TestDurableWriteWithdrawsTargetAfterPostCommitFailure pins the withdrawal
-// seam terminal evidence depends on: a file that committed and then failed a
-// later stage must not survive as a readable half-verified artifact.
+// TestDurableWriteWithdrawsTargetAfterPostCommitFailure pins that a file failing a
+// post-commit stage does not survive as a half-verified artifact.
 func TestDurableWriteWithdrawsTargetAfterPostCommitFailure(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -139,9 +131,8 @@ func TestDurableWriteWithdrawsTargetAfterPostCommitFailure(t *testing.T) {
 	}
 }
 
-// TestDurableWriteLabelsFailedStages pins the operator-facing wording: a stage
-// with a label reports "<label>: <cause>", and an unlabeled stage — what the
-// drop journal's discarded writes use — leaves the cause unwrapped.
+// TestDurableWriteLabelsFailedStages pins "<label>: <cause>" wording, and that an
+// unlabeled stage (the drop journal's) leaves the cause unwrapped.
 func TestDurableWriteLabelsFailedStages(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -158,9 +149,8 @@ func TestDurableWriteLabelsFailedStages(t *testing.T) {
 	}
 }
 
-// TestDurableWriteSkipsDirectorySyncWhenAsked pins the assign-times sidecar's
-// arrangement: its enclosing save owns the one directory flush, so the sidecar
-// must commit without flushing the directory itself.
+// TestDurableWriteSkipsDirectorySyncWhenAsked pins the assign-times sidecar case,
+// whose enclosing save owns the single directory flush.
 func TestDurableWriteSkipsDirectorySyncWhenAsked(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -180,10 +170,8 @@ func TestDurableWriteSkipsDirectorySyncWhenAsked(t *testing.T) {
 	}
 }
 
-// TestDurableWriterStreamsThroughCommit pins the streaming arrangement the
-// worker log and the diagnostic archive use: the caller writes through the
-// prepared temporary itself and Discard after Commit leaves the committed file
-// in place.
+// TestDurableWriterStreamsThroughCommit pins streaming writers (worker log, archive):
+// the caller writes the temporary itself, and Discard after Commit keeps the file.
 func TestDurableWriterStreamsThroughCommit(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()

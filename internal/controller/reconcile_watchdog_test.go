@@ -25,7 +25,6 @@ func (b *blockingListener) Statistics(ctx context.Context, _ scaleset.Identity, 
 	return scaleset.Statistics{}, ctx.Err()
 }
 
-// A deadline-less Step let a wedged listener poll park the controller for hours.
 // Bounding the step context must abort the poll and unblock Step at the deadline.
 func TestStepAbortsWedgedListenerPollAtContextDeadline(t *testing.T) {
 	t.Parallel()

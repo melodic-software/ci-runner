@@ -12,8 +12,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// resolveExecutable returns path when the caller explicitly configured one,
-// otherwise resolves the trusted default via fallback.
 func resolveExecutable(path string, fallback func() (string, error)) (string, error) {
 	if path != "" {
 		return path, nil
@@ -21,9 +19,6 @@ func resolveExecutable(path string, fallback func() (string, error)) (string, er
 	return fallback()
 }
 
-// resolvedCommandRunner returns runner, or a default ExecCommandRunner when
-// the caller left the field unset. Host adapters expose a CommandRunner field
-// so tests can substitute a fake without spawning real processes.
 func resolvedCommandRunner(runner CommandRunner) CommandRunner {
 	if runner == nil {
 		return ExecCommandRunner{}

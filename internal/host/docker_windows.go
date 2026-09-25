@@ -15,9 +15,6 @@ import (
 
 const localDockerEngineHost = "npipe:////./pipe/docker_engine"
 
-// managedContainerLabel is the label GamingManager's Docker inventory uses to
-// classify a container as CI-managed; only Windows hosts query it, since
-// Containers is the sole consumer of a live container listing.
 const managedContainerLabel = "com.melodic-software.ci-runner.managed"
 
 type DockerDesktopCLI struct {
@@ -51,10 +48,8 @@ func (d DockerDesktopCLI) Status(ctx context.Context) (DesktopStatus, error) {
 		if !errors.As(err, &exitErr) {
 			return DesktopStatusUnknown, err
 		}
-		// `docker desktop status` exits non-zero precisely when Docker Desktop is
-		// not running -- the same signal EngineReachable maps to a factual state
-		// rather than a hard error. Trust a concrete state named in the captured
-		// output; otherwise a non-zero exit is itself the stopped signal.
+		// A non-zero exit means Docker Desktop is not running, a factual state rather
+		// than a hard error; a concrete state named in the output still wins.
 		if status, parseErr := parseDesktopStatus(out); parseErr == nil {
 			return status, nil
 		}
@@ -81,19 +76,14 @@ func (d DockerDesktopCLI) Stop(ctx context.Context) error {
 	return err
 }
 
-// engineClient is the narrow subset of the official Moby SDK client that
-// DockerEngineInspector depends on. *client.Client structurally implements
-// it; tests substitute a fake to stay independent of a real Docker Engine.
 type engineClient interface {
 	Info(context.Context, client.InfoOptions) (client.SystemInfoResult, error)
 	ContainerList(context.Context, client.ContainerListOptions) (client.ContainerListResult, error)
 	Close() error
 }
 
-// newLocalEngineClient opens a Moby SDK client pinned to the fixed local
-// Docker Engine endpoint, mirroring internal/runtime/docker's newLocalClient.
-// host constructs its own client rather than sharing runtime/docker's Engine
-// type, keeping the two packages decoupled.
+// newLocalEngineClient mirrors internal/runtime/docker's newLocalClient rather
+// than sharing its Engine type, keeping the two packages decoupled.
 func newLocalEngineClient() (engineClient, error) {
 	return client.New(client.WithHost(localDockerEngineHost), client.WithUserAgent("ci-runner-host"))
 }
@@ -121,9 +111,7 @@ func (d DockerEngineInspector) EngineReachable(ctx context.Context) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("create Docker engine client: %w", err)
 	}
-	// A close failure on a short-lived reachability probe carries no
-	// actionable signal beyond the reachability answer already computed
-	// below, and folding it in here would break the exact (false, nil)
+	// A close error is dropped: folding it in would break the exact (false, nil)
 	// unreachable contract GamingManager depends on.
 	defer func() { _ = apiClient.Close() }()
 	if _, err := apiClient.Info(ctx, client.InfoOptions{}); err != nil {
