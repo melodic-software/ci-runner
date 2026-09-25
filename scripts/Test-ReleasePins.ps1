@@ -362,6 +362,8 @@ foreach ($workflow in $workflowFiles) {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
         }
         $parts = $reference -split '@', 2
+        # Standards-sync soak callers may pin a pre-release ci-workflows SHA; exempt only that
+        # reference from the compatibility inventory (workflow-pin-metadata.test.cjs).
         if ($syncManaged -and $parts[0].StartsWith('melodic-software/ci-workflows/', [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }

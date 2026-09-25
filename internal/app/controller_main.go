@@ -543,8 +543,8 @@ func runControllerLoop(
 	}
 }
 
-// completeControllerShutdown writes the restart receipt; any earlier failure returns without the
-// restart sentinel so the CLI fails closed.
+// completeControllerShutdown writes the restart receipt; any drain, close, or receipt-write failure
+// returns without the restart sentinel so the CLI fails closed.
 func completeControllerShutdown(
 	ctx context.Context,
 	shutdownErr error,

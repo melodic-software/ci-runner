@@ -12,6 +12,7 @@ expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$depende
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
+# Test-ReleasePins.ps1 pins the image_env call sites; keep them out of the jq pass below.
 image_env() {
   local name="$1"
   jq --exit-status --raw-output --arg name "$name" '

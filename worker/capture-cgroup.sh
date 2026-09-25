@@ -6,6 +6,8 @@ readonly state_directory=/home/runner/_runner_state
 readonly final_path="$state_directory/cgroup-terminal.json"
 readonly marker_prefix=ci-runner-resource-evidence-v1:
 readonly maximum_evidence_bytes=32768
+# Hook stdout goes to the job log; PID 1's stdout is Docker's log pipe, and one
+# PIPE_BUF-bounded write keeps the marker atomic there.
 readonly container_stdout=/proc/1/fd/1
 
 # Telemetry, not a security boundary: workflow code shares this identity, so
