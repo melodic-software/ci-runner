@@ -11,9 +11,8 @@ import (
 	"github.com/melodic-software/ci-runner/internal/state"
 )
 
-// CLI output has no safe secondary channel through which to report a write
-// failure. Keep the command's established exit-code behavior while making the
-// intentional handling of writer errors explicit in one audited location.
+// CLI output has no secondary channel to report a write failure, so these helpers discard
+// writer errors deliberately, in one audited place.
 func write(w io.Writer, values ...any) {
 	_, _ = fmt.Fprint(w, values...)
 }

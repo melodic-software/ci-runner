@@ -539,10 +539,8 @@ func TestOfficialErrorClassification(t *testing.T) {
 
 func TestOfficialErrorPassesContextCancellationUnwrapped(t *testing.T) {
 	t.Parallel()
-	// A canceled listener long poll is the controller's own designed
-	// supersession, not a GitHub failure. It must stay context.Canceled and
-	// never become a classified *Error, so the controller can recognize it as
-	// benign rather than recording a spurious scale-set poll failure.
+	// A canceled long poll is the controller's own supersession: it must stay
+	// context.Canceled, never a classified *Error recorded as a poll failure.
 	for name, err := range map[string]error{
 		"bare":    context.Canceled,
 		"wrapped": fmt.Errorf("failed to get next message: %w", context.Canceled),

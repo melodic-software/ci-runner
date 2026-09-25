@@ -93,13 +93,8 @@ func dropEntryFromRecord(record Record, droppedAt time.Time) DropEntry {
 	}
 }
 
-// appendDropJournal records tier-2 compaction drops beside jobs.json. It uses
-// raw os calls because saveUnlocked holds the store lock and exported methods
-// would deadlock. The journal is written only after jobs.json commits so a
-// failed catalog save never leaves phantom drop entries; a crash between the
-// two writes loses at most the latest batch, matching the pre-journal state.
-// Journal write failures are ignored so compaction cannot reintroduce the
-// permanent-write-failure livelock the save cap exists to prevent.
+// appendDropJournal runs under saveUnlocked's lock (FileStore methods would
+// deadlock) and ignores failures so the journal cannot livelock index writes.
 func appendDropJournal(directory string, acl AccessController, dropped []Record, droppedAt time.Time) {
 	if len(dropped) == 0 {
 		return
@@ -115,9 +110,6 @@ func appendDropJournal(directory string, acl AccessController, dropped []Record,
 	if err != nil {
 		return
 	}
-	// Every stage failure is discarded, error labels included, per the ignored
-	// write failures the doc comment above requires; the shared sequence still
-	// removes an uncommitted temporary.
 	hardenQuietly := func(path string) error {
 		if acl != nil {
 			_ = acl.Harden(path)

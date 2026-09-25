@@ -161,10 +161,8 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("secure protected secret: %w", err))
 	}
 
-	// Prove the persisted envelope can be decrypted and parsed under the
-	// current identity before deleting the only plaintext source supplied by
-	// the operator. ACL hardening deliberately precedes this readback so a bad
-	// ACL transaction cannot strand an unusable protected credential.
+	// Prove the envelope decrypts before deleting the only plaintext source; ACL
+	// hardening precedes this so a bad ACL cannot strand an unusable credential.
 	loaded, metadata, err := (Store{Protector: i.Protector}).LoadPrivateKey(destinationPath)
 	if err != nil {
 		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("verify protected secret before removing plaintext source: %w", err))
@@ -177,11 +175,8 @@ func (i Importer) Import(ctx context.Context, sourcePath, destinationPath string
 		return ImportResult{}, i.rollbackProtectedDestination(destinationPath, fmt.Errorf("import canceled before removing plaintext source: %w", err))
 	}
 
-	// Commit deletion through the same identity-bound source handle used for
-	// parsing. A pathname mismatch, disappearance, or deletion failure is
-	// deliberately ambiguous: retain the already verified DPAPI destination
-	// and require the operator to inspect both paths. Never fall back to
-	// deleting sourcePath by name because it may now name a replacement file.
+	// Never fall back to deleting sourcePath by name: it may now name a
+	// replacement file. On failure keep the verified destination.
 	if err := source.CommitRemoval(); err != nil {
 		return ImportResult{}, fmt.Errorf("remove original plaintext source %q without deleting a replacement: %w; protected destination %q retained; manual cleanup required", sourcePath, err, destinationPath)
 	}
@@ -380,9 +375,8 @@ func publicKeyFingerprint(key *rsa.PublicKey) (string, error) {
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
-// legacyPublicKeyFingerprint preserves read compatibility with schema v1
-// envelopes, which recorded the same SPKI SHA-256 digest as lowercase hex.
-// New imports always use schema v2 and GitHub's standard-Base64 presentation.
+// legacyPublicKeyFingerprint reads schema v1 envelopes, which recorded the same
+// SPKI SHA-256 digest as lowercase hex.
 func legacyPublicKeyFingerprint(key *rsa.PublicKey) (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {

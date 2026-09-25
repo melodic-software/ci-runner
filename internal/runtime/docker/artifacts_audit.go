@@ -286,9 +286,8 @@ func buildReferencedFromInventory(logDirectory, diagnosticDirectory string, adop
 	return referenced
 }
 
-// degradedArtifactMetadata matches Runtime.metadata when ContainerInspect fails.
-// Finalization retries can publish diagnostics under this base name while the
-// adoption inventory still derives label-based paths; both must stay referenced.
+// degradedArtifactMetadata matches Runtime.metadata when ContainerInspect fails;
+// retries can publish under this base name, so it stays referenced too.
 func degradedArtifactMetadata(containerID string) ArtifactMetadata {
 	return ArtifactMetadata{ContainerID: containerID}
 }

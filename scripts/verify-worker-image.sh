@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-# Every transport helper runs inside a command substitution. Without this, bash
-# clears errexit in that subshell and a failed contract assertion is swallowed:
-# the helper runs on to its final printf and the verifier reports success.
+# Helpers run in command substitutions; without this a failed assertion there
+# is swallowed and the verifier reports success.
 shopt -s inherit_errexit
 
 image="${1:?usage: verify-worker-image.sh IMAGE}"
@@ -13,8 +12,7 @@ expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$depende
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
-# Test-ReleasePins.ps1 pins these three call sites as the rootless .NET contract.
-# The helper also supplies the exactly-one Env error text.
+# Test-ReleasePins.ps1 pins the image_env call sites; keep them out of the jq pass below.
 image_env() {
   local name="$1"
   jq --exit-status --raw-output --arg name "$name" '
@@ -23,8 +21,6 @@ image_env() {
   ' <<<"$config"
 }
 
-# One jq pass for the silent Config assertions. image_env stays for the pinned
-# DOTNET_* checks so the pin fragments and exactly-one error path are unchanged.
 jq --exit-status --arg expected_base_digest "$expected_base_digest" '
   .User == "runner" and
   .WorkingDir == "/home/runner" and
@@ -133,10 +129,8 @@ cleanup_verifier_resources() {
 }
 trap cleanup_verifier_resources EXIT
 
-# Every transport helper runs inside a command substitution, so anything it
-# appends to the teardown arrays is discarded with the subshell. Containers are
-# therefore created by the caller, which records them before handing the id
-# over, and the EXIT trap is the single owner of removal.
+# Helpers run in a subshell, so teardown-array appends there are lost: the
+# caller creates and records containers, and the EXIT trap removes them.
 run_fixture_with_captured_output() {
   local container_id="$1" sidecar_destination="$2" exit_code logs
   [[ "$(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$container_id")" == local ]]
@@ -165,8 +159,6 @@ harness_config="$(docker image inspect "$production_harness_image" --format '{{j
 
 run_production_command_transport() {
   local container_id="$1" exit_code logs inspect
-  # One daemon round-trip: the eight --format inspects were sequential RPCs
-  # against unchanged container state. ExitCode is inspected after start.
   inspect="$(docker inspect --format '{{json .}}' "$container_id")"
   jq --exit-status '
     .Path == "/usr/local/bin/ci-runner-entrypoint" and
@@ -182,11 +174,8 @@ run_production_command_transport() {
     docker logs --timestamps "$container_id" >&2 || true
     return 1
   fi
-  # This exit code is not what catches a stub that dies before printing. run.sh
-  # translates several listener exits into a graceful no-retry shutdown and
-  # exits 0 itself, so a stub killed on its first line still yields 0 here. The
-  # exactly-one marker counts below are the load-bearing check for that class of
-  # failure; do not weaken them on the assumption this covers it.
+  # run.sh exits 0 even when the stub dies early; the exactly-one marker counts
+  # below catch that, so do not weaken them on the strength of this check.
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
   if [[ "$exit_code" != 0 ]]; then
     docker logs --timestamps "$container_id" >&2 || true
@@ -264,8 +253,7 @@ jq --exit-status '
   (.io.writeBytes | type == "number")
 ' <<<"$resource_evidence" >/dev/null
 
-# Exercise the capture script against a controlled cgroup-v2 fixture. This
-# catches awk portability failures and proves empty/malformed io.stat cannot be
+# Catches awk portability failures and proves empty/malformed io.stat is never
 # reported as a measured zero.
 fixture_script=
 read -r -d '' fixture_script <<'CONTAINER_SCRIPT' || true

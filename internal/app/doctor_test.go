@@ -108,12 +108,8 @@ func TestDoctorJSONDefaultsToNonElevatedInspectionWithoutWarning(t *testing.T) {
 	}
 }
 
-// TestDoctorLeavesTheInspectionRoomForTheElevatedProbeBudget asserts the
-// criterion rather than the mechanism: a derived context expires no later than
-// its parent, so budgeting the inspection as a whole -- on the machine-probe
-// budget doctorTestConfig sets to 1s -- silently caps the elevated BitLocker
-// probe far below the human budget it needs, and every per-check test still
-// passes while the probe stays unpassable at human speed.
+// TestDoctorLeavesTheInspectionRoomForTheElevatedProbeBudget pins the criterion, not the mechanism:
+// a derived context expires no later than its parent, so an aggregate budget caps the elevated probe.
 func TestDoctorLeavesTheInspectionRoomForTheElevatedProbeBudget(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -197,9 +193,8 @@ func TestDoctorAdvisoryPendingRebootWarnsWithoutDegradingExitCode(t *testing.T) 
 	}
 }
 
-// verifyingGamingHost answers Verify, which fakeGamingHost deliberately refuses
-// to do. Doctor is the one caller that legitimately verifies, so the gaming
-// branch needs a host that can report a postcondition result.
+// verifyingGamingHost answers Verify, which fakeGamingHost refuses; doctor is the one caller
+// that legitimately verifies.
 type verifyingGamingHost struct {
 	inventory    host.GamingInventory
 	verification host.GamingVerification
@@ -435,10 +430,8 @@ func TestListenerAcknowledgementGraceBudgetsAFullRetryEnvelopePerConvergenceLeg(
 		t.Fatalf("listener acknowledgement grace = %s, want %s", got, want)
 	}
 
-	// Every term of the retry policy has to move the window, because a poll that
-	// exhausts any of them is still legitimately retrying. Budgeting fewer
-	// attempts than are configured is what let a benign busy-fleet poll trip a
-	// hard fault.
+	// Every retry-policy term must widen the window: a poll exhausting any of them is still
+	// legitimately retrying.
 	for _, test := range []struct {
 		name   string
 		mutate func(*config.Config)
@@ -505,11 +498,7 @@ func TestDoctorAllowsOnlyBoundedListenerAcknowledgementTransition(t *testing.T) 
 		wantMarker string
 	}{
 		{name: "within-grace", transition: now.Add(-15 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
-		// The one benign busy-fleet acknowledgement lag on record (ci-runner
-		// alignment audit, D4). It exceeded the old window and degraded the exit
-		// code; containing it is the whole point of the widened derivation, so it
-		// is pinned as an absolute case rather than left implied by the boundary
-		// below.
+		// The one benign busy-fleet lag on record (alignment audit D4), pinned as an absolute case.
 		{name: "benign-busy-fleet-lag", transition: now.Add(-129 * time.Second), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
 		{name: "at-grace", transition: now.Add(-grace), wantCode: ExitOK, wantMarker: "[PASS] github-listener/organization"},
 		{name: "past-grace", transition: now.Add(-grace - time.Second), wantCode: ExitDegraded, wantMarker: "[FAIL] github-listener/organization"},

@@ -23,10 +23,7 @@ func desktopLifecycleConfig(requestTimeout, backoffMax time.Duration, maxAttempt
 		},
 		Resources:     config.Resources{MaximumConcurrentWorkers: maxConcurrentWorkers},
 		DockerDesktop: config.DockerDesktop{StartTimeout: config.Duration{Duration: desktopStart}, StopTimeout: config.Duration{Duration: desktopStop}},
-		// Matches the recommended production default (reconcileStepWorkerImagePullBudget's
-		// doc comment), so exact-equality assertions below are unaffected by this field's
-		// introduction: they exercise the fixed-term contribution the same way regardless
-		// of whether it comes from a constant or, now, this configured value.
+		// Matches the recommended production default.
 		WorkerImage: config.WorkerImage{PullTimeout: config.Duration{Duration: 20 * time.Minute}},
 	}
 }
@@ -56,15 +53,8 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 			cfg := githubRetryConfig(tc.requestTO, tc.backoffMax, tc.maxAttempts, tc.targets, tc.maxConcurrentWorkers)
 			cfg.GitHub.Retry.JitterRatio = tc.jitterRatio
 			got := reconcileStepTimeout(cfg, tc.maxConcurrentWorkers)
-			// The watchdog must strictly exceed the whole-step worst case: an
-			// ensure+statistics sweep across every target, a CreateJITConfig retry
-			// loop for every worker the host can concurrently start, and a
-			// deregisterRunner retry loop for every worker the host can
-			// concurrently retire in one step, each a full retry budget (attempts
-			// requests at RequestTimeout plus attempts backoff waits jittered up to
-			// Retry.Maximum*(1+JitterRatio) per internal/controller/retry.go's
-			// BackoffPolicy.delay). It must never trip on a legitimate multi-target,
-			// high-maxAttempts, multi-worker-JIT, or fully-jittered-backoff step.
+			// The watchdog must strictly exceed the worst-case Step: target sweep, JIT, and retirement
+			// retry loops, each a full jittered retry budget.
 			ops := reconcileStepOpsPerTarget*tc.targets + reconcileStepJITOpsPerWorker*tc.maxConcurrentWorkers + reconcileStepRetirementOpsPerWorker*tc.maxConcurrentWorkers
 			maxJitteredBackoff := tc.backoffMax + time.Duration(float64(tc.backoffMax)*tc.jitterRatio)
 			budget := time.Duration(ops*tc.maxAttempts) * (tc.requestTO + maxJitteredBackoff)
@@ -75,16 +65,8 @@ func TestReconcileStepTimeoutClearsConfiguredRetryBudget(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutAccountsForJitteredBackoff proves the exact
-// regression a reviewer flagged: the watchdog budget must not assume
-// Retry.Maximum is already the maximum possible per-attempt sleep.
-// internal/controller/retry.go's BackoffPolicy.delay applies jitter after
-// capping the base delay to Maximum, drawing uniformly from
-// [1-JitterRatio, 1+JitterRatio], so with a config where backoff dominates
-// request time (a small RequestTimeout, a large Retry.Maximum) and
-// JitterRatio at its validated ceiling of 1, a single policy-compliant wait
-// can reach nearly 2x Retry.Maximum -- exceeding the watchdog's 50% margin if
-// the budget were sized from bare Retry.Maximum alone.
+// TestReconcileStepTimeoutAccountsForJitteredBackoff pins sizing backoff waits at
+// Retry.Maximum*(1+JitterRatio): jitter applies after the cap, so a wait can reach 2x Maximum.
 func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 	t.Parallel()
 	const requestTO = time.Second
@@ -104,12 +86,8 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 		t.Fatalf("reconcileStepTimeout with jitterRatio=1 = %s, want > jitterRatio=0 baseline %s", got, baseline)
 	}
 
-	// At jitterRatio=1, every retryable op's worst-case per-attempt backoff
-	// grows from bare Maximum to Maximum*(1+1) = 2x Maximum: exactly one extra
-	// Maximum per op per attempt, scaled by the watchdog's 1.5x margin. JIT
-	// ops are floored at reconcileStepJITBudgetFloorWorkers (see its doc
-	// comment), not just at maxConcurrentWorkers, since maxConcurrentWorkers=1
-	// here is far below that floor.
+	// At jitterRatio=1 each backoff doubles to 2x Maximum, scaled by the 1.5x margin. JIT ops sit at
+	// reconcileStepJITBudgetFloorWorkers, since maxConcurrentWorkers=1 is below it.
 	ops := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	extraRetryBudget := time.Duration(ops*attempts) * backoffMax
 	wantDelta := extraRetryBudget + extraRetryBudget/2
@@ -117,23 +95,15 @@ func TestReconcileStepTimeoutAccountsForJitteredBackoff(t *testing.T) {
 		t.Fatalf("reconcileStepTimeout delta across jitterRatio 0->1 = %s, want exactly %s", diff, wantDelta)
 	}
 
-	// Concretely: the watchdog must clear a single worst-case jittered attempt
-	// (RequestTimeout plus a backoff wait of nearly 2x Retry.Maximum), which a
-	// budget sized from bare Retry.Maximum could fail to do once its 50% margin
-	// is spent elsewhere.
+	// The watchdog must clear one worst-case jittered attempt.
 	worstCaseJitteredAttempt := requestTO + 2*backoffMax
 	if got <= worstCaseJitteredAttempt {
 		t.Fatalf("reconcileStepTimeout = %s, want > single worst-case jittered attempt delay %s", got, worstCaseJitteredAttempt)
 	}
 }
 
-// TestReconcileStepTimeoutIncludesRetirementRetryBudget proves the other
-// regression a reviewer flagged: Step's worker-removal section calls
-// deregisterRunner (internal/controller/reconciler.go:603-609) through the
-// same full RetryValue budget as a JIT registration, once per idle worker it
-// retires in a Step, up to Resources.MaximumConcurrentWorkers (see that
-// loop's retirementDeregistrationCap). The watchdog must budget for that
-// retirement work in addition to, not instead of, the JIT-start budget.
+// TestReconcileStepTimeoutIncludesRetirementRetryBudget pins a deregisterRunner retry budget per
+// retired worker (up to the static cap), added to the JIT-start budget.
 func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 	t.Parallel()
 	const requestTO = 70 * time.Second
@@ -145,11 +115,7 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
 	got := reconcileStepTimeout(cfg, maxConcurrentWorkers)
 
-	// The pre-fix formula budgeted only the target sweep plus JIT starts. Any
-	// retirement contribution must be strictly additional to that. JIT ops are
-	// floored at reconcileStepJITBudgetFloorWorkers (see its doc comment), not
-	// just at maxConcurrentWorkers, since maxConcurrentWorkers=4 here is far
-	// below that floor.
+	// Retirement must add to the target sweep and JIT starts; JIT ops sit at the floor here.
 	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers)
 	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
 	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
@@ -159,23 +125,15 @@ func TestReconcileStepTimeoutIncludesRetirementRetryBudget(t *testing.T) {
 
 	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
-	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
-	// desktop-category contribution is the unconditional
-	// reconcileStepWorkerImagePullBudget(cfg) term, derived from cfg.WorkerImage.PullTimeout.
+	// desktopStart/desktopStop are 0, so the only desktop-category term is the image-pull budget.
 	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget(cfg)
 	if got != want {
 		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the configured image-pull term)", got, want)
 	}
 }
 
-// TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget proves a third
-// reviewer-flagged regression: Step's registration-check section calls
-// RunnerRegistered (internal/controller/reconciler.go's JIT-cancellation
-// detector) through the same full RetryValue budget as a JIT registration,
-// once per idle worker it verifies in a Step, up to
-// Resources.MaximumConcurrentWorkers (see that loop's registrationCheckCap).
-// The watchdog must budget for that verification work in addition to, not
-// instead of, the JIT-start and retirement budgets.
+// TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget pins a RunnerRegistered retry budget
+// per checked idle worker, added to the JIT-start and retirement budgets.
 func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) {
 	t.Parallel()
 	const requestTO = 70 * time.Second
@@ -187,12 +145,7 @@ func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) 
 	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, maxConcurrentWorkers)
 	got := reconcileStepTimeout(cfg, maxConcurrentWorkers)
 
-	// The pre-fix formula budgeted the target sweep plus JIT starts and
-	// retirements. Any registration-check contribution must be strictly
-	// additional to that. JIT ops are floored at
-	// reconcileStepJITBudgetFloorWorkers (see its doc comment), not just at
-	// maxConcurrentWorkers, since maxConcurrentWorkers=4 here is far below
-	// that floor.
+	// Registration checks must add to the sweep, JIT starts, and retirements; JIT ops sit at the floor.
 	preFixOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers
 	preFixRetryBudget := time.Duration(preFixOps*attempts) * (requestTO + backoffMax)
 	preFixGithubBudget := preFixRetryBudget + preFixRetryBudget/2
@@ -202,23 +155,15 @@ func TestReconcileStepTimeoutIncludesRegistrationCheckRetryBudget(t *testing.T) 
 
 	fullOps := reconcileStepOpsPerTarget*targets + reconcileStepJITOpsPerWorker*max(maxConcurrentWorkers, reconcileStepJITBudgetFloorWorkers) + reconcileStepRetirementOpsPerWorker*maxConcurrentWorkers + reconcileStepRegistrationCheckOpsPerWorker*maxConcurrentWorkers
 	fullRetryBudget := time.Duration(fullOps*attempts) * (requestTO + backoffMax)
-	// desktopStart/desktopStop are both 0 via githubRetryConfig, so the only
-	// desktop-category contribution is the unconditional
-	// reconcileStepWorkerImagePullBudget(cfg) term, derived from cfg.WorkerImage.PullTimeout.
+	// desktopStart/desktopStop are 0, so the only desktop-category term is the image-pull budget.
 	want := fullRetryBudget + fullRetryBudget/2 + reconcileStepWorkerImagePullBudget(cfg)
 	if got != want {
 		t.Fatalf("reconcileStepTimeout = %s, want exactly %s (target sweep + JIT starts + retirements + registration checks, all margined 1.5x, plus the configured image-pull term)", got, want)
 	}
 }
 
-// TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts proves the exact
-// regression the fix addresses: with a small, otherwise-legal GitHub retry
-// configuration (one target, one worker, 1s request timeout, 1s max backoff),
-// the GitHub-retry-only budget is tiny, but a policy-compliant
-// DockerDesktop.StartTimeout can legitimately be minutes. The watchdog must
-// budget for reconcileStepDesktopStartAttempts Start calls (and, separately,
-// one Stop call) at their full configured timeouts on top of the GitHub-retry
-// budget, not just the GitHub-retry budget alone.
+// TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts pins two desktop Starts plus one Stop
+// at full timeout on top of the GitHub budget, which alone can be far below one desktop start.
 func TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts(t *testing.T) {
 	t.Parallel()
 	const startTimeout = 2 * time.Minute
@@ -229,28 +174,21 @@ func TestReconcileStepTimeoutAccountsForDesktopLifecycleTimeouts(t *testing.T) {
 
 	got := reconcileStepTimeout(smallGitHubRetryCfg, 1)
 
-	// The watchdog must clear the GitHub-only budget by at least the desktop
-	// lifecycle worst case: two Start attempts plus one Stop attempt, each at
-	// its full configured timeout.
+	// The watchdog must clear the GitHub-only budget by two Starts plus one Stop at full timeout.
 	desktopWorstCase := reconcileStepDesktopStartAttempts*startTimeout + stopTimeout
 	if got < githubOnlyBudget+desktopWorstCase {
 		t.Fatalf("reconcileStepTimeout = %s, want >= github-only budget %s + desktop worst case %s (= %s)",
 			got, githubOnlyBudget, desktopWorstCase, githubOnlyBudget+desktopWorstCase)
 	}
 
-	// Concretely: the watchdog must never be shorter than a single
-	// policy-compliant desktop start, which the original bug allowed (a small
-	// GitHub retry budget could compute a watchdog deadline of only ~27s,
-	// far under a 2-minute desktop startup).
+	// The watchdog must never be shorter than one policy-compliant desktop start.
 	if got <= startTimeout {
 		t.Fatalf("reconcileStepTimeout = %s, want > single desktop StartTimeout %s", got, startTimeout)
 	}
 }
 
-// TestReconcileStepTimeoutScalesWithDesktopStartTimeout proves the desktop
-// portion of the budget tracks DockerDesktop.StartTimeout, mirroring how
-// TestReconcileStepTimeoutClearsConfiguredRetryBudget proves the GitHub
-// portion tracks the retry configuration.
+// TestReconcileStepTimeoutScalesWithDesktopStartTimeout pins the desktop term tracking
+// DockerDesktop.StartTimeout.
 func TestReconcileStepTimeoutScalesWithDesktopStartTimeout(t *testing.T) {
 	t.Parallel()
 	shorter := reconcileStepTimeout(desktopLifecycleConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1, time.Minute, 0), 1)
@@ -263,8 +201,7 @@ func TestReconcileStepTimeoutScalesWithDesktopStartTimeout(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutScalesWithDesktopStopTimeout mirrors
-// TestReconcileStepTimeoutScalesWithDesktopStartTimeout for
+// TestReconcileStepTimeoutScalesWithDesktopStopTimeout pins the desktop term tracking
 // DockerDesktop.StopTimeout.
 func TestReconcileStepTimeoutScalesWithDesktopStopTimeout(t *testing.T) {
 	t.Parallel()
@@ -304,13 +241,8 @@ func TestReconcileStepTimeoutFloorsZeroMaxConcurrentWorkers(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutFloorsZeroEffectiveMaxConcurrentWorkers proves the
-// JIT-start portion of the budget floors its effectiveMaxConcurrentWorkers
-// argument independently of the static
-// Resources.MaximumConcurrentWorkers-derived floor above, mirroring it for
-// the override-aware parameter. Both 0 and 1 are far below
-// reconcileStepJITBudgetFloorWorkers, so both collapse to that same
-// generous floor (see its doc comment), not to a "single worker" value.
+// TestReconcileStepTimeoutFloorsZeroEffectiveMaxConcurrentWorkers pins effective limits of 0 and 1
+// collapsing to reconcileStepJITBudgetFloorWorkers, not to one worker.
 func TestReconcileStepTimeoutFloorsZeroEffectiveMaxConcurrentWorkers(t *testing.T) {
 	t.Parallel()
 	if got, want := reconcileStepTimeout(githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1), 0),
@@ -319,18 +251,8 @@ func TestReconcileStepTimeoutFloorsZeroEffectiveMaxConcurrentWorkers(t *testing.
 	}
 }
 
-// TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride proves the fix
-// for a reviewer-flagged watchdog gap: BuildPlan replaces the static
-// Resources.MaximumConcurrentWorkers cap with Desired.TemporaryCapacityOverride
-// when an operator has set one (internal/controller/plan.go's
-// EffectiveMaximumConcurrentWorkers), and validation only rejects negative
-// overrides -- a legitimate temporary scale-up can authorize starting far
-// more workers in one Step than the static cap suggests. The JIT-start
-// portion of the watchdog budget must scale with the caller-supplied
-// effectiveMaxConcurrentWorkers argument (which the caller sizes from that
-// same effective limit), not from cfg.Resources.MaximumConcurrentWorkers
-// alone, or a policy-compliant burst reconcile authorized by the override
-// gets its watchdog tripped by a budget sized only for the static cap.
+// TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride pins the JIT budget scaling with the
+// effective limit (capacity override), not the static cap alone.
 func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 	t.Parallel()
 	const requestTO = 70 * time.Second
@@ -338,10 +260,7 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 	const attempts = 6
 	const targets = 1
 	const staticCap = 1
-	// override must clear reconcileStepJITBudgetFloorWorkers (see its doc
-	// comment) for this test to observe the override actually widening the
-	// budget beyond the floor: a staticCap-vs-override comparison where both
-	// sides are floored to the same value would show no delta at all.
+	// The override must exceed the JIT floor, or both sides floor to the same value and show no delta.
 	const override = reconcileStepJITBudgetFloorWorkers + 50
 
 	cfg := githubRetryConfig(requestTO, backoffMax, attempts, targets, staticCap)
@@ -352,12 +271,8 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 		t.Fatalf("reconcileStepTimeout with effectiveMaxConcurrentWorkers=%d (override) = %s, want > effectiveMaxConcurrentWorkers=%d (static cap) budget %s", override, overrideBudget, staticCap, staticBudget)
 	}
 
-	// Concretely: only the JIT-start ops scale with the override; the
-	// retirement and registration-check ops stay tied to the static cap
-	// because reconciler.go's removal and registration-check loops cap
-	// themselves at Resources.MaximumConcurrentWorkers regardless of any
-	// temporary override. staticCap is below reconcileStepJITBudgetFloorWorkers,
-	// so the static side of the delta is anchored at the floor, not staticCap.
+	// Only JIT ops scale with the override; retirement and registration checks stay on the static
+	// cap, and the static side of the delta is anchored at the JIT floor.
 	jitOpsDelta := reconcileStepJITOpsPerWorker * (override - reconcileStepJITBudgetFloorWorkers)
 	wantDelta := time.Duration(jitOpsDelta*attempts) * (requestTO + backoffMax)
 	wantDelta = wantDelta + wantDelta/2
@@ -366,21 +281,8 @@ func TestReconcileStepTimeoutSizesJITBudgetFromEffectiveOverride(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget proves the fix
-// for a reviewer-flagged watchdog gap: registered retirements call
-// RemoveIfIdle after deregisterRunner, and the Docker runtime
-// (internal/runtime/docker/runtime.go's RemoveIfIdle) waits the full
-// configured Drain.IdleConfirmationWindow before its second idle check. That
-// wait is not itself a retryable GitHub operation, so with a small GitHub
-// retry configuration but a large idle-confirmation window, the pre-fix
-// budget could be far shorter than a single legitimate retirement's actual
-// worst-case duration. The watchdog must add
-// (reconcileStepIdleConfirmationWaitsPerWorker +
-// reconcileStepUnregisteredRemovalIdleConfirmationWaitsPerWorker)
-// idle-confirmation waits per unit of the same static retirement cap
-// directly to the budget: one cap's worth for the registered-retirement
-// path, plus one cap's worth for the separate unregistered-removal path,
-// since a single Step can legitimately spend both back to back.
+// TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget pins two IdleConfirmationWindow waits
+// per static-cap worker (registered and unregistered removal), added outside the retry margin.
 func TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget(t *testing.T) {
 	t.Parallel()
 	const maxConcurrentWorkers = 3
@@ -405,16 +307,8 @@ func TestReconcileStepTimeoutIncludesIdleConfirmationWindowBudget(t *testing.T) 
 	}
 }
 
-// TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively
-// proves the exact reviewer-flagged regression: when a Step's registered-
-// retirement path and its SEPARATE unregistered-removal path (reconciler.go's
-// two distinct plan.Remove branches -- one after deregisterRunner, one
-// standalone for model.WorkerUnregistered workers) both legitimately spend
-// their full per-step idle-confirmation-wait budget in the same Step, the
-// watchdog must clear the sum of BOTH, not just one cap's worth. Before this
-// fix, the pre-fix budget only counted one cap's worth of confirmation
-// waits, so a Step doing both legitimately could spend roughly twice the
-// budgeted idle-confirmation time and get canceled mid-drain.
+// TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively pins the budget clearing
+// both removal paths' full idle-confirmation waits back to back in one Step.
 func TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively(t *testing.T) {
 	t.Parallel()
 	const maxConcurrentWorkers = 4
@@ -425,36 +319,21 @@ func TestReconcileStepTimeoutBudgetsBothIdleConfirmationRemovalPathsAdditively(t
 
 	got := reconcileStepTimeout(cfg, maxConcurrentWorkers)
 
-	// The worst-case legitimate scenario the reviewer flagged: this Step
-	// spends its entire registered-retirement idle-confirmation budget AND
-	// its entire unregistered-removal idle-confirmation budget, back to back.
+	// Worst case: both idle-confirmation budgets spent back to back in one Step.
 	singlePathBudget := time.Duration(maxConcurrentWorkers) * idleConfirmationWindow
 	bothPathsWorstCase := 2 * singlePathBudget
 	if got <= bothPathsWorstCase {
 		t.Fatalf("reconcileStepTimeout = %s, want > both-paths worst case %s (a Step spending both this Step's registered-retirement and unregistered-removal idle-confirmation budgets must not be cancelled mid-drain)", got, bothPathsWorstCase)
 	}
 
-	// A pre-fix budget sized for only one path would also clear a single
-	// path's worst case; the meaningful assertion is strictly the 2x one
-	// above. This confirms the single-path floor is not itself the binding
-	// constraint here (it would pass both pre- and post-fix).
+	// The single-path floor holds pre- and post-fix; the 2x assertion above is the meaningful one.
 	if got <= singlePathBudget {
 		t.Fatalf("reconcileStepTimeout = %s, want > single-path idle-confirmation budget %s", got, singlePathBudget)
 	}
 }
 
-// TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride
-// proves the fix for a reviewer-flagged arithmetic-safety gap: validation
-// (internal/state/fs/store.go's SaveDesired, internal/app's parseCapacity)
-// only rejects a NEGATIVE Desired.TemporaryCapacityOverride, so an operator
-// can legally set a very large one. The pre-fix formula multiplied
-// effectiveMaxConcurrentWorkers into the op count with bare int arithmetic
-// and then into nanoseconds with bare Duration arithmetic, either of which
-// could silently overflow (wrapping negative or near-zero) before the
-// result reached context.WithTimeout, which would cancel every reconcile
-// immediately. The result must instead saturate to a large, positive
-// duration for any legal (non-negative) override, all the way up to
-// math.MaxInt.
+// TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride pins a large positive
+// result for every non-negative override up to math.MaxInt, never a wrapped one.
 func TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride(t *testing.T) {
 	t.Parallel()
 	cfg := githubRetryConfig(70*time.Second, time.Minute, 6, 3, 4)
@@ -472,16 +351,8 @@ func TestReconcileStepTimeoutSaturatesInsteadOfOverflowingWithHugeOverride(t *te
 	}
 }
 
-// TestReconcileStepTimeoutIncludesWorkerImagePullBudget proves the watchdog
-// budgets ensureImage's own configured pull timeout: Workers.Start's Docker
-// runtime implementation (internal/runtime/docker/runtime.go) calls
-// ensureImage before creating a container, which pulls the configured worker
-// image whenever ImageInspect reports it missing (a first-run host, or after
-// the pinned digest changes), now bounded by its own WorkerImage.PullTimeout
-// (applied via context.WithTimeout around the ImagePull+Wait sequence). The
-// watchdog must budget reconcileStepWorkerImagePullBudget(cfg) even when
-// every other term (GitHub retries, desktop lifecycle, idle confirmation) is
-// at its own floor.
+// TestReconcileStepTimeoutIncludesWorkerImagePullBudget pins the WorkerImage.PullTimeout term even
+// when every other term is at its floor.
 func TestReconcileStepTimeoutIncludesWorkerImagePullBudget(t *testing.T) {
 	t.Parallel()
 	tiny := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1)
@@ -491,16 +362,8 @@ func TestReconcileStepTimeoutIncludesWorkerImagePullBudget(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled proves the
-// image-pull term is added once per Step, not multiplied by worker count:
-// reconciler.go's plan.Start loop issues Workers.Start calls sequentially,
-// never concurrently, and ensureImage's own ImageInspect check means only
-// the first Start call that finds the image missing actually pulls it, so a
-// larger effectiveMaxConcurrentWorkers must not multiply this term the way
-// it multiplies the JIT-start retry budget. Proved by an exact delta: if the
-// image-pull term scaled with worker count, the observed delta across two
-// effectiveMaxConcurrentWorkers values would exceed pure JIT-ops scaling; it
-// must match exactly.
+// TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled pins the image-pull term as once per
+// Step: the delta across worker counts must match pure JIT-ops scaling exactly.
 func TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled(t *testing.T) {
 	t.Parallel()
 	const requestTO = 70 * time.Second
@@ -521,10 +384,8 @@ func TestReconcileStepTimeoutWorkerImagePullBudgetIsFixedNotScaled(t *testing.T)
 	}
 }
 
-// TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout proves the
-// image-pull portion of the budget tracks WorkerImage.PullTimeout directly,
-// mirroring how TestReconcileStepTimeoutScalesWithDesktopStartTimeout proves
-// the desktop portion tracks DockerDesktop.StartTimeout.
+// TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout pins the image-pull term tracking
+// WorkerImage.PullTimeout.
 func TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := githubRetryConfig(time.Second, time.Second, reconcileStepMinRetryAttempts, 1, 1)
@@ -543,18 +404,8 @@ func TestReconcileStepTimeoutScalesWithWorkerImagePullTimeout(t *testing.T) {
 	}
 }
 
-// TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness proves the fix
-// for a reviewer-flagged staleness gap: effectiveMaxConcurrentWorkers is read
-// from Desired.TemporaryCapacityOverride immediately before this function is
-// called, but Step() can re-run step() under this SAME deadline
-// (errReconcileInputsChanged, when watchSafetyInputs or freshStartAllowed
-// observes the desired state changed mid-step) using a FRESH LoadDesired
-// read -- so an operator raising the override during a Step can need more
-// JIT-start budget than the pre-Step snapshot provided, against a deadline
-// that already exists and cannot grow. reconcileStepJITBudgetFloorWorkers
-// floors the JIT-ops worker count generously enough to absorb any override
-// raise within a realistic single-host operational envelope, regardless of
-// the live snapshot's exact value at read time.
+// TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness pins the JIT floor absorbing an
+// override raised mid-Step, when step() re-runs under the same deadline.
 func TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness(t *testing.T) {
 	t.Parallel()
 	cfg := githubRetryConfig(70*time.Second, time.Minute, 6, 1, 1)
@@ -568,15 +419,8 @@ func TestReconcileStepTimeoutFloorsJITOpsAgainstOverrideStaleness(t *testing.T) 
 	}
 }
 
-// TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget proves the fix
-// for a reviewer-flagged gap: when a target's persisted scale set is deleted
-// externally, r.statistics's not-found recovery path
-// (internal/controller/reconciler.go:945-955) issues a SECOND r.ensure call
-// plus a SECOND r.statistics call, each a full RetryValue budget, on top of
-// the target's normal one-ensure-one-statistics sweep. reconcileStepOpsPerTarget
-// must therefore budget 4 retryable operations per target, not 2, or a Step
-// legitimately recovering enough externally-deleted scale sets can exceed
-// the watchdog even though every individual retry obeyed policy.
+// TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget pins 4 retryable ops per target:
+// not-found recovery repeats ensure and statistics.
 func TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget(t *testing.T) {
 	t.Parallel()
 	if reconcileStepOpsPerTarget != 4 {
@@ -600,11 +444,8 @@ func TestReconcileStepTimeoutIncludesNotFoundRecoveryOpsPerTarget(t *testing.T) 
 	}
 }
 
-// TestSaturatingMulIntClampsInsteadOfWrapping and its siblings below prove
-// the arithmetic-safety helpers reconcileStepTimeout relies on never wrap
-// past math.MaxInt/math.MaxInt64, mirroring
-// internal/controller/reconciler.go's saturatingAddUint64 test coverage for
-// the signed, multiplicative cases this watchdog needs.
+// TestSaturatingMulIntClampsInsteadOfWrapping and its siblings pin the saturating helpers never
+// wrapping past math.MaxInt/math.MaxInt64.
 func TestSaturatingMulIntClampsInsteadOfWrapping(t *testing.T) {
 	t.Parallel()
 	if got := saturatingMulInt(math.MaxInt, 2); got != math.MaxInt {
@@ -657,17 +498,8 @@ func TestReconcileStepDrainGraceReusesWatchdogConstants(t *testing.T) {
 	}
 }
 
-// TestReconcileStepDrainGraceClearsDetachedPersistDrain proves the drain grace
-// outlasts every detached observed-state write a cancelled Step can still be
-// finishing, for every configuration Validate accepts rather than only generous
-// ones. Config.Validate constrains github.requestTimeout and
-// github.retry.maximum only to be positive, so the configured terms alone can
-// total a single nanosecond; a grace derived from them alone expires while
-// detached persists are still running and reports errReconcileStepAbandoned,
-// exiting the controller over writes that were going to return at their own
-// deadlines. Budgeting only ONE such write is equally insufficient: three run in
-// series on a single Step's unwind (see controller.StepDetachedPersistDrain), so
-// the cases below straddle the single-write bound as well as the aggregate.
+// TestReconcileStepDrainGraceClearsDetachedPersistDrain pins the grace outlasting all three serial
+// detached persists for any valid config, whose timeouts may total one nanosecond.
 func TestReconcileStepDrainGraceClearsDetachedPersistDrain(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -699,12 +531,8 @@ func TestReconcileStepDrainGraceClampsInsteadOfWrapping(t *testing.T) {
 	}
 }
 
-// TestErrReconcileStepAbandonedIsDistinctSentinel proves
-// errReconcileStepAbandoned is a stable, non-nil sentinel distinguishable
-// from any other error, since main.go's controllerExitCode only special-cases
-// ErrControllerRestartRequested and must fall through to the ordinary
-// nonzero-exit path (which the ci-runner-fleet Scheduled Task's
-// restart-on-failure policy relies on) for this one.
+// TestErrReconcileStepAbandonedIsDistinctSentinel pins a distinct sentinel that must not match
+// ErrControllerRestartRequested, so the controller takes the ordinary nonzero exit.
 func TestErrReconcileStepAbandonedIsDistinctSentinel(t *testing.T) {
 	t.Parallel()
 	if errReconcileStepAbandoned == nil {
@@ -747,10 +575,8 @@ func TestReconcileFailureStreakResetsOnAnyCleanStep(t *testing.T) {
 	}
 }
 
-// A per-target failure (scale-set ensure error for one pool) returns a Step
-// error while the remaining pools keep reconciling; it must never feed the
-// escalation streak, or a single misconfigured target would consume the
-// scheduled task's bounded restart budget.
+// A per-target failure must never feed the escalation streak, or one misconfigured target
+// would spend the scheduled task's bounded restart budget.
 func TestReconcileFailureStreakIgnoresPartialPerTargetFailures(t *testing.T) {
 	t.Parallel()
 	var streak reconcileFailureStreak

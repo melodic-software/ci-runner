@@ -22,9 +22,8 @@ func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		harness := newHarness(t, model.ModeEnabled)
-		// Inside the bubble the cadence ticker advances logical time, so the
-		// window is sized to a handful of ticks rather than the production
-		// minute; only their ratio matters to what is exercised.
+		// Inside the bubble the window is sized to a few cadence ticks rather than the production
+		// minute; only their ratio matters.
 		harness.controller.config.Controller.ReconcileInterval.Duration = 100 * time.Millisecond
 		harness.controller.config.Resources.CPUHysteresisWindow.Duration = 300 * time.Millisecond
 		now := harness.now
@@ -459,10 +458,8 @@ func TestSupersededListenerPollIsNotRecordedAsStatisticsError(t *testing.T) {
 	}()
 	waitForSignal(t, blocking.entered, "memory-funded listener poll did not begin")
 
-	// Withdraw memory below the advertised capacity. watchPollCadence cancels the
-	// open long poll with errReconcileInputsChanged; the in-flight poll unblocks
-	// with context.Canceled (firstBlockingScaleSet returns ctx.Err()) and Step
-	// reruns. The canceled poll must not surface as a scale-set failure.
+	// Withdraw memory below the advertised capacity: watchPollCadence cancels the open long poll and
+	// Step reruns. The canceled poll must not surface as a scale-set failure.
 	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 33 << 30, CPUUtilizationPercent: 10})
 
 	select {
@@ -592,10 +589,8 @@ func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// With an 8 GiB worker, a 16 GiB reserve floor (25% of 64 GiB), and a 25%
-	// increase margin: 34 GiB available affords two slots from scratch
-	// (18 GiB headroom clears the two-slot growth margin), so the pending
-	// poll starts by advertising 2.
+	// 8 GiB worker, 16 GiB reserve floor (25% of 64 GiB), 25% increase margin: 34 GiB available
+	// affords two slots from scratch, so the pending poll starts by advertising 2.
 	resources := &mutableResources{snapshot: model.ResourceSnapshot{
 		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 34 << 30, CPUUtilizationPercent: 10,
 	}}
@@ -609,14 +604,8 @@ func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	}()
 	waitForSignal(t, blocking.entered, "pending zero-to-two listener poll did not begin")
 
-	// Drop to 25 GiB available (9 GiB headroom): only one slot is raw
-	// affordable, so the open poll is withdrawn from 2 down to that safe
-	// remainder and Step reruns immediately. 9 GiB headroom is inside the
-	// growth dead band for a *fresh* single slot (it needs 10 GiB to clear
-	// the one-slot margin), so a rerun that forgets the in-flight baseline
-	// would incorrectly re-derive this sample as new growth and collapse to
-	// 0 instead of holding the one raw-affordable slot that was already
-	// pending.
+	// 25 GiB available raw-affords one slot but sits inside the fresh-growth dead band, so a rerun that
+	// forgets the in-flight baseline collapses to 0 instead of holding the pending slot.
 	resources.set(model.ResourceSnapshot{
 		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 25 << 30, CPUUtilizationPercent: 10,
 	})
@@ -626,9 +615,7 @@ func TestPendingWithdrawalRerunPreservesRawAffordableRemainder(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("pending withdrawal did not restart the listener poll")
 	}
-	// The capacity actually advertised to GitHub on the rerun is what the
-	// finding is about; [2 1] means the rerun held the raw-affordable
-	// remainder, while [2 0] means it collapsed to zero.
+	// [2 1] means the rerun held the raw-affordable remainder, while [2 0] means it collapsed to zero.
 	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[2 1]" {
 		t.Fatalf("advertised capacities = %v, want [2 1]", got)
 	}
@@ -696,9 +683,8 @@ func TestFailedLongPollPreservesCadenceAcknowledgementTransitionAge(t *testing.T
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		harness := newHarness(t, model.ModeEnabled)
-		// A few cadence ticks fire over the age advance below, each re-checkpointing
-		// the still-pending pool; the transition timestamp must survive both the
-		// intervening cadence saves and the eventual poll failure.
+		// Cadence ticks re-checkpoint the still-pending pool during the age advance; the transition
+		// timestamp must survive them and the eventual poll failure.
 		harness.controller.config.Controller.ReconcileInterval.Duration = 10 * time.Second
 		started := harness.now
 		if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
@@ -878,12 +864,8 @@ func (s *notifyingStateStore) SaveObserved(ctx context.Context, observed model.O
 	return nil
 }
 
-// persistPollCheckpoint publishes the capacity gauges only after the durable
-// save lands, so the state-store save is not an observation point for them: a
-// test woken by SaveObserved races the recorder and reads the prior gauge
-// value. Parking the reconcile goroutine inside the matching recorder call
-// instead pins the gauges at the checkpoint under assertion, out of reach of
-// the next cadence-driven checkpoint.
+// checkpointParkingRecorder parks the reconcile goroutine inside the matching recorder call. Gauges
+// publish after the durable save, so a test woken by SaveObserved would race the recorder.
 type checkpointParkingRecorder struct {
 	telemetry.Recorder
 	matches  func([]telemetry.CapacityCheckpointPool) bool
@@ -917,16 +899,14 @@ func (r *checkpointParkingRecorder) RecordCapacityCheckpoint(ctx context.Context
 	}
 }
 
-// Callers release explicitly once the parked state has been observed and defer
-// a second call, so an assertion that fails while the reconcile goroutine is
-// parked unwinds instead of wedging until the package timeout.
+// Callers release once the parked state has been observed and defer a second call, so a failed
+// assertion unwinds instead of wedging until the package timeout.
 func (r *checkpointParkingRecorder) release() {
 	r.releases.Do(func() { close(r.released) })
 }
 
-// The long-poll checkpoint is the second observed-state writer. An operator
-// reading observed.json mid-incident is as likely to catch a checkpoint as a
-// full reconcile, so the reason has to survive both paths.
+// The long-poll checkpoint is the second observed-state writer, so the reason has to survive
+// it as well as a full reconcile.
 func TestPollCheckpointCarriesTheQuiesceReason(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

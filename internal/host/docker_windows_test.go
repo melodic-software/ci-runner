@@ -13,9 +13,6 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// fakeEngineClient is a deterministic double for engineClient. *client.Client
-// structurally satisfies the same interface in production; tests never dial a
-// real Docker Engine.
 type fakeEngineClient struct {
 	infoResult client.SystemInfoResult
 	infoErr    error
@@ -57,9 +54,8 @@ func (r *recordingCommandRunner) Run(_ context.Context, name string, args ...str
 
 func TestDockerDesktopStatusClassifiesNonZeroExit(t *testing.T) {
 	t.Parallel()
-	// A stopped Docker Desktop makes `docker desktop status` exit non-zero, so the
-	// runner returns a genuine *exec.ExitError. Produce one rather than a sentinel
-	// so errors.As exercises the same classification path the CLI hits in the wild.
+	// A genuine *exec.ExitError rather than a sentinel, so errors.As takes the path a
+	// stopped Docker Desktop's non-zero exit takes in the wild.
 	exitErr := exec.CommandContext(context.Background(), "cmd", "/c", "exit 1").Run()
 	var asExit *exec.ExitError
 	if !errors.As(exitErr, &asExit) {
@@ -104,11 +100,8 @@ func TestDockerDesktopStatusClassifiesNonZeroExit(t *testing.T) {
 
 func TestDockerDesktopStatusPreservesContextCancellation(t *testing.T) {
 	t.Parallel()
-	// A canceled or expired context kills the probe process, which also surfaces
-	// as an *exec.ExitError. That aborted probe must propagate the context error
-	// instead of classifying the desktop as stopped: in watchdog and shutdown
-	// paths a timed-out probe otherwise records a known-stopped desktop and
-	// skips the Docker worker inventory.
+	// A killed probe also surfaces as *exec.ExitError; reading it as stopped would
+	// let a timed-out watchdog or shutdown probe skip the Docker worker inventory.
 	exitErr := exec.CommandContext(context.Background(), "cmd", "/c", "exit 1").Run()
 	var asExit *exec.ExitError
 	if !errors.As(exitErr, &asExit) {
@@ -158,9 +151,7 @@ func TestEngineReachableFalseWithoutErrorWhenEngineDown(t *testing.T) {
 
 func TestEngineReachablePropagatesContextCancellation(t *testing.T) {
 	t.Parallel()
-	// A context that is already done when Info fails must propagate the
-	// context error instead of reporting a factual "unreachable" -- mirroring
-	// DockerDesktopCLI.Status's context-preservation contract so a timed-out
+	// A done context must propagate rather than read as unreachable, so a timed-out
 	// probe cannot be misread as a known-down engine.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

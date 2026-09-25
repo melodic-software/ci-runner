@@ -36,10 +36,8 @@ type Hardener interface {
 	Harden(string) error
 }
 
-// dumpGoroutines writes every goroutine's stack (the runtime/pprof
-// goroutine profile at debug=2) to a new file under directory and returns its
-// path. Top-level regular files there are bounded by the diagnostics
-// retention and total-cap sweeps.
+// Top-level regular files under directory are bounded by the diagnostics retention and
+// total-cap sweeps.
 func dumpGoroutines(directory, reason string, at time.Time, acl Hardener) (string, error) {
 	path := filepath.Join(directory, fmt.Sprintf("controller-goroutines-%s-%s.txt", reason, at.UTC().Format("20060102T150405.000000000Z")))
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

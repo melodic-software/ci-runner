@@ -8,8 +8,7 @@ import (
 )
 
 // blockingDesktop models `docker desktop status` while Docker Desktop is
-// stopped: it outlives any budget it is given and reports the context's error,
-// exactly as an aborted probe process does.
+// stopped: it outlives any budget it is given, as the real probe does.
 type blockingDesktop struct{ calls int }
 
 func (d *blockingDesktop) Status(ctx context.Context) (DesktopStatus, error) {

@@ -51,10 +51,8 @@ type Reconciler struct {
 	version string
 	deps    Dependencies
 
-	// stepMu serializes side effects without blocking local control-plane status
-	// requests. stateMu protects only short-lived control state; capacityMu
-	// protects only the pending-capacity transition map. Neither may be held
-	// across an adapter call or listener poll.
+	// stepMu serializes side effects; stateMu guards short-lived control state and capacityMu the
+	// pending-capacity map. Neither may be held across an adapter call or listener poll.
 	stepMu     sync.Mutex
 	stateMu    sync.Mutex
 	capacityMu sync.Mutex
@@ -67,32 +65,20 @@ type Reconciler struct {
 	shuttingDown      bool
 	pendingCapacity   map[string]int
 
-	// engineMemoryTotal caches the probed engine VM MemTotal for the current
-	// VM lifecycle. Only step() and its same-goroutine callees touch it while
-	// stepMu is held; the poll-cadence goroutine receives the value by copy in
-	// pollCadenceState.
+	// engineMemoryTotal caches the engine VM MemTotal for the current VM lifecycle. Only step() touches
+	// it, under stepMu; the poll-cadence goroutine gets a copy in pollCadenceState.
 	engineMemoryTotal uint64
 
-	// registrationCheckCursor rotates which idle workers' GitHub registration
-	// gets verified when there are more eligible candidates than one Step's
-	// registrationCheckCap allows (see step()). It is only ever read and
-	// written from within step(), itself only reachable while stepMu is held,
-	// so unlike drainCapacity/sequence it needs no additional lock.
+	// registrationCheckCursor rotates which idle workers get their registration verified past
+	// registrationCheckCap. Only step() touches it, under stepMu, so it needs no other lock.
 	registrationCheckCursor uint64
 
-	// retirementCursor rotates which worker in plan.Remove is tried first when
-	// there are more retirement-eligible candidates than one Step's
-	// retirementDeregistrationCap allows (see step()), so a worker whose
-	// deregisterRunner call keeps failing cannot permanently starve every
-	// worker behind it in plan.Remove. Like registrationCheckCursor, it is
-	// only ever read and written from within step() while stepMu is held.
+	// retirementCursor rotates which plan.Remove worker is tried first, so a persistently failing
+	// deregistration cannot starve the rest. Only step() touches it, under stepMu.
 	retirementCursor uint64
 
-	// staleHandshakeCycles counts consecutive inner step() outcomes that
-	// superseded an open listener poll or deferred retirement as
-	// worker-removal-capacity-stale. After handshakeStaleCycleLimit the next
-	// ensure passes a nil prior so OfficialClient opens a new message session
-	// without deleting the scale set.
+	// staleHandshakeCycles counts consecutive step() outcomes that superseded a poll or deferred retirement
+	// as stale. Past handshakeStaleCycleLimit, ensure opens a new message session with a nil prior.
 	staleHandshakeCycles int
 	reregisterListeners  bool
 
@@ -216,16 +202,13 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 		cancel(nil)
 
 		if errors.Is(cause, errReconcileInputsChanged) && ctx.Err() == nil {
-			// Re-run immediately so the changed desired/power state is advertised;
-			// waiting for the normal reconciliation interval could leave stale
-			// nonzero capacity visible for an entire long poll.
+			// Re-run immediately; waiting the normal reconciliation interval could leave stale nonzero
+			// capacity visible for an entire long poll.
 			continue
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			// Keep any NewWorkBlocked / observed checkpoint the inner step
-			// already produced. Dropping the result here is what left the
-			// controller-main failure streak unable to restart a wedged
-			// process after a canceled startup inventory (#277).
+			// Keep any NewWorkBlocked / observed checkpoint the inner step already produced, so the failure
+			// streak can still restart a wedged process after a canceled startup inventory (#277).
 			return result, ctxErr
 		}
 		if cause != nil && err == nil {
@@ -279,15 +262,13 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		// desired file, but it must never overwrite one after installation.
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now}
 		if err := r.deps.State.SaveDesired(ctx, desired); err != nil {
-			// Nothing was reconciled and no capacity was drained: a persistent
-			// state-directory failure here is globally blocking, so the exit
-			// escalation must see it as such.
+			// Nothing was reconciled: a persistent state-directory failure here is globally blocking, so
+			// the exit escalation must see it as such.
 			return ReconcileResult{NewWorkBlocked: true}, fmt.Errorf("initialize desired state: %w", err)
 		}
 	} else if err != nil {
-		// A desired-state read failure must fail capacity closed. Preserve the
-		// file as evidence, but continue with transient disabled intent so any
-		// existing listener can acknowledge zero capacity.
+		// A desired-state read failure must fail capacity closed. Preserve the file as evidence and continue
+		// with transient disabled intent so any listener can acknowledge zero capacity.
 		desiredLoadErr = fmt.Errorf("load desired state: %w", err)
 		desired = model.DesiredState{SchemaVersion: 1, Mode: model.ModeDisabled, UpdatedAt: now}
 	}
@@ -316,9 +297,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if quarantineErr := quarantiner.QuarantineObserved(ctx); quarantineErr != nil {
 				return ReconcileResult{NewWorkBlocked: true}, errors.Join(ErrUnsafeObservedState, err, quarantineErr)
 			}
-			// Preserve the corrupt source until SaveObserved atomically replaces it,
-			// then reconstruct the exact configured scale set solely to advertise
-			// zero. No worker or Desktop lifecycle mutation is allowed in this pass.
+			// Preserve the corrupt source until SaveObserved replaces it, and reconstruct the scale set solely
+			// to advertise zero. No worker or Desktop lifecycle mutation is allowed in this pass.
 			observedLoadErr = err
 			previous = model.ObservedState{}
 			recoveryOnly = true
@@ -362,11 +342,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		observationFailed = true
 		record("power-monitor-error", "power observation failed; new work is blocked", "", true, powerErr)
 	}
-	// This watcher is a child of the Step context, which the reconcileStepTimeout
-	// watchdog already bounds, so it needs no deadline of its own. A per-request
-	// deadline here would wrongly expire it during a normal multi-attempt listener
-	// poll: r.statistics runs through RetryValue for up to Retry.MaxAttempts
-	// attempts, so the poll it shadows can legitimately span minutes.
+	// No deadline of its own: the Step watchdog bounds this watcher, and a per-request deadline would
+	// expire it during a normal multi-attempt listener poll (RetryValue can span minutes).
 	watchContext, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func(watchedDesired model.DesiredState, watchedPower model.PowerSnapshot, forcedZero bool) {
@@ -384,10 +361,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		record("desktop-status-error", "Docker Desktop status failed; new work is blocked", "", true, desktopErr)
 	}
 
-	// Desktop lifecycle is a host prerequisite, not a worker-admission decision.
-	// A known stopped/unreachable engine cannot answer Docker inventory calls, so
-	// enabled mode must bootstrap it before resource admission or inventory. An
-	// unknown Desktop status and an unknown power state still fail closed.
+	// A known stopped/unreachable engine cannot answer Docker inventory calls, so enabled mode must
+	// bootstrap Desktop first. An unknown Desktop status or power state still fails closed.
 	if desired.Mode == model.ModeEnabled && desktopStatusKnown && powerErr == nil {
 		_, powerAllowed := evaluatePowerGate(previous.PowerGate, power, r.config.Power, now)
 		if powerAllowed && (!desktop.DesktopRunning || !desktop.EngineReachable) {
@@ -426,14 +401,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			workers = latest
 		}
 	}
-	// The host resource monitor reads physical RAM and CPU independent of Docker,
-	// so a valid observation stays valid even when a Docker-side probe fails. When
-	// the desktop is known to be down (stopped by gaming teardown, or not yet
-	// started), preserve that real observation rather than zeroing it: an invalid
-	// snapshot would trip evaluateResourceGate closed and block the StartDesktop
-	// bootstrap that re-enable depends on, and no worker scheduling happens while
-	// the desktop is down anyway. A running or unknown-state desktop still fails
-	// closed, so a stale inventory can never admit work against an empty snapshot.
+	// Host RAM/CPU readings do not depend on Docker: keep a valid observation while the desktop is known
+	// down, since an invalid one would block the StartDesktop bootstrap that re-enable depends on.
 	desktopKnownDown := desktopStatusKnown && !desktop.DesktopRunning && !desktop.EngineReachable
 	if observationFailed && !desktopKnownDown {
 		resources = model.ResourceSnapshot{} // invalid observation fails closed in BuildPlan
@@ -498,14 +467,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		r.clearStaleHandshake()
 	}
 
-	// Compute capacity from the last authoritative statistics, then send that
-	// capacity with this poll. Newly returned statistics drive worker changes
-	// now and the next poll's capacity, avoiding an unsupported reservation API.
-	// A withdrawal-triggered rerun reaches this call with a checkpoint that
-	// still reports the last acknowledged capacity, not the capacity the
-	// canceled poll had in flight; carry that in-flight baseline forward so
-	// the rerun holds a still-affordable remainder instead of re-deriving it
-	// as fresh growth.
+	// Plan from the last authoritative statistics and send that capacity with this poll. A withdrawal
+	// rerun carries the in-flight baseline so it holds a still-affordable remainder.
 	provisional := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: r.pendingCapacitySnapshot(), Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
@@ -551,10 +514,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			}
 		}
 	}
-	// Pre-poll start succeeded but the follow-up inventory/job refresh failed:
-	// forcedZero only freezes cadence observations. Zero every advertised slot
-	// before Statistics so a transient Docker listing failure cannot acknowledge
-	// new work without authoritative worker visibility.
+	// Pre-poll start succeeded but the follow-up refresh failed: zero every advertised slot so a
+	// transient Docker listing failure cannot acknowledge new work without worker visibility.
 	if prePollRefreshFailed {
 		for poolID := range pollPlan.AdvertisedCapacity {
 			pollPlan.AdvertisedCapacity[poolID] = 0
@@ -567,9 +528,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	)
 	if containsReadyPool(pools) {
 		checkpointErr := r.persistPollCheckpoint(ctx, checkpoint)
-		// Child of the Step context bounded by the reconcileStepTimeout watchdog. A
-		// separate per-request deadline would expire this cadence watcher during a
-		// normal multi-attempt poll retry sequence, so none is set here.
+		// Bounded by the Step watchdog. A per-request deadline would expire this cadence watcher
+		// during a normal multi-attempt poll retry sequence.
 		pollWatchContext, stop := context.WithCancel(ctx)
 		stopPollWatch = stop
 		pollWatchDone = make(chan pollCadenceResult, 1)
@@ -631,11 +591,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if result.err != nil {
 			pool.Ready = false
 			if pollSuperseded(result.err) {
-				// The cadence watcher cancels an open listener long poll on purpose
-				// (errReconcileInputsChanged) when reconciliation safety inputs
-				// change, and Step reruns. The in-flight poll then unblocks with
-				// context.Canceled: routine control flow, not a scale-set failure,
-				// so it must not surface an error-level record or problem entry.
+				// The cadence watcher cancels the open poll on purpose when safety inputs change and Step
+				// reruns; that context.Canceled is routine control flow, not a scale-set failure.
 				continue
 			}
 			record("scale-set-statistics-error", safeScaleSetMessage("poll", result.err), pool.TargetID, scaleset.Retryable(result.err), result.err)
@@ -671,12 +628,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			// in-flight advertised/pending capacity the rerun is meant to carry.
 			return ReconcileResult{}, cause
 		}
-		// No ready pool means persistPollCheckpoint never ran, so a canceled
-		// ensure/inventory left observed.json frozen at the previous process's
-		// last write. A canceled ready-pool poll can also land here with an
-		// empty problem list and a still-ready pollPlan; persist that as
-		// degraded so a wedged Statistics call cannot keep observed.json
-		// looking healthy.
+		// No serving checkpoint ran (no ready pool, or a canceled poll with no problems): persist degraded
+		// so a wedged ensure or Statistics call cannot keep observed.json looking healthy.
 		if len(operationProblems) == 0 {
 			operationProblems = append(operationProblems, problem(time.Now().UTC(), "reconcile-canceled", "reconciliation was canceled before a serving checkpoint; new work is blocked", "", true))
 		}
@@ -693,9 +646,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		record("reconcile-checkpoint-error", "controller heartbeat checkpoint failed during the listener poll", "", true, cadenceResult.checkpointErr)
 	}
 
-	// Refresh after capacity was advertised. This is important during drain:
-	// an assignment accepted just before zero capacity must be observed as busy
-	// and protected before any conditional removal is attempted.
+	// Refresh after capacity was advertised: an assignment accepted just before zero capacity must be
+	// observed as busy and protected before any conditional removal.
 	if mayHaveManagedWorkers(desktop, desktopStatusKnown) {
 		if latest, listErr := r.deps.Workers.List(ctx); listErr != nil {
 			jobStateKnown = false
@@ -712,26 +664,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
-	// A JIT runner can be canceled after GitHub assigns it but before the runner
-	// acquires the job. GitHub then removes the one-job registration while the
-	// stock runner process can remain alive with the hook state still at idle.
-	// Verify only exact, job-free idle identities. An authoritative missing
-	// registration makes that container unusable capacity; every lookup error
-	// and every active/racing worker remains preserved.
-	//
-	// r.runnerRegistered runs a full GitHub RetryValue budget per call
-	// (internal/app's reconcileStepTimeout budgets exactly
-	// registrationCheckCap of these per Step). Unlike JIT starts, the number of
-	// eligible idle workers here is not itself bounded by
-	// MaximumConcurrentWorkers -- idle inventory accumulates independently of
-	// that cap -- so cap the checks actually issued in this Step and rotate
-	// which candidates get picked via registrationCheckCursor, deferring the
-	// remainder (logged as worker-registration-check-deferred-step-budget) to
-	// later Steps. A fixed from-the-front cap would starve candidates past the
-	// cap forever whenever the same workers keep sorting first; rotating the
-	// starting point guarantees every candidate is eventually checked as long
-	// as new idle inventory does not outpace the cap indefinitely, the same
-	// assumption the retirement deregistration cap above already relies on.
+	// Verify only exact, job-free idle identities: a missing registration marks unusable capacity, and
+	// lookup errors and active workers stay preserved. Checks are capped and rotated per Step.
 	if jobStateKnown {
 		var candidates []int
 		for index := range workers {
@@ -789,30 +723,13 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		}
 	}
 
-	// deregisterRunner runs a full GitHub RetryValue budget per call
-	// (internal/app's reconcileStepTimeout budgets exactly
-	// Resources.MaximumConcurrentWorkers worth of these per Step, mirroring the
-	// JIT-start budget). Unlike JIT starts, plan.Remove's idle-worker count is
-	// not itself bounded by MaximumConcurrentWorkers: lowering that setting or
-	// warm capacity can legitimately leave more existing idle workers to drain
-	// than the new cap allows for. Cap the deregisterRunner calls issued in this
-	// Step at that same limit and defer any remainder to a later Step (where
-	// plan.Remove is recomputed and picks the deferred workers back up) instead
-	// of letting an unbounded retirement count exceed the watchdog's budget.
+	// Cap deregisterRunner calls at the watchdog's per-Step budget (MaximumConcurrentWorkers) and defer
+	// the rest: plan.Remove's idle-worker count is not bounded by that cap.
 	retirementDeregistrationCap := max(r.config.Resources.MaximumConcurrentWorkers, 1)
 	retirementDeregistrations := 0
 
-	// Rotate which worker in plan.Remove is tried first each Step, mirroring
-	// the registration-check rotation below (registrationCheckCursor). Without
-	// rotation, a single worker whose deregisterRunner call keeps returning a
-	// persistent error would consume this Step's entire per-step retry budget
-	// every Step forever -- it always sorts first in plan.Remove and the cap
-	// check above is reached (and the budget spent) before any later entry is
-	// ever tried -- starving every worker behind it from retiring at all.
-	// Rotating the starting point guarantees every worker eventually reaches
-	// the front of the budget, as long as new excess inventory does not
-	// outpace the cap indefinitely, the same assumption
-	// registrationCheckCursor already relies on.
+	// Rotate which plan.Remove worker is tried first each Step, so one persistently failing
+	// deregistration cannot spend the budget every Step and starve the workers behind it.
 	removalOrder := make([]int, len(plan.Remove))
 	if n := len(removalOrder); n > 0 {
 		start := int(r.retirementCursor % uint64(n))
@@ -986,9 +903,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			DesiredWorkers:            postPlan.DesiredWorkers[target.ID], UpdatedAt: updatedAt,
 		})
 	}
-	// The memory clamp was previously invisible: capacity silently advertised
-	// below pool max whenever the memory term bound. A log line (not a
-	// problem) keeps the routine legacy-basis clamp from flipping the fleet
+	// A log line (not a problem) keeps the routine legacy-basis clamp from flipping the fleet
 	// phase while still leaving a queryable trail.
 	for _, target := range r.config.GitHub.Targets {
 		if postPlan.MemoryClamped[target.ID] {
@@ -1054,16 +969,8 @@ func alignAdvertisedCapacity(planned map[string]int, acknowledged map[string]int
 	}
 }
 
-// probeEngineMemory maintains the cached engine VM MemTotal that cross-checks
-// a configured worker memory budget. It probes at most once per VM lifecycle:
-// only after Docker Desktop and its engine are confirmed up (the VM may not
-// exist at process start), and again after any down observation, because
-// desktop teardown (gaming mode) recycles the WSL2 VM and a stale probe must
-// not vouch for the next VM's size. An UNKNOWN status (a failed status query)
-// keeps the cache: the VM was never observed down, and discarding the probe
-// would leave an oversized budget unverified if the follow-up re-probe also
-// failed. A probe failure is a warning, not a gate: the configured budget is
-// used unverified.
+// probeEngineMemory probes at most once per VM lifecycle: after Desktop and engine are up, and again
+// after any down observation. An UNKNOWN status keeps the cache; a probe failure only warns.
 func (r *Reconciler) probeEngineMemory(ctx context.Context, desktopStatusKnown bool, desktop model.DesktopStatus, note func(code, message, poolID string)) {
 	if r.config.Resources.WorkerMemoryBudget == 0 {
 		return
@@ -1201,10 +1108,8 @@ func (r *Reconciler) rememberDrainCapacity(poolID string, capacity int) {
 	r.drainCapacity[poolID] = capacity
 }
 
-// seedPendingCapacity records the affordable remainder an open listener poll must
-// hold after a withdrawal supersession. Without this, a rerun still sees the
-// canceled poll's in-flight capacity as pending hysteresis and can re-advertise
-// capacity the host no longer funds.
+// seedPendingCapacity records the affordable remainder an open listener poll must hold after a
+// withdrawal supersession, so a rerun cannot re-advertise capacity the host no longer funds.
 func (r *Reconciler) seedPendingCapacity(capacity map[string]int) {
 	r.capacityMu.Lock()
 	defer r.capacityMu.Unlock()
@@ -1299,9 +1204,8 @@ func (r *Reconciler) executePlannedStarts(
 				record("jit-config-error", safeScaleSetMessage("create JIT configuration", jitErr), decision.PoolID, scaleset.Retryable(jitErr), jitErr)
 				break
 			}
-			// JIT creation is a network operation. Re-read every safety and
-			// admission input again immediately before the irreversible container
-			// start so a stale pre-JIT snapshot cannot admit work.
+			// JIT creation is a network operation. Re-read every safety and admission input immediately
+			// before the irreversible container start.
 			allowed, safetyChanged, admissionErr = r.freshStartAllowed(ctx, decision.PoolID, pools, previous, desired, power, resources, desktop, *reservedMemory)
 			if admissionErr != nil || safetyChanged {
 				cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), r.config.GitHub.RequestTimeout.Duration)
@@ -1397,14 +1301,8 @@ func (r *Reconciler) freshStartAllowed(
 	}
 	workers = enriched
 
-	// A host monitor may not reflect containers started earlier in this Step.
-	// Under the legacy host-headroom basis, reserve the exact sum of their
-	// target profiles against every fresh observation so a stale snapshot
-	// cannot over-admit mixed worker sizes. Under the static budget basis the
-	// fresh worker list above already charges them against the budget, and
-	// the host reading only feeds the binary floor - synthetically deflating
-	// it would let worker growth alone trip the floor, the exact coupling the
-	// budget basis exists to remove (stress-test C1).
+	// The host monitor may lag this Step's starts: the legacy basis reserves their profiles against it,
+	// while the budget basis already charges them and must not deflate the floor reading.
 	if r.config.Resources.WorkerMemoryBudget == 0 {
 		resources.AvailableMemoryBytes = availableAfterMemoryReservation(resources.AvailableMemoryBytes, reservedMemory)
 	}
@@ -1464,18 +1362,8 @@ const ObservedPersistTimeout = 5 * time.Second
 // A new detached persist call site therefore has to raise this count.
 const StepDetachedPersistDrain = 3 * ObservedPersistTimeout
 
-// persistObserved writes observed state on a context detached from cycle
-// cancellation, bounded by its own timeout.
-//
-// The cycle context is precisely the one a watchdog cancellation or a wedged
-// state lock has already cancelled, so persisting on it means the degraded
-// phase and the problem records explaining that failure never land:
-// observed.json silently keeps its pre-incident contents and doctor and
-// monitoring report a healthy fleet through the outage. Detaching costs
-// nothing in write safety -- statefs.Store.save stages a temporary file, syncs
-// it, replaces the target atomically and syncs the directory, all while
-// holding the same lock every other writer takes -- so a detached write can
-// neither land partially nor interleave with another writer.
+// persistObserved writes observed state on a context detached from cycle cancellation, bounded by
+// its own timeout, so the degraded phase and problems explaining a cancellation still land.
 func (r *Reconciler) persistObserved(ctx context.Context, observed model.ObservedState) error {
 	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), ObservedPersistTimeout)
 	defer cancel()
@@ -1522,14 +1410,8 @@ func sameAdmissionIntent(left, right model.DesiredState) bool {
 	return *left.TemporaryCapacityOverride == *right.TemporaryCapacityOverride
 }
 
-// pollSuperseded reports whether a listener poll error is the controller's own
-// designed supersession rather than a GitHub or transport failure.
-// watchPollCadence cancels the open poll with errReconcileInputsChanged when
-// reconciliation safety inputs change; the in-flight poll then returns
-// context.Canceled and Step reruns. Only the result's own error is consulted:
-// once the cadence watcher cancels, the step cancellation cause is set for
-// every queued result, and a genuine *scaleset.Error from another pool must
-// still surface its log line even though the step result is discarded.
+// pollSuperseded reports whether a listener poll error is the controller's own designed supersession.
+// Only the result's own error counts: the shared step cause must not mask another pool's failure.
 func pollSuperseded(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
@@ -1571,11 +1453,8 @@ func allTargetsStablyZero(targets []config.Target, acknowledged map[string]bool,
 	return true
 }
 
-// mayHaveManagedWorkers distinguishes the authoritative Desktop-stopped state
-// from an ambiguous engine failure. When both Desktop and its engine are known
-// stopped, no managed container can be active and querying Docker is expected
-// to fail. Every unknown or contradictory state still requires inventory and
-// therefore fails closed if the runtime cannot provide it.
+// mayHaveManagedWorkers is false only when Desktop and its engine are both known stopped. Every
+// unknown or contradictory state still requires inventory and fails closed without it.
 func mayHaveManagedWorkers(desktop model.DesktopStatus, statusKnown bool) bool {
 	return !statusKnown || desktop.DesktopRunning || desktop.EngineReachable
 }

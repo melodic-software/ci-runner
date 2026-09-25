@@ -362,9 +362,8 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	if _, err := r.engine.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		attached.Close()
 		attachedClosed = true
-		// ContainerStart is not transactional. A response error may arrive after
-		// the engine started the process, so force-removal here could cancel a job.
-		// Adopt/watch the ambiguous container and let inventory reconcile it.
+		// ContainerStart is not transactional: the engine may have started the process,
+		// so force-removal could cancel a job. Watch it and let inventory reconcile.
 		r.ensureWatch(created.ID, &wait)
 		return model.Worker{}, &controller.WorkerStartError{Err: fmt.Errorf("start worker container: %w", err), RunnerMayBeActive: true}
 	}
@@ -466,13 +465,8 @@ func (r *Runtime) ensureImage(ctx context.Context) error {
 	} else if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect pinned worker image: %w", err)
 	}
-	// A stalled or hung registry pull otherwise has no independent stall
-	// detector anywhere in this call chain: it would sit unresponsive under
-	// whatever deadline the caller passed in (the reconcile Step watchdog,
-	// sized generously to never cut off a legitimate Step) instead of failing
-	// fast the way GitHub's own scale-set transport does. Bound it with its
-	// own configured timeout, mirroring how ControllerDesktopAdapter.Start/Stop
-	// bound Docker Desktop's lifecycle with cfg.DockerDesktop.StartTimeout/StopTimeout.
+	// The caller's deadline is the generously sized reconcile Step watchdog, so a
+	// stalled registry pull needs its own bound to fail fast.
 	pullCtx, cancel := context.WithTimeout(ctx, r.opts.ImagePullTimeout)
 	defer cancel()
 	pull, err := r.engine.ImagePull(pullCtx, r.opts.Image, client.ImagePullOptions{Platforms: []ocispec.Platform{{OS: "linux", Architecture: "amd64"}}})
@@ -504,11 +498,8 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 		worker.State = model.WorkerExited
 		return worker, nil
 	}
-	// Read the started memory limit before the state probe: a worker whose state
-	// read fails is still counted active, so it must already carry the limit it
-	// reserves against the budget. A limit that cannot be read is not fatal on its
-	// own - the worker keeps its real state and reserves its pool profile, the
-	// same fallback an unlimited container takes.
+	// Read the limit before the state probe: a worker whose state read fails still
+	// counts active and must carry it. An unreadable limit reserves the pool profile.
 	memoryLimit, memoryErr := r.readWorkerMemoryLimit(ctx, id)
 	worker.MemoryLimitBytes = memoryLimit
 	state, err := r.readWorkerState(ctx, id)
@@ -533,11 +524,8 @@ func (r *Runtime) workerFromContainer(ctx context.Context, id string, labels map
 	return worker, nil
 }
 
-// readWorkerMemoryLimit reports the memory limit the engine recorded when the
-// container was created, which outlives any later change to the configured
-// worker profile. The container list summary carries no resource fields, so the
-// limit only comes back from an inspect. A zero or negative reading means the
-// engine reports the container as unlimited; callers fall back to the profile.
+// readWorkerMemoryLimit inspects because the list summary carries no resource
+// fields. Zero or negative means unlimited; callers fall back to the profile.
 func (r *Runtime) readWorkerMemoryLimit(ctx context.Context, id string) (int64, error) {
 	result, err := r.engine.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
@@ -627,9 +615,8 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		finalization.Duration = time.Since(telemetryStartedAt)
 		r.opts.Telemetry.WorkerFinalized(context.Background(), telemetryMetadata.PoolID, finalization)
 
-		// The watch becoming done is an externally observable lifecycle boundary.
-		// Publish telemetry first so callers cannot observe completion before the
-		// corresponding finalization signal exists.
+		// Telemetry is published first so callers cannot observe completion before
+		// the corresponding finalization signal exists.
 		r.mu.Lock()
 		delete(r.watches, id)
 		close(watch.done)
@@ -675,9 +662,8 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	if waitErr != nil {
 		inspect, err := r.engine.ContainerInspect(r.ctx, id, client.ContainerInspectOptions{})
 		if cerrdefs.IsNotFound(err) {
-			// A concurrent Docker cleanup can remove a stopped ephemeral worker
-			// between inventory and wait. This is bounded missing lifecycle
-			// evidence, not an adapter failure and not an inferred zero peak.
+			// A concurrent cleanup can remove a stopped worker between inventory and
+			// wait: missing evidence, not an adapter failure or an inferred zero peak.
 			finalization.ResourceEvidence = &telemetry.WorkerResourceEvidence{Status: "missing"}
 			finalization.RecordResourceEvidence = true
 			return
@@ -710,9 +696,8 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		r.opts.OnError(err)
 		watch.err = errors.Join(watch.err, err)
 		cancelLogs()
-		// Do not delete the watch while its log writer is still active. Keeping
-		// the watch registered prevents List from starting concurrent retries
-		// against the same artifact path.
+		// Keep the watch registered while its log writer is active, so List cannot
+		// start concurrent retries against the same artifact path.
 		result := <-logDone
 		markerEvidence = result.evidence
 		if result.err != nil {
@@ -729,9 +714,8 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		r.opts.OnError(evidenceErr)
 		watch.err = errors.Join(watch.err, evidenceErr)
 	}
-	// Evidence and diagnostics are independent durable artifacts. Attempt both
-	// even when either transport or persistence path fails, while retaining the
-	// container unless the complete artifact set can be finalized.
+	// Evidence and diagnostics are independent: attempt both even when either fails,
+	// retaining the container unless the complete artifact set can be finalized.
 	if err := r.captureDiagnostics(finalizeCtx, id); err != nil {
 		r.opts.OnError(err)
 		watch.err = errors.Join(watch.err, err)
@@ -818,9 +802,8 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 		evidence = *marker
 		evidence.Missing = append([]string(nil), marker.Missing...)
 	} else if err := ctx.Err(); err != nil {
-		// A finalization timeout is an attempt failure, not evidence that Docker
-		// or cgroup data is unavailable. Do not publish an immutable fallback;
-		// the retained container can provide real terminal evidence on retry.
+		// A finalization timeout is an attempt failure, not missing data: publishing an
+		// immutable fallback would block the real evidence a retry can still read.
 		return evidence, false, fmt.Errorf("terminal worker resource evidence context expired: %w", err)
 	} else {
 		result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.ResourceEvidencePath})
@@ -831,10 +814,8 @@ func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metada
 			if shutdownErr := r.ctx.Err(); shutdownErr != nil && errorCausedOnlyBy(err, shutdownErr) {
 				return evidence, false, fmt.Errorf("copy terminal worker resource evidence: %w", err)
 			}
-			// A worker torn down while idle never ran the job-completed hook that
-			// writes terminal cgroup evidence, so Docker reports the path absent.
-			// That is the routine scale-down outcome, not a copy failure, and
-			// reporting it would mask the transport failures this error surfaces.
+			// An idle-teardown worker never ran the job-completed hook, so an absent path
+			// is routine scale-down; reporting it would mask real transport failures.
 			if !cerrdefs.IsNotFound(err) {
 				r.opts.OnError(fmt.Errorf("copy terminal worker resource evidence; preserving bounded fallback: %w", err))
 			}
@@ -910,9 +891,8 @@ func wrapIfError(operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// errorCausedOnlyBy recognizes wrapping and errors.Join while refusing to
-// hide any unrelated artifact/runtime failure that happened alongside a
-// controller shutdown.
+// errorCausedOnlyBy sees through wrapping and errors.Join but never hides an
+// unrelated failure that happened alongside a controller shutdown.
 func errorCausedOnlyBy(err, cause error) bool {
 	if err == nil || cause == nil {
 		return false

@@ -33,10 +33,8 @@ type pollCadenceResult struct {
 	superseded bool
 }
 
-// pollCheckpoint persists local liveness and gate progress without claiming
-// that an in-flight listener capacity change has already been acknowledged.
-// This lets a long GitHub poll remain open while host policy is reevaluated on
-// the configured reconciliation cadence.
+// pollCheckpoint persists local liveness and gate progress without claiming that an
+// in-flight listener capacity change has already been acknowledged.
 func (r *Reconciler) pollCheckpoint(
 	previous model.ObservedState,
 	pools []PoolSnapshot,
@@ -99,12 +97,8 @@ func (r *Reconciler) pollCheckpoint(
 	}
 }
 
-// pendingCapacitySnapshot returns the last unacknowledged capacity per pool
-// that a listener poll had in flight when it was superseded. A withdrawal
-// cancels the open poll and Step reruns immediately; without this baseline,
-// the rerun's initial plan would see only the durably acknowledged capacity
-// (still the prior value, since the canceled poll never acknowledged) and
-// re-evaluate the sample as fresh growth instead of a held remainder.
+// pendingCapacitySnapshot returns the last unacknowledged capacity per pool a superseded poll
+// had in flight, so the rerun holds that remainder instead of re-evaluating it as fresh growth.
 func (r *Reconciler) pendingCapacitySnapshot() map[string]int {
 	r.capacityMu.Lock()
 	defer r.capacityMu.Unlock()
@@ -302,11 +296,8 @@ func memoryAffordableAdvertisedCapacity(advertised map[string]int, resources mod
 	return result
 }
 
-// memoryFundingSlots reports how many default-profile worker slots the current
-// memory basis can still fund. Host-headroom mode matches BuildPlan's physical
-// reading. Budget mode counts already-reserved active workers plus new slots
-// from the static remainder so pre-poll starts do not look unfundable merely
-// because AvailablePhysical dropped under ordinary load.
+// memoryFundingSlots reports how many default-profile worker slots the current memory basis
+// can still fund. Budget mode counts reserved active workers plus slots from the static remainder.
 func memoryFundingSlots(resources model.ResourceSnapshot, workers []model.Worker, cfg config.Config, engineMemoryTotal uint64) int {
 	gate := evaluateMemoryBasis(PlanInput{
 		Config: cfg, Workers: workers, Resources: resources, EngineMemoryTotalBytes: engineMemoryTotal,

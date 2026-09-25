@@ -104,9 +104,8 @@ func TestStoreRoundTripsDesiredAndObserved(t *testing.T) {
 	}
 }
 
-// observed.json is read by operators during an incident, so quiesceReason has
-// to be on the wire under that exact key when the controller is draining, and
-// absent rather than empty or "none" when it is not.
+// Operators read observed.json in incidents: quiesceReason must appear under that
+// exact key while draining, and be absent (not empty or "none") otherwise.
 func TestObservedQuiesceReasonIsOnTheWireOnlyWhileDraining(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -155,12 +154,8 @@ func TestObservedQuiesceReasonIsOnTheWireOnlyWhileDraining(t *testing.T) {
 	}
 }
 
-// A controller reads observed.json files written by the release it replaced —
-// and, after a rollback, by the release that replaced it, because the
-// documented rollback order drains before restoring the prior pair. Unknown
-// keys must therefore be ignored, top-level and nested, so an additive field
-// in a newer release can never quarantine the file, force a capacity-zero
-// recovery pass, or restart the drain clock on the older binary.
+// After a rollback an older release reads a newer observed.json, so unknown keys
+// (top-level and nested) must be ignored rather than quarantine the file.
 func TestObservedToleratesFieldsFromANewerRelease(t *testing.T) {
 	store, directory := newTestStore(t)
 	ctx := context.Background()
@@ -210,10 +205,8 @@ func TestObservedToleratesFieldsFromANewerRelease(t *testing.T) {
 	}
 }
 
-// Forward tolerance is scoped to unknown keys within schemaVersion 1. A
-// schemaVersion this release does not support stays rejected — bumping it is
-// the deliberate signal that an older release must not trust the file — and
-// the single-JSON-value trailer check still catches concatenated writes.
+// Tolerance covers unknown keys only: an unsupported schemaVersion is still
+// rejected, and the trailer check still catches concatenated writes.
 func TestObservedStillRejectsIncompatibleFiles(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -51,9 +51,8 @@ func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) 
 		if _, err := harness.controller.Step(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		// The bubble clock advances only while every goroutine is durably
-		// blocked, so this sleep deterministically ages the prior checkpoint by
-		// exactly 11s between the two synchronous Steps.
+		// The bubble clock advances only while every goroutine is durably blocked, so this sleep
+		// ages the prior checkpoint by exactly 11s between the two synchronous Steps.
 		time.Sleep(11 * time.Second)
 		result, err := harness.controller.Step(context.Background())
 		if err != nil {
@@ -359,9 +358,8 @@ func TestDesktopBootstrapRecoversAfterTransientStartFailure(t *testing.T) {
 	if first.Observed.Phase != model.PhaseDegraded || harness.runtime.startCount() != 0 {
 		t.Fatalf("first observed = %#v; workers=%#v", first.Observed, harness.runtime.snapshot())
 	}
-	// A down desktop must not weaponize the resource gate: the host resource
-	// observation stays valid through the failed start, so recovery needs no
-	// invalid-observation hysteresis once the desktop comes up.
+	// The host resource observation stays valid through the failed desktop start, so recovery
+	// needs no invalid-observation hysteresis once the desktop comes up.
 	if first.Observed.ResourceGate.Blocked {
 		t.Fatalf("transient desktop start failure blocked the resource gate: %#v", first.Observed.ResourceGate)
 	}
@@ -374,10 +372,8 @@ func TestDesktopBootstrapRecoversAfterTransientStartFailure(t *testing.T) {
 	if second.Observed.Phase != model.PhaseReady || harness.runtime.startCount() != 1 {
 		t.Fatalf("second observed = %#v; workers=%#v", second.Observed, harness.runtime.snapshot())
 	}
-	// While the desktop is down, three start sites can fire in a Step: the eager
-	// bootstrap, BuildPlan's pre-poll StartDesktop fallback, and the post-poll
-	// StartDesktop fallback when the resource gate stays open. The first Step
-	// makes two failing attempts, the second one succeeding attempt.
+	// Three start sites fire while the desktop is down: the eager bootstrap and the pre- and post-poll
+	// StartDesktop fallbacks. Step one makes two failing attempts, step two one succeeding attempt.
 	if got := harness.desktop.startCount(); got != 4 {
 		t.Fatalf("Desktop starts = %d, want two failed attempts and one recovery plus the pre-poll fallback", got)
 	}
@@ -393,10 +389,8 @@ func TestStoppedDesktopPreservesResourceObservation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the failed desktop start to surface an error")
 	}
-	// The host resource monitor reads physical RAM independent of Docker, so a
-	// stopped desktop must not zero it and trip the gate closed (issue #66) --
-	// otherwise the blocked gate would keep the StartDesktop bootstrap from
-	// running on re-enable.
+	// The host resource monitor reads physical RAM independent of Docker, so a stopped desktop must not
+	// zero it and trip the gate closed, blocking the StartDesktop bootstrap on re-enable (issue #66).
 	if result.Observed.ResourceGate.Blocked {
 		t.Fatalf("stopped desktop blocked the resource gate: %#v", result.Observed.ResourceGate)
 	}
@@ -505,23 +499,13 @@ func TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls(t *testing.T
 	}
 }
 
-// TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder proves the
-// fix for a reviewer-flagged watchdog gap: deregisterRunner runs a full
-// GitHub RetryValue budget per call, and internal/app's reconcileStepTimeout
-// only budgets Resources.MaximumConcurrentWorkers worth of those per Step.
-// Lowering MaximumConcurrentWorkers (simulated here after warm inventory was
-// already started under the higher configured limit) can legitimately leave
-// more idle workers eligible for retirement than the new cap allows for. The
-// removal loop must cap deregisterRunner calls at MaximumConcurrentWorkers
-// per Step -- deferring, never dropping, the remainder to a later Step -- so
-// the watchdog's budget is never exceeded by a single Step's retirements.
+// TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder pins that retirement caps
+// deregisterRunner calls at MaximumConcurrentWorkers per Step, deferring, never dropping, the rest.
 func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
-	// Simulate MaximumConcurrentWorkers (or warm capacity) having been lowered
-	// after five idle workers were legitimately started under a higher limit:
-	// the new cap is well below the number of idle workers now eligible for
-	// retirement (target WarmIdle=1 keeps exactly one, so four must drain).
+	// Simulate a lowered cap after five idle workers started under a higher limit: WarmIdle=1 keeps
+	// one, so four must drain against MaximumConcurrentWorkers=2.
 	harness.controller.config.Resources.MaximumConcurrentWorkers = 2
 	harness.runtime.workers = []model.Worker{
 		{ID: "idle-1", Name: "runner-1", PoolID: "org", RunnerID: 41, State: model.WorkerIdle},
@@ -562,11 +546,8 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 		t.Fatalf("first quiesce poll = %#v workers=%#v", first.Observed.Pools[0], harness.runtime.snapshot())
 	}
 
-	// Second step: quiescence reaches its two-poll confirmation threshold and
-	// four workers become eligible for retirement, but the deregistration cap
-	// (MaximumConcurrentWorkers=2) must limit this Step to exactly two
-	// deregisterRunner calls, deferring the other two rather than exceeding
-	// the watchdog's per-step retry budget.
+	// Second step: quiescence confirms and four workers become eligible for retirement, but the cap
+	// must limit this Step to two deregisterRunner calls, deferring the other two.
 	second, err := harness.controller.Step(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -584,18 +565,8 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 		t.Fatalf("phase after capped step = %s, want still draining", second.Observed.Phase)
 	}
 
-	// Remaining steps: the two deferred workers must not be lost. Keep
-	// stepping until the drain converges to the single kept warm-idle worker,
-	// asserting on every step that the deregistration cap is never exceeded
-	// (each step issues at most MaximumConcurrentWorkers=2 new
-	// deregistrations) and that the cumulative total lands on exactly 4 -- the
-	// full set of originally-excess workers, neither double-counted nor
-	// stranded. This intentionally avoids asserting the exact step at which
-	// Phase reports Ready and MaxCapacity is fully restored (that timing
-	// depends on the capacity-acknowledgment sequencing exercised by
-	// TestEnabledPoolShrinksThreeIdleWorkersToOneThroughTwoZeroPolls, which is
-	// orthogonal to this fix) and instead focuses precisely on what the fix
-	// guarantees: the per-step cap holds, and deferred work is never dropped.
+	// Remaining steps: no step exceeds 2 deregistrations and the cumulative total lands on exactly 4.
+	// The step at which Phase reports Ready is deliberately not asserted.
 	const maxAdditionalSteps = 6
 	previousRemovals := countRemovals()
 	converged := false
@@ -621,20 +592,8 @@ func TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder(t *testing
 	}
 }
 
-// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker proves the
-// fix for a reviewer-flagged starvation gap in the per-step retirement cap
-// (TestWorkerRetirementCapsDeregistrationsPerStepAndDefersRemainder above):
-// with MaximumConcurrentWorkers=1, plan.Remove's first entry sorts
-// identically every Step. If that first worker's deregisterRunner call keeps
-// returning a persistent error, a fixed head-of-line iteration order would
-// let it consume the single per-step retry slot every Step forever --
-// before the cap was added, the loop simply recorded the error and moved on
-// to other idle workers -- starving every worker behind it in plan.Remove
-// from ever being retired. The removal loop must rotate which worker is
-// tried first each Step (retirementCursor, mirroring
-// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates's
-// registrationCheckCursor below) so later plan.Remove entries eventually get
-// a turn even while the first worker keeps failing.
+// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker pins that a persistently failing
+// first plan.Remove worker cannot starve the rest: retirementCursor rotates the starting worker.
 func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -644,9 +603,8 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 		{ID: "idle-2", Name: "runner-2", PoolID: "org", RunnerID: 42, State: model.WorkerIdle},
 		{ID: "idle-3", Name: "runner-3", PoolID: "org", RunnerID: 43, State: model.WorkerIdle},
 	}
-	// idle-1's deregistration always fails, simulating a persistent GitHub
-	// error for that one runner; every other runner's deregistration succeeds
-	// through the same fake.
+	// idle-1's deregistration always fails, simulating a persistent GitHub error for that one
+	// runner; every other runner's deregistration succeeds.
 	persistentErr := errors.New("persistent deregistration failure")
 	harness.controller.deps.ScaleSets = &runnerRemovalFailureClient{Client: harness.scaleSets, failRunnerID: 41, err: persistentErr}
 
@@ -657,11 +615,8 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 	const maxSteps = 8
 	idle2Removed := false
 	for range maxSteps {
-		// A Step that attempts idle-1's deregistration surfaces the injected
-		// persistentErr through record()'s operationErrors (Step() joins and
-		// returns them), exactly like a real retryable GitHub error would. That
-		// is the scenario under test, not a test failure: only an error other
-		// than the expected persistent one is unexpected here.
+		// Step returns the injected persistentErr by design, like a real retryable GitHub error; only
+		// an error other than the expected persistent one is unexpected here.
 		if _, err := harness.controller.Step(context.Background()); err != nil && !errors.Is(err, persistentErr) {
 			t.Fatal(err)
 		}
@@ -681,16 +636,8 @@ func TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker(t *testin
 	}
 }
 
-// TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride
-// proves the fix for a reviewer-flagged watchdog gap: internal/app's
-// reconcile-step watchdog queries Reconciler.EffectiveMaximumConcurrentWorkers
-// before every Step to size the JIT-start portion of its budget from the same
-// effective limit BuildPlan actually applies (static cap or, when set, the
-// durable Desired.TemporaryCapacityOverride), not the static cap alone. This
-// exercises that resolution against the real durable state store: no
-// override yet returns the static cap, an override in effect returns the
-// override (even when larger), and a desired-state read failure fails safe
-// to the static cap rather than assuming an unverifiable override.
+// TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride pins the durable resolution:
+// the static cap, the override when set (even larger), and the static cap on a read failure.
 func TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -715,19 +662,8 @@ func TestReconcilerEffectiveMaximumConcurrentWorkersReflectsDesiredOverride(t *t
 	}
 }
 
-// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates proves the fix
-// for a third reviewer-flagged watchdog gap: RunnerRegistered runs a full
-// GitHub RetryValue budget per call, and the idle-worker inventory eligible
-// for this JIT-cancellation check is not itself bounded by
-// Resources.MaximumConcurrentWorkers. step()'s registration-check loop must
-// cap RunnerRegistered calls at Resources.MaximumConcurrentWorkers per Step
-// and rotate which candidates get picked via registrationCheckCursor, so a
-// fixed from-the-front cap (which would always re-check the same leading
-// candidates while starving the rest forever) cannot happen. This asserts
-// the cap holds every step and, allowing for the same excess-idle-worker
-// retirement this population would also legitimately trigger, that every
-// worker is eventually accounted for by either a registration check or a
-// retirement -- never silently skipped forever by both.
+// TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates pins the per-Step RunnerRegistered cap and
+// its rotation: every worker is eventually checked or retired, never skipped forever by both.
 func TestRegistrationCheckCapsCallsPerStepAndRotatesCandidates(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -1562,9 +1498,8 @@ func TestTransientScaleSetErrorUsesRetryPolicy(t *testing.T) {
 		if flaky.attemptCount() != 2 {
 			t.Fatalf("ensure attempts = %d", flaky.attemptCount())
 		}
-		// One transient failure means exactly one policy backoff wait; at the
-		// Initial=1s base with Multiplier=2 the first retry waits 1s, and inside
-		// the bubble that wait is the whole elapsed time of the Step.
+		// One transient failure means one policy backoff wait of Initial=1s, and inside the bubble
+		// that wait is the whole elapsed time of the Step.
 		if elapsed := time.Since(start); elapsed != time.Second {
 			t.Fatalf("retry backoff elapsed = %s, want one 1s policy wait", elapsed)
 		}
@@ -1789,9 +1724,8 @@ func TestStepKeepsEngineMemoryProbeThroughUnknownDesktopStatus(t *testing.T) {
 		t.Fatalf("probe calls after first step = %d, want 1", probe.callCount())
 	}
 
-	// A failed status query is not a down observation: the VM was never seen
-	// down, so the cache must survive - discarding it would leave the
-	// oversized budget unverified if the follow-up re-probe also failed.
+	// A failed status query is not a down observation, so the cache must survive: discarding it
+	// would leave the oversized budget unverified if the follow-up re-probe also failed.
 	desktop.mu.Lock()
 	desktop.statusErr = errors.New("status query timed out for the test")
 	desktop.mu.Unlock()
@@ -1800,9 +1734,8 @@ func TestStepKeepsEngineMemoryProbeThroughUnknownDesktopStatus(t *testing.T) {
 		t.Fatalf("cached probe after unknown status = %d, want the 8GiB probe retained", controller.engineMemoryTotal)
 	}
 
-	// With the cache retained, recovery must not re-probe - and a re-probe
-	// failure therefore cannot strip the cross-check (BuildPlan's clamp from
-	// a cached probe is covered by the plan-level clamp tests).
+	// With the cache retained, recovery must not re-probe, so a re-probe failure cannot strip
+	// the cross-check.
 	desktop.mu.Lock()
 	desktop.statusErr = nil
 	desktop.mu.Unlock()
@@ -1822,10 +1755,8 @@ func TestStepKeepsEngineMemoryProbeThroughUnknownDesktopStatus(t *testing.T) {
 
 func TestBudgetBasisStartBurstDoesNotDeflateFloorInput(t *testing.T) {
 	t.Parallel()
-	// Containers started earlier in a Step already charge the static budget
-	// through the fresh worker inventory; deflating the host reading as well
-	// would let worker growth alone trip the binary floor mid-burst - the
-	// exact worker-to-host coupling the budget basis exists to remove.
+	// Earlier starts already charge the static budget through the fresh worker inventory; deflating the
+	// host reading as well would let worker growth alone trip the binary floor mid-burst.
 	store := statepkg.NewMemoryStore()
 	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
 	if err := store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now}); err != nil {
@@ -1836,9 +1767,8 @@ func TestBudgetBasisStartBurstDoesNotDeflateFloorInput(t *testing.T) {
 	cfg := validControllerConfig()
 	cfg.GitHub.Targets[0].WarmIdle = 3
 	cfg.Resources.WorkerMemoryBudget = config.ByteSize(36 << 30)
-	// 20GiB available against the 16GiB floor (25% of 64GiB): every start in
-	// the 3x8GiB burst is admissible only if started workers are not also
-	// synthetically subtracted from the host reading.
+	// 20GiB available against the 16GiB floor (25% of 64GiB): the 3x8GiB burst is admissible only if
+	// started workers are not also subtracted from the host reading.
 	controller, err := NewReconciler(cfg, "test-version", Dependencies{
 		ScaleSets:    scaleset.NewFake(),
 		Workers:      runtime,
@@ -1881,9 +1811,8 @@ type harness struct {
 	desktop    *testDesktop
 	scaleSets  *scaleset.Fake
 	jobs       *testJobLookup
-	// now is the fixture time captured at construction. Outside a synctest
-	// bubble it is real wall time; inside one it is the bubble clock (midnight
-	// UTC 2000-01-01), matching what production reads via time.Now.
+	// now is the fixture time captured at construction: real wall time outside a synctest bubble,
+	// the bubble clock (midnight UTC 2000-01-01) inside one, matching production's time.Now.
 	now time.Time
 }
 
@@ -2300,9 +2229,8 @@ func TestGenuinePollFailureRecordsStatisticsErrorWithUnderlyingCause(t *testing.
 
 func TestPollSupersededConsultsOnlyTheResultError(t *testing.T) {
 	t.Parallel()
-	// With multiple ready pools, the cadence watcher's cancellation sets the step
-	// cause for every queued result; a genuine failure from another pool must not
-	// inherit benign-supersession treatment from that shared cause.
+	// The cadence watcher's cancellation sets the step cause for every queued result; a genuine
+	// failure from another pool must not inherit benign-supersession treatment from it.
 	if pollSuperseded(&scaleset.Error{Kind: scaleset.ErrorTransport, Operation: "statistics", Err: errors.New("connection reset")}) {
 		t.Fatal("a genuine scale-set failure was classified as a benign supersession")
 	}
@@ -2396,12 +2324,8 @@ func (s *tracingScaleSet) RemoveRunner(ctx context.Context, poolID string, runne
 	return s.Client.RemoveRunner(ctx, poolID, runnerID)
 }
 
-// runnerRemovalFailureClient wraps a scaleset.Client and returns a
-// persistent error for RemoveRunner calls against one specific runner ID,
-// delegating every other call (including RemoveRunner for other runner IDs)
-// to the wrapped client. It simulates one worker's deregistration being
-// permanently stuck without needing a Fake field, for
-// TestWorkerRetirementRotatesStartingWorkerToAvoidHeadOfLineBlocker.
+// runnerRemovalFailureClient fails RemoveRunner for one runner ID and delegates every other call,
+// simulating one permanently stuck deregistration without a Fake field.
 type runnerRemovalFailureClient struct {
 	scaleset.Client
 	failRunnerID int64
@@ -2674,12 +2598,8 @@ func assertProblemCode(t *testing.T, problems []model.Problem, code string) {
 	t.Fatalf("problem %q not found in %#v", code, problems)
 }
 
-// TestStepPersistsObservedProblemsWhenTheCycleIsCancelled reproduces the outage
-// shape behind this fix: a cycle records a blocking observation problem, and the
-// cycle context is then cancelled while the state write is in flight. The
-// degraded phase and the problem record must still land, because observed.json
-// is the only thing doctor and monitoring read -- a state file silently frozen
-// at its pre-incident "ready" contents is what let that outage run unnoticed.
+// TestStepPersistsObservedProblemsWhenTheCycleIsCancelled pins that the degraded phase and problem
+// record still land when the cycle context is cancelled mid-write.
 func TestStepPersistsObservedProblemsWhenTheCycleIsCancelled(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -2710,11 +2630,8 @@ func TestStepPersistsObservedProblemsWhenTheCycleIsCancelled(t *testing.T) {
 	assertProblemCode(t, stored.Problems, "worker-inventory-error")
 }
 
-// TestPersistObservedDetachesFromCancellationButStaysBounded pins both halves
-// of the contract every observed-state write depends on. Detaching alone would
-// hand a wedged state lock an unbounded write that holds an unwinding Step past
-// the reconcile loop's drain grace; bounding alone would still lose the record
-// the moment the cycle is cancelled.
+// TestPersistObservedDetachesFromCancellationButStaysBounded pins both halves: detached, so a
+// cancelled cycle cannot lose the record; bounded, so a wedged state lock cannot hold the Step.
 func TestPersistObservedDetachesFromCancellationButStaysBounded(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)
@@ -2769,9 +2686,8 @@ func (s *deadlineRecordingStateStore) lastDeadline() (time.Time, bool) {
 	return s.deadline, s.hasValue
 }
 
-// cancellingStateStore cancels the reconcile cycle from inside the observed
-// write and reports whether that write was still running on the cycle context
-// when it happened.
+// cancellingStateStore cancels the reconcile cycle from inside the observed write and reports
+// whether that write was still running on the cycle context.
 type cancellingStateStore struct {
 	StateStore
 	cancelCycle context.CancelFunc

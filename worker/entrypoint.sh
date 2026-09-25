@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# EUID is the effective uid, matching `id -u` (coreutils id(1) --user) without
-# a fork. GNU Bash: https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html
 if [[ "$EUID" == "0" ]]; then
   echo 'worker must run as the non-root runner identity' >&2
   exit 77
@@ -10,10 +8,8 @@ fi
 
 /usr/local/libexec/ci-runner-set-state idle
 
-# The controller sends the one-job JIT configuration over attached stdin after
-# container creation. This keeps the secret out of Docker's persistent
-# container configuration and `docker inspect`; the official runner then masks
-# the value and removes ACTIONS_RUNNER_INPUT_* before it launches job code.
+# JIT config arrives on stdin to stay out of `docker inspect`; the official
+# runner masks it and removes ACTIONS_RUNNER_INPUT_* before job code runs.
 if ! IFS= read -r jit_config || [[ -z "$jit_config" ]]; then
   echo 'worker JIT configuration was not provided' >&2
   exit 78

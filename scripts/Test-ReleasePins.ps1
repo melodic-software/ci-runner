@@ -41,10 +41,8 @@ foreach ($fragment in @(
     }
 }
 
-# Freshness and immutability are separate checks. Version drift must age from
-# the first unadopted release/commit, while the artifacts and release tags for
-# every currently pinned version are re-resolved on every run—even when a newer
-# release is already pending.
+# Drift ages from the first unadopted release; pinned artifacts and tags are
+# re-resolved every run, even when a newer release is pending.
 foreach ($fragment in @(
         'Get-FirstUnadoptedReleaseDate',
         'Get-ReleaseForVersion',
@@ -364,13 +362,8 @@ foreach ($workflow in $workflowFiles) {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
         }
         $parts = $reference -split '@', 2
-        # Advisory soak callers owned by standards-sync may pin a pre-release
-        # SHA of the same org repository. They still require a full commit SHA
-        # (checked above) but must not join the reviewed compatibility
-        # inventory, or every sync that ships a new soak pin fails Product
-        # policy. Only the ci-workflows soak reference is exempt; other
-        # actions on the same file (checkout, etc.) still match githubActions.
-        # See .github/scripts/workflow-pin-metadata.test.cjs.
+        # Standards-sync soak callers may pin a pre-release ci-workflows SHA; exempt only that
+        # reference from the compatibility inventory (workflow-pin-metadata.test.cjs).
         if ($syncManaged -and $parts[0].StartsWith('melodic-software/ci-workflows/', [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }

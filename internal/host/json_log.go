@@ -121,9 +121,8 @@ func (s *JSONLogSink) Write(ctx context.Context, event controller.LogEvent) erro
 	request := structuredLogWriteRequest{event: event, result: make(chan error, 1)}
 
 	for {
-		// Keep the lifecycle lock around only a nonblocking send. Close can
-		// therefore acquire the writer lock and start its own deadline even
-		// when the file worker and queue are both stalled.
+		// Hold the lifecycle lock only around a nonblocking send, so Close can take the
+		// writer lock and start its deadline even when worker and queue are stalled.
 		s.lifecycle.RLock()
 		if s.closed {
 			s.lifecycle.RUnlock()
@@ -204,9 +203,8 @@ func (s *JSONLogSink) write(event controller.LogEvent) error {
 	}
 	if len(encoded) > maximumStructuredLogEvent {
 		record.Code = truncateLogValue(record.Code, 256)
-		// Message and Cause each cap at a quarter of the ceiling so their combined
-		// worst case, plus the small fields and JSON overhead, still fits after the
-		// single retry below.
+		// Message and Cause each cap at a quarter of the ceiling so the worst case,
+		// with the small fields and JSON overhead, fits after the single retry below.
 		record.Message = truncateLogValue(record.Message, maximumStructuredLogEvent/4)
 		record.Cause = truncateLogValue(record.Cause, maximumStructuredLogEvent/4)
 		record.Source = truncateLogValue(record.Source, 256)

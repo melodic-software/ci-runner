@@ -117,9 +117,8 @@ func assignTimesFromCatalog(catalog Catalog) AssignTimesCatalog {
 	return times
 }
 
-// saveAssignTimesUnlocked writes the assignment sidecar after jobs.json commits.
-// Failures are returned to the caller so Upsert does not claim success when the
-// durable assignment evidence was lost; the jobs.json record remains valid.
+// saveAssignTimesUnlocked returns failures so Upsert never claims success after
+// losing assignment evidence; the committed jobs.json record stays valid.
 func saveAssignTimesUnlocked(directory string, acl AccessController, catalog Catalog) error {
 	times := assignTimesFromCatalog(catalog)
 	if len(times.Entries) == 0 {

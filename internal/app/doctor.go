@@ -108,12 +108,8 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 				Detail:  fmt.Sprintf("heartbeatAge=%s maximumAge=%s", age.Round(time.Second), livenessLimit),
 			})
 		}
-		// desired=disabled with observed disabled is a legitimate idle host.
-		// desired=enabled while observed is still disabled is the #277
-		// never-ready wedge: the control plane answers, so
-		// controller-control-plane PASSes, but reconcile has never reached a
-		// serving phase. PhaseStarting is a normal enable/bootstrap window;
-		// fail only after the configured startup budget.
+		// desired=enabled while observed is still disabled is the #277 never-ready wedge; PhaseStarting
+		// is normal until the configured startup budget expires.
 		if desiredValid && desired.Mode == model.ModeEnabled && liveStatus != nil && !liveStatus.ShuttingDown {
 			startupGrace := a.dependencies.Config.Controller.StartupTimeout.Duration
 			neverReady := observed.Phase == model.PhaseDisabled
@@ -137,11 +133,8 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 			acknowledgementGrace := listenerAcknowledgementGrace(a.dependencies.Config)
 			acknowledgementPendingWithinGrace := found && !pool.CapacityAcknowledged && !pool.UpdatedAt.IsZero() &&
 				acknowledgementAge >= 0 && acknowledgementAge <= acknowledgementGrace
-			// Acknowledged zero while the planner still wants workers is the
-			// #281 handshake wedge: GitHub accepted the advertisement, so the
-			// acknowledgement bit PASSes, but the fleet is starved.
-			// Planned quiesce/drain advertises zero while DesiredWorkers is
-			// still positive; only a serving-ready pool is a handshake wedge.
+			// Acknowledged zero while the planner wants workers is the #281 handshake wedge; planned
+			// quiesce/drain also advertises zero, so only a serving-ready pool counts.
 			acknowledgedZeroStarved := desiredValid && desired.Mode == model.ModeEnabled &&
 				observed.Phase == model.PhaseReady &&
 				pool.CapacityAcknowledged && pool.DesiredWorkers > 0 && pool.MaxCapacity == 0
@@ -187,9 +180,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	if a.dependencies.Gaming == nil {
 		checks = append(checks, DoctorCheck{Name: "host-inventory", Healthy: false, Detail: "host inventory dependency is unavailable"})
 	} else {
-		// Gaming probes carry their own per-probe deadlines, so the command
-		// context is passed through: an aggregate budget here would re-create
-		// the starvation the per-probe deadlines exist to remove.
+		// Gaming probes carry their own deadlines; an aggregate budget here would starve them.
 		gamingMode := desiredValid && desired.Mode == model.ModeGaming
 		inventory := a.dependencies.Gaming.Inventory(ctx)
 		dockerReachable = inventory.DockerReachable
@@ -213,10 +204,7 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 			if err != nil {
 				detail += ": " + err.Error()
 			}
-			// An unverified postcondition is a gap in the observation, not
-			// evidence that gaming mode failed, so it surfaces as WARN. An
-			// observed violation still fails: only checks the probes could not
-			// answer are advisory.
+			// Unverified postconditions are observation gaps, so they WARN; an observed violation still fails.
 			unverified := verification.DesktopUnverified || verification.DockerUnverified || verification.WSLUnverified
 			checks = append(checks, DoctorCheck{
 				Name:     "gaming-postconditions",
@@ -234,12 +222,8 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	if a.dependencies.Doctor == nil {
 		checks = append(checks, DoctorCheck{Name: "host-security-and-runtime", Healthy: false, Detail: "doctor inspector dependency is unavailable"})
 	} else {
-		// Inspection probes carry their own per-probe deadlines -- one of them
-		// sized for a person answering a UAC prompt -- so the command context is
-		// passed through: an aggregate budget here would re-create the starvation
-		// the per-probe deadlines exist to remove, and would cap the elevated
-		// probe below human speed because a derived context expires no later than
-		// its parent.
+		// Pass the command context through: an aggregate budget would starve the per-probe deadlines
+		// and cap the elevated probe below human speed.
 		checks = append(checks, a.dependencies.Doctor.Inspect(ctx, DoctorInspection{
 			CheckDocker:     dockerReachable,
 			RequireDocker:   requireDocker,
@@ -275,44 +259,12 @@ func (a *Application) doctor(ctx context.Context, args []string) int {
 	return ExitOK
 }
 
-// listenerAcknowledgementConvergenceLegs counts the GitHub request paths a
-// capacity acknowledgement has to cross before this check can observe it: the
-// controller advertising the new capacity, and a later reconcile reading back
-// the pool state that acknowledges it.
+// listenerAcknowledgementConvergenceLegs counts the request paths an acknowledgement crosses:
+// the controller advertising capacity, then a later reconcile reading it back.
 const listenerAcknowledgementConvergenceLegs = 2
 
-// listenerAcknowledgementGrace bounds how long a pool may sit with capacity
-// advertised but unacknowledged before the doctor calls the listener unhealthy.
-//
-// The acknowledgement is not a protocol signal -- the scale-set protocol never
-// acknowledges capacity back -- but this controller's own convergence check, so
-// the window has to cover the request path that convergence actually travels.
-// Each convergence leg is one full controller.RetryValue envelope: up to
-// Retry.MaxAttempts attempts, each capped at RequestTimeout, separated by
-// backoff waits sized at maxJitteredBackoff. So the bound is that complete
-// envelope per leg, derived from the configured retry policy rather than from
-// any observation of how long convergence has happened to take.
-//
-// It has to be the complete envelope, not a sample of it, because nothing else
-// in the doctor notices a poll that is still legitimately retrying: while a poll
-// is open, Reconciler.pollCheckpoint keeps writing observed state on the
-// reconcile cadence, so the heartbeat stays fresh for observedFreshnessLimit
-// while the pool transition timestamp this age measures stays deliberately
-// pinned. A window shorter than the retry policy therefore hard-faults a
-// listener whose configured retry sequence has not finished -- which is what
-// budgeting a single request with no retry allowance did, and what let benign
-// busy-fleet lag (2m9s, per the ci-runner-alignment audit's D4 finding) trip a
-// hard fault. Deriving from the policy contains that observation with wide
-// margin as a consequence, not as the calibration target.
-//
-// This is a bound on legitimate convergence, so it is unrelated to
-// observedFreshnessLimit's bound on heartbeat staleness and carries no
-// ordering against it: a transition legitimately spans several reconciles and
-// several retry envelopes, while pollCheckpoint refreshes the heartbeat every
-// reconcile interval. The cost of the wider window is detection latency, which
-// now scales with the configured retry policy. Detection itself is unchanged: a
-// wedged listener never acknowledges, so its lag grows monotonically past any
-// bounded window and still hard-faults.
+// listenerAcknowledgementGrace budgets a full retry envelope per convergence leg: the heartbeat
+// stays fresh while a poll retries, so a shorter window hard-faults a healthy listener.
 func listenerAcknowledgementGrace(cfg config.Config) time.Duration {
 	return saturatingFreshnessDuration(
 		cfg.GitHub.RequestTimeout.Duration,
@@ -335,11 +287,8 @@ func validPhase(phase model.Phase) bool {
 	}
 }
 
-// observedFreshnessLimit bounds how stale the observed heartbeat may
-// legitimately be on a healthy host: one full retry envelope per configured
-// target plus two reconcile intervals. It is the one definition of
-// "legitimately fresh" for that signal, and the doctor's observed-state check
-// uses it directly.
+// observedFreshnessLimit bounds heartbeat staleness on a healthy host: one retry envelope per
+// target plus two reconcile intervals.
 func observedFreshnessLimit(cfg config.Config) time.Duration {
 	return saturatingFreshnessDuration(
 		cfg.GitHub.RequestTimeout.Duration,
@@ -352,11 +301,7 @@ func observedFreshnessLimit(cfg config.Config) time.Duration {
 	)
 }
 
-// saturatingFreshnessDuration bounds retryUnits attempts of a retryable GitHub
-// request -- each costing request plus one retryBackoff wait -- plus the two
-// reconcile intervals a caller needs to observe the result, clamping to the
-// largest representable time.Duration instead of overflowing. Callers compose
-// retryUnits from their own attempt and repetition counts.
+// saturatingFreshnessDuration returns retryUnits*(request+retryBackoff) + 2*reconcile, saturating.
 func saturatingFreshnessDuration(request, retryBackoff, reconcile time.Duration, retryUnits int) time.Duration {
 	const maximum = time.Duration(1<<63 - 1)
 	retryUnits = max(retryUnits, 1)
@@ -383,10 +328,7 @@ func observedGamingViolation(verification host.GamingVerification) bool {
 		(!verification.WSLUnverified && !verification.NoRunningWSL)
 }
 
-// postconditionState renders three states where a bare bool renders two. An
-// unchecked postcondition and a failed one are both `false`, and an operator
-// reading `desktopStopped=false` cannot otherwise tell "still running" from
-// "the probe never answered".
+// postconditionState tells unverified apart from failed, which a bare false conflates.
 func postconditionState(satisfied, unverified bool) string {
 	if unverified {
 		return "unverified"

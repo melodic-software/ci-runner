@@ -33,9 +33,8 @@ func TestRetryUsesExponentialBackoffAndJitterHook(t *testing.T) {
 		if err != nil || value != "ok" {
 			t.Fatalf("value=%q error=%v", value, err)
 		}
-		// Each attempt runs at the cumulative backoff elapsed so far, so the
-		// per-attempt offsets encode the exact 1s/2s/4s doubling schedule the
-		// injected fake clock used to record via Sleeps().
+		// Each attempt runs at the cumulative backoff elapsed so far, so the offsets encode the exact
+		// 1s/2s/4s doubling schedule.
 		want := []time.Duration{0, time.Second, 3 * time.Second, 7 * time.Second}
 		if len(attemptAt) != len(want) {
 			t.Fatalf("attempts = %d, want %d (offsets %v)", len(attemptAt), len(want), attemptAt)
@@ -61,9 +60,8 @@ func TestRetryHonorsServerRetryAfter(t *testing.T) {
 		if err == nil || attempt != 2 {
 			t.Fatalf("attempt=%d error=%v", attempt, err)
 		}
-		// The single inter-attempt wait must honor the server's 30s Retry-After
-		// rather than the 1s policy base; inside the bubble that wait is the
-		// entire elapsed time.
+		// The single wait must honor the server's 30s Retry-After rather than the 1s policy base;
+		// inside the bubble that wait is the entire elapsed time.
 		if elapsed := time.Since(start); elapsed != 30*time.Second {
 			t.Fatalf("waited %s between attempts, want server Retry-After 30s", elapsed)
 		}

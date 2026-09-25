@@ -55,11 +55,8 @@ func (WindowsBitLockerVerifier) VerifyProtected(ctx context.Context, path string
 		return parseBitLockerStatus(out)
 	}
 
-	// Get-BitLockerVolume commonly requires an elevated token even though the
-	// controller intentionally runs as the limited interactive user. Elevate
-	// only a read-only boolean status query. The child receives no private key,
-	// source/destination path, or user-writable output path; its small exit-code
-	// contract avoids a privileged file-write confused deputy.
+	// Elevate only a read-only status query that returns an exit code: the child gets
+	// no key, path, or writable output, so it cannot be a file-write confused deputy.
 	if err := verifyBitLockerElevated(ctx, powerShell, volume); err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail != "" {
@@ -143,14 +140,8 @@ func verifyBitLockerElevated(ctx context.Context, powerShell, volume string) err
 	return parseElevatedBitLockerExit(out)
 }
 
-// elevationLaunchError separates a launcher killed because its own context
-// expired from a launcher that genuinely failed. Both surface as a non-zero
-// child exit -- exec terminates the child on context expiry and then reports
-// the resulting process status -- so only the context discriminates them, and
-// a deadline kill reported as a launch failure sends the operator after the
-// wrong cause. Nothing here explains why a genuine failure failed: a declined
-// prompt writes Windows' own account of it to the captured output, and empty
-// output is reported as empty rather than guessed at.
+// elevationLaunchError tells a context-expiry kill from a genuine launch failure;
+// both surface as a non-zero exit, so only ctx discriminates them.
 func elevationLaunchError(ctx context.Context, runErr error, out []byte) error {
 	if cause := context.Cause(ctx); cause != nil {
 		return fmt.Errorf("elevated Get-BitLockerVolume did not complete: %w", cause)

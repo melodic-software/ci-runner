@@ -297,13 +297,6 @@ type WorkerImage struct {
 	PullTimeout Duration `yaml:"pullTimeout"`
 }
 
-// defaultWorkerImagePullTimeout is applied by Load when workerImage.pullTimeout
-// is omitted from the host YAML (see WorkerImage's doc comment for why this
-// field alone gets a code-level default). 20 minutes matches this codebase's
-// own prior considered judgment (reconcileStepWorkerImagePullBudget's history
-// in internal/app/controller_main.go) for a generous, safe bound on a
-// first-run or updated-digest pull of a multi-gigabyte CI runner image over a
-// slow link.
 const defaultWorkerImagePullTimeout = 20 * time.Minute
 
 type Logs struct {
@@ -369,8 +362,6 @@ func Load(r io.Reader) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
-	// See WorkerImage's doc comment for why this is the one Duration field in
-	// this schema that gets a code-level default instead of being required.
 	if cfg.WorkerImage.PullTimeout.Duration == 0 {
 		cfg.WorkerImage.PullTimeout.Duration = defaultWorkerImagePullTimeout
 	}
@@ -679,12 +670,8 @@ func (c Config) Validate() error {
 	if c.DockerDesktop.StartTimeout.Duration <= 0 || c.DockerDesktop.StopTimeout.Duration <= 0 {
 		add(errors.New("dockerDesktop: startTimeout and stopTimeout must be positive"))
 	}
-	// Unlike every other Duration field validated in this function, zero is
-	// legal here: Load defaults an omitted workerImage.pullTimeout before
-	// Validate ever runs (see WorkerImage's doc comment), so only a genuinely
-	// negative value -- reachable by direct Go construction of a Config, not
-	// through the YAML path where Duration.UnmarshalYAML already rejects a
-	// non-positive explicit value -- is rejected here.
+	// Unlike the other Durations, zero is legal: Load defaults an omitted
+	// pullTimeout before Validate runs.
 	if c.WorkerImage.PullTimeout.Duration < 0 {
 		add(errors.New("workerImage.pullTimeout: must not be negative"))
 	}

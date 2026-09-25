@@ -57,8 +57,7 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 		t.Fatalf("worker = %#v", worker)
 	}
 	// Both worker producers report the limit the container actually holds, not the
-	// profile in force when it is read. The reservation itself reads the limit back
-	// from the next List, which is what survives a restart.
+	// profile in force when it is read.
 	if worker.MemoryLimitBytes != 8<<30 {
 		t.Fatalf("memory limit = %d, want the requested 8GiB", worker.MemoryLimitBytes)
 	}
@@ -155,14 +154,8 @@ func TestStartReportsImagePullCloseFailure(t *testing.T) {
 	}
 }
 
-// TestStartBoundsHungImagePullByConfiguredTimeout proves the fix for the
-// watchdog gap this PR closes: before ImagePullTimeout existed, ensureImage's
-// ImagePull+Wait sequence ran under whatever context Start was called with,
-// so a stalled registry pull had no independent stall detector anywhere in
-// the call chain and could sit unresponsive for as long as the caller's
-// context allowed. Simulate that stall directly against context.Background()
-// (which never expires on its own): Wait must still return promptly, bounded
-// by ImagePullTimeout, not by any deadline the caller happens to supply.
+// A hung pull under a never-expiring caller context must still end at
+// ImagePullTimeout.
 func TestStartBoundsHungImagePullByConfiguredTimeout(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -186,10 +179,8 @@ func TestStartBoundsHungImagePullByConfiguredTimeout(t *testing.T) {
 	if !errors.Is(startErr, context.DeadlineExceeded) {
 		t.Fatalf("Start error = %v, want context.DeadlineExceeded (through wrapping), proving ImagePullTimeout -- not the never-expiring caller context -- ended the pull", startErr)
 	}
-	// A generous multiple of the configured timeout: this must return from
-	// ImagePullTimeout firing, never from a hang lasting the full test binary
-	// timeout, so a value far below any realistic ImagePullTimeout in
-	// production (minutes) proves the fix rather than tolerating the bug.
+	// A generous multiple of the configured timeout, yet far below any production
+	// ImagePullTimeout (minutes), so only ImagePullTimeout firing can pass.
 	if elapsed > time.Second {
 		t.Fatalf("Start with a permanently hung image pull took %s, want well under 1s (configured ImagePullTimeout=%s)", elapsed, options.ImagePullTimeout)
 	}
@@ -756,9 +747,8 @@ func TestListReportsTheMemoryLimitEachWorkerWasStartedWith(t *testing.T) {
 	for _, worker := range workers {
 		limits[worker.ID] = worker.MemoryLimitBytes
 	}
-	// Workers report what the engine recorded at creation, not the profile the
-	// running controller would apply now. A container the engine reports as
-	// unlimited reads zero so reservations fall back to the profile.
+	// Workers report the creation-time limit, not the current profile; an unlimited
+	// container reads zero so reservations fall back to the profile.
 	if limits["large-profile"] != 4<<30 || limits["small-profile"] != 2<<30 || limits["unlimited"] != 0 {
 		t.Fatalf("memory limits = %#v", limits)
 	}
@@ -944,9 +934,8 @@ func TestListKeepsWorkerStateWhenTheMemoryLimitCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An unreadable limit costs the reservation precision it would have added, and
-	// nothing else: the worker keeps the idle state its own probe reported instead
-	// of being forced to Starting, and the failure is still surfaced.
+	// An unreadable limit costs only reservation precision: the worker keeps its
+	// probed idle state rather than being forced to Starting.
 	if len(workers) != 1 || workers[0].State != model.WorkerIdle || workers[0].MemoryLimitBytes != 0 {
 		t.Fatalf("workers = %#v", workers)
 	}
@@ -1197,12 +1186,8 @@ func TestFinalizationTimeoutDefersResourceEvidenceUntilRealRetry(t *testing.T) {
 	artifacts := newDrainSignalingArtifacts(sink)
 	recorder := &recordingTelemetry{}
 	options := testOptions(artifacts)
-	// The blocked stream never closes, so the first attempt times out whatever
-	// this is set to: the value is a bound on the retry's finalization tail --
-	// evidence, diagnostics, artifact finalize, container remove -- which runs
-	// under this deadline and cannot be ordered against it from the test side.
-	// It has to absorb however long those steps wait for CPU on a loaded host:
-	// a 20ms stall in the tail defeats 10ms and not 200ms.
+	// Bounds the retry's whole finalization tail, which must absorb CPU waits on a
+	// loaded host: a 20ms stall defeats 10ms but not 200ms.
 	options.FinalizationTimeout = 200 * time.Millisecond
 	options.Telemetry = recorder
 	runtime, err := New(engine, options)
@@ -1474,9 +1459,8 @@ func (e *fakeEngine) ContainerInspect(_ context.Context, id string, _ client.Con
 		State:  &containertypes.State{Running: container.state == "running", ExitCode: container.exitCode},
 		Config: &containertypes.Config{Labels: cloneLabels(container.labels)},
 	}
-	// The engine always reports a HostConfig, carrying Memory 0 for an unlimited
-	// container rather than omitting the section. omitHostConfig models a response
-	// without one at all, which the memory read still has to tolerate.
+	// The real engine always sends HostConfig (Memory 0 when unlimited);
+	// omitHostConfig models the absent section the memory read must tolerate.
 	if !container.omitHostConfig {
 		response.HostConfig = &containertypes.HostConfig{
 			Resources: containertypes.Resources{Memory: container.memoryLimit},
@@ -1872,11 +1856,8 @@ func (r *blockingFinalizationTelemetry) WorkerFinalized(ctx context.Context, poo
 	r.recordingTelemetry.WorkerFinalized(ctx, poolID, value)
 }
 
-// captureLogs closes the sink's log writer as its last act before publishing
-// the capture result, so that close is the drain signal a test can wait on.
-// Signaling container exit before it lands opens the finalization deadline
-// against a log goroutine that may not have been scheduled yet, which fails as
-// a stream that never closed rather than as the defect under test.
+// captureLogs closes the log writer last, so that close is the drain signal.
+// Signaling exit before it lands races the finalization deadline.
 type drainSignalingArtifacts struct {
 	ArtifactSink
 	mu      sync.Mutex
@@ -1889,9 +1870,8 @@ func newDrainSignalingArtifacts(inner ArtifactSink) *drainSignalingArtifacts {
 	return &drainSignalingArtifacts{ArtifactSink: inner, drained: make(chan struct{})}
 }
 
-// arm makes the next log close signal. Finalization attempts each close a log
-// writer, so a test arms between attempts to keep an earlier attempt's close
-// from satisfying the wait.
+// arm makes the next log close signal; arming between finalization attempts
+// keeps an earlier attempt's close from satisfying the wait.
 func (s *drainSignalingArtifacts) arm() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -46,15 +46,8 @@ type AccessController interface {
 func ReplaceFileAtomic(source, target string) error { return atomicReplace(source, target) }
 func SyncDirectory(path string) error               { return syncDirectory(path) }
 
-// unknownFieldPolicy selects how load treats JSON keys the destination struct
-// does not declare. Operator-authored desired.json stays strict so a typo
-// fails loudly. Controller-authored observed.json tolerates unknown keys:
-// after a rollback the older release reads a file the newer one wrote, and a
-// strict reader would turn every additive field into a quarantine, a forced
-// capacity-zero recovery pass, and a restarted drain clock. schemaVersion is
-// the deliberate compatibility gate instead — additive fields keep version 1;
-// a shape an older release genuinely cannot read bumps the version and is
-// rejected by validation, where quarantining is the intended outcome.
+// unknownFieldPolicy: desired.json rejects unknown keys so typos fail loudly;
+// observed.json ignores them for rollback. Incompatible shapes bump schemaVersion.
 type unknownFieldPolicy int
 
 const (

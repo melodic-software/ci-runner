@@ -36,8 +36,7 @@ type GamingManager struct {
 	DesktopProbeTimeout time.Duration
 }
 
-// probe derives one probe's deadline from the caller's context. The caller's
-// own deadline still bounds the whole, because a derived context expires no
+// The caller's own deadline still bounds the whole: a derived context expires no
 // later than its parent.
 func (m GamingManager) probe(ctx context.Context) (context.Context, context.CancelFunc) {
 	return budgeted(ctx, m.ProbeTimeout)
@@ -108,7 +107,6 @@ func (m GamingManager) Inventory(ctx context.Context) GamingInventory {
 }
 
 func (m GamingManager) StopAll(ctx context.Context) error {
-	// WSL shutdown is attempted even if Docker Desktop reports a stop failure.
 	// A partial shutdown is never reported as success; Verify supplies the final
 	// authoritative health result.
 	var failures []error
@@ -129,9 +127,8 @@ func (m GamingManager) Verify(ctx context.Context) (GamingVerification, error) {
 	status, err := m.Desktop.Status(statusContext)
 	cancelStatus()
 	if err != nil {
-		// Every probe error leaves the postcondition unobserved, not observed
-		// false: a launch, parse, or permission failure says as little about the
-		// desktop's state as a timeout does.
+		// Any probe error leaves the postcondition unobserved, not observed false:
+		// a launch, parse, or permission failure says as little as a timeout.
 		verification.DesktopUnverified = true
 		failures = append(failures, fmt.Errorf("query Docker Desktop status: %w", err))
 	} else {

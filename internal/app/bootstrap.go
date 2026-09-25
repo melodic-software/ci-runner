@@ -198,10 +198,6 @@ func newConfigValidationResult(cfg config.Config) (configValidationResult, error
 	}, nil
 }
 
-// reportConfigLoadFailure reports a configuration open/load failure in
-// whichever form the caller requested: the same minimal JSON validation
-// envelope used by both failure points when JSON was requested, or a plain
-// "<action> configuration %q: %v" line on stderr otherwise.
 func reportConfigLoadFailure(out, errOut io.Writer, jsonRequested bool, action, configPath string, err error) int {
 	if jsonRequested {
 		_ = json.NewEncoder(out).Encode(struct {

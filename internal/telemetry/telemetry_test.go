@@ -118,9 +118,8 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 			PIDsPeak: 88, IOReadBytes: 2000000000, IOWriteBytes: 5500000000,
 		},
 	})
-	// A retry may re-run finalization after the sidecar is already durable. It
-	// remains a lifecycle attempt but must not duplicate terminal histograms or
-	// OOM counters.
+	// A retried finalization is still an attempt but must not duplicate terminal
+	// histograms or OOM counters.
 	recorder.WorkerFinalized(ctx, "org", WorkerFinalization{
 		ExitObserved: true, ExitCode: 0, ResourceTier: "target_override",
 		ResourceEvidence: &WorkerResourceEvidence{Status: "complete", MemoryPeakBytes: 1986422374, OOMEvents: 9},
