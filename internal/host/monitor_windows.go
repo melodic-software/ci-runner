@@ -33,6 +33,9 @@ type lastInputInfo struct {
 type WindowsPresenceMonitor struct{}
 
 func (WindowsPresenceMonitor) InputIdle() (time.Duration, error) {
+	if err := procGetLastInputInfo.Find(); err != nil {
+		return 0, err
+	}
 	info := lastInputInfo{Size: uint32(unsafe.Sizeof(lastInputInfo{}))}
 	result, _, callErr := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&info)))
 	if result == 0 {

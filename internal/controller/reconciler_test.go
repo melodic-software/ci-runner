@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -49,7 +50,7 @@ func TestReconcilerAppliesInteractiveCapWhilePresent(t *testing.T) {
 	harness := newHarness(t, model.ModeEnabled)
 	harness.controller.config.Resources.InteractiveMaximumConcurrentWorkers = 1
 	harness.controller.config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
-	harness.controller.deps.Presence = staticPresence(time.Minute)
+	harness.controller.deps.Presence = newPresence(time.Minute)
 	result, err := harness.controller.Step(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -65,9 +66,15 @@ func TestReconcilerAppliesInteractiveCapWhilePresent(t *testing.T) {
 	}
 }
 
-type staticPresence time.Duration
+type presence struct{ idle atomic.Int64 }
 
-func (p staticPresence) InputIdle() (time.Duration, error) { return time.Duration(p), nil }
+func newPresence(idle time.Duration) *presence {
+	p := &presence{}
+	p.idle.Store(int64(idle))
+	return p
+}
+
+func (p *presence) InputIdle() (time.Duration, error) { return time.Duration(p.idle.Load()), nil }
 
 func TestReconcilerPublishesPreviousTickCost(t *testing.T) {
 	t.Parallel()
