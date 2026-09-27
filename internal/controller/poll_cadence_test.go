@@ -948,24 +948,27 @@ func TestPollCheckpointCarriesTheQuiesceReason(t *testing.T) {
 
 func TestPollCheckpointPersistsControllerCost(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	if _, err := harness.controller.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	checkpoint := harness.controller.pollCheckpoint(
-		model.ObservedState{}, nil, nil, model.ResourceSnapshot{}, model.PowerSnapshot{},
-		model.DesktopStatus{}, Plan{Phase: model.PhaseReady}, time.Now().UTC(), nil,
-	)
-	if err := harness.controller.persistPollCheckpoint(context.Background(), checkpoint); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := harness.store.LoadObserved(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Controller.LastTickDurationSeconds <= 0 || stored.Controller.ProcessCPUSeconds <= 0 {
-		t.Fatalf("checkpoint controller cost = %#v, want nonzero", stored.Controller)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		harness.controller.deps.Resources = slowResources{ResourceMonitor: harness.controller.deps.Resources, delay: time.Second}
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		checkpoint := harness.controller.pollCheckpoint(
+			model.ObservedState{}, nil, nil, model.ResourceSnapshot{}, model.PowerSnapshot{},
+			model.DesktopStatus{}, Plan{Phase: model.PhaseReady}, time.Now().UTC(), nil,
+		)
+		if err := harness.controller.persistPollCheckpoint(context.Background(), checkpoint); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := harness.store.LoadObserved(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Controller.LastTickDurationSeconds < 1 || stored.Controller.ProcessCPUSeconds < 0 {
+			t.Fatalf("checkpoint controller cost = %#v, want the previous tick's 1s+ duration and non-negative CPU", stored.Controller)
+		}
+	})
 }
 
 func waitForObserved(t *testing.T, saved <-chan model.ObservedState, predicate func(model.ObservedState) bool, message string) model.ObservedState {
