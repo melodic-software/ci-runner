@@ -211,6 +211,7 @@ func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 			{ID: "busy", PoolID: "org", Name: "worker-busy", State: model.WorkerBusy, JobID: "42", StartedAt: now},
 			{ID: "idle", PoolID: "org", Name: "worker-idle", State: model.WorkerIdle, StartedAt: now},
 		},
+		Controller: model.ControllerCost{LastTickDurationSeconds: 0.25, ProcessCPUSeconds: 12.5},
 	})
 	application, out, _ := newTestApplication(t, "", store, nil)
 	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{
@@ -222,10 +223,18 @@ func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 	for _, expected := range []string{
 		`"schemaVersion": 1`, `"controllerAvailable": true`, `"activeJobCount": 1`,
 		`"workerId": "busy"`, `"pid": 4242`, `"version": "1.2.3"`,
+		`"lastTickDurationSeconds": 0.25`, `"processCpuSeconds": 12.5`,
 	} {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("status JSON missing %s: %s", expected, out.String())
 		}
+	}
+	out.Reset()
+	if code := application.Run(context.Background(), []string{"host", "status"}); code != ExitOK {
+		t.Fatalf("exit code %d", code)
+	}
+	if !strings.Contains(out.String(), "Controller cost: last tick 0.250s, process CPU 12.5s") {
+		t.Fatalf("status text missing controller cost: %s", out.String())
 	}
 }
 

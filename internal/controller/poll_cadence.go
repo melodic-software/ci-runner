@@ -93,7 +93,14 @@ func (r *Reconciler) pollCheckpoint(
 		QuiesceReason: plan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: plan.ResourceGate, PowerGate: plan.PowerGate,
-		Problems: problems,
+		Problems: problems, Controller: r.controllerCost(),
+	}
+}
+
+func (r *Reconciler) controllerCost() model.ControllerCost {
+	return model.ControllerCost{
+		LastTickDurationSeconds: time.Duration(r.lastTickNanos.Load()).Seconds(),
+		ProcessCPUSeconds:       processCPUSeconds(),
 	}
 }
 

@@ -85,6 +85,8 @@ type Reconciler struct {
 	// heartbeat holds the UnixNano HeartbeatAt of the last persisted observed
 	// state; WatchHeartbeat reads it without taking any reconciler lock.
 	heartbeat atomic.Int64
+	// lastTickNanos holds the wall duration of the previous Step, published in the next observed state.
+	lastTickNanos atomic.Int64
 }
 
 const handshakeStaleCycleLimit = 3
@@ -183,7 +185,11 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 	r.stepMu.Lock()
 	defer r.stepMu.Unlock()
 	ctx, finishTelemetry := r.deps.Telemetry.BeginReconcile(ctx)
-	defer func() { finishTelemetry(telemetrySnapshot(result), resultErr) }()
+	started := time.Now()
+	defer func() {
+		r.lastTickNanos.Store(int64(time.Since(started)))
+		finishTelemetry(telemetrySnapshot(result), resultErr)
+	}()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -932,7 +938,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		QuiesceReason: postPlan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
-		Problems: problems,
+		Problems: problems, Controller: r.controllerCost(),
 	}
 	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
