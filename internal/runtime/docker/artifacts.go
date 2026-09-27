@@ -333,13 +333,13 @@ func (s *FileArtifactSink) AdoptAndCleanup(ctx context.Context, adopted []Artifa
 	if !due {
 		return nil
 	}
-	if err := s.cleanup(ctx, adopted, now); err != nil {
-		return err
-	}
+	// A failed sweep also waits for CleanupEvery: a persistent error must not
+	// rerun the whole sweep on every reconcile tick.
+	err = s.cleanup(ctx, adopted, now)
 	s.mu.Lock()
 	s.lastCleanupAt = now
 	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // CleanupNow is the explicit operator retention escape hatch. Callers must

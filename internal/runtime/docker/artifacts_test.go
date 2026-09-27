@@ -221,6 +221,34 @@ func TestCleanupRefusesIndexedPathsOutsideConfiguredRoots(t *testing.T) {
 	}
 }
 
+func TestFailedCleanupRetriesAtCleanupEveryNotEveryTick(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := &countingJobStore{Store: newTestJobStore(t, filepath.Join(root, "state"))}
+	closed := false
+	if _, err := store.Upsert(context.Background(), jobindex.Patch{
+		PoolID: "org", RunnerName: "escaped", ContainerID: "container-escaped",
+		LogPath: filepath.Join(t.TempDir(), "outside.log"), FinalizedAt: time.Now().Add(-2 * time.Hour), Open: &closed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sink := newArtifactSinkForTest(t, root, store, defaultArtifactPolicy())
+	store.loads = 0
+	if err := sink.AdoptAndCleanup(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "escapes configured root") {
+		t.Fatalf("first sweep error = %v, want the path-escape error", err)
+	}
+	if store.loads != 2 {
+		t.Fatalf("first tick loads = %d, want adoption and cleanup (2)", store.loads)
+	}
+	store.loads = 0
+	if err := sink.AdoptAndCleanup(context.Background(), nil); err != nil {
+		t.Fatalf("second tick within cleanupEvery = %v, want no sweep", err)
+	}
+	if store.loads != 1 {
+		t.Fatalf("second tick loads = %d, want adoption only (1)", store.loads)
+	}
+}
+
 func TestCleanupReconcilesStaleOpenRecordsAndRemovesOldOrphans(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
