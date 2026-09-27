@@ -18,9 +18,9 @@ script runs inside the worker.
 - The scale-set resource is created with `RunnerSetting.DisableUpdate=true`.
   GitHub requires an update-disabled runner to be refreshed within 30 days and
   may block it sooner for a critical release.
-- PowerShell comes from Microsoft's checksummed `v7.6.5` Linux x64 release
+- PowerShell comes from Microsoft's checksummed `v7.6.6` Linux x64 release
   archive. That is the version in GitHub's Ubuntu 24.04 hosted-image manifest at
-  reviewed commit `c5170d2845dc0eb0f22853ec70bd4f1c891112ca`. The remaining
+  reviewed commit `c9dd57c6b6333892b46abcc439ba0676fd03867a`. The remaining
   compatibility packages come from Ubuntu 24.04.
 
 The immutable evidence and original source URLs are recorded in
@@ -37,7 +37,7 @@ Authoritative references:
 - [`setup-dotnet` v5.4.0 rootless installation guidance](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/README.md#environment-variables)
 - [`setup-dotnet` v5.4.0 install-directory implementation](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/src/installer.ts#L329-L359)
 - [.NET install-script environment contract](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script#set-environment-variables)
-- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/c5170d2845dc0eb0f22853ec70bd4f1c891112ca/images/ubuntu/Ubuntu2404-Readme.md)
+- [GitHub-hosted Ubuntu 24.04 software manifest](https://github.com/actions/runner-images/blob/c9dd57c6b6333892b46abcc439ba0676fd03867a/images/ubuntu/Ubuntu2404-Readme.md)
 - [PowerShell releases](https://github.com/PowerShell/PowerShell/releases)
 - [Docker image pinning guidance](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
 

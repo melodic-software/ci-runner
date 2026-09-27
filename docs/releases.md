@@ -23,7 +23,10 @@ verification (workflow-audit findings on gate workflows added after `v0.1.16`)
 and has no release assets; `v0.1.20` is reserved by a failed zizmor permissions
 comment check on `actions-budget-monitor.yml` and has no release assets;
 `v0.1.25` is reserved by a pedantic zizmor `anonymous-definition` finding on
-the sync-managed `managed-files-guard.yml` and has no release assets.
+the sync-managed `managed-files-guard.yml` and has no release assets;
+`v0.1.28` is reserved by a failed official-source dependency freshness check
+(hosted PowerShell 7.6.5 pinned past the 14-day window) and has no release
+assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
