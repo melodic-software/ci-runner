@@ -1417,6 +1417,52 @@ func TestFreshAdmissionSkipsNewlyOversizedStartAndContinuesSmallerPool(t *testin
 	}
 }
 
+func TestFreshAdmissionJitterBoundsImmediateReruns(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	// Every read differs by a CPU fraction; odd reads fund one slot and even reads fund none, so each
+	// fresh admission declines a start the step's own plan admitted.
+	resources := &jitterResources{}
+	harness.controller.deps.Resources = resources
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := harness.controller.Step(ctx)
+	if !errors.Is(err, errReconcileInputsChanged) {
+		t.Fatalf("Step error = %v, want the inputs-changed cause after bounded reruns", err)
+	}
+	if reads := resources.count(); reads > 2*(maxImmediateReruns+1) {
+		t.Fatalf("resource reads = %d, want at most %d inner steps", reads, maxImmediateReruns+1)
+	}
+	if harness.runtime.startCount() != 0 {
+		t.Fatal("worker started although every fresh admission declined")
+	}
+}
+
+type jitterResources struct {
+	mu    sync.Mutex
+	reads int
+}
+
+func (m *jitterResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+	available := uint64(23 << 30)
+	if m.reads%2 == 1 {
+		available = 24 << 30
+	}
+	return model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: available, CPUUtilizationPercent: 10 + float64(m.reads%100)/1000,
+	}, nil
+}
+
+func (m *jitterResources) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reads
+}
+
 func TestMemoryReservationSaturatesAndFailsClosed(t *testing.T) {
 	t.Parallel()
 	maximum := ^uint64(0)

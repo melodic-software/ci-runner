@@ -21,6 +21,11 @@ import (
 
 var ErrUnsafeObservedState = errors.New("observed state could not be loaded; refusing to reconcile persistent scale-set identities")
 
+// maxImmediateReruns bounds a Step's inputs-changed reruns: host readings differ on every read, so a
+// fresh admission can keep declining what the step's own plan admitted. Past the bound the Step
+// returns the cause and the next Step replans after the normal interval.
+const maxImmediateReruns = 3
+
 var (
 	errReconcileInputsChanged = errors.New("reconciliation safety inputs changed")
 	errShutdownRequested      = errors.New("controller shutdown requested")
@@ -191,7 +196,7 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 		finishTelemetry(telemetrySnapshot(result), resultErr)
 	}()
 
-	for {
+	for reruns := 0; ; reruns++ {
 		if err := ctx.Err(); err != nil {
 			return ReconcileResult{}, err
 		}
@@ -207,7 +212,7 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 		r.stateMu.Unlock()
 		cancel(nil)
 
-		if errors.Is(cause, errReconcileInputsChanged) && ctx.Err() == nil {
+		if errors.Is(cause, errReconcileInputsChanged) && ctx.Err() == nil && reruns < maxImmediateReruns {
 			// Re-run immediately; waiting the normal reconciliation interval could leave stale nonzero
 			// capacity visible for an entire long poll.
 			continue
