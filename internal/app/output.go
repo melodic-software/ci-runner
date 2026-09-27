@@ -43,6 +43,7 @@ func (a *Application) writeHumanStatus(desired model.DesiredState, desiredErr er
 	writef(a.out, "Phase: %s\n", observed.Phase)
 	writef(a.out, "Controller version: %s\n", displayValue(observed.Version))
 	writef(a.out, "Heartbeat: %s\n", observed.HeartbeatAt.Format("2006-01-02 15:04:05Z07:00"))
+	writef(a.out, "Controller cost: last tick %.3fs, process CPU %.1fs\n", observed.Controller.LastTickDurationSeconds, observed.Controller.ProcessCPUSeconds)
 	writef(a.out, "Docker Desktop: running=%t engine=%t WSL=%d\n", observed.Desktop.DesktopRunning, observed.Desktop.EngineReachable, observed.Desktop.RunningWSLCount)
 	writef(a.out, "Power: AC connected=%t\n", observed.Power.ACConnected)
 	memoryPercent := float64(0)

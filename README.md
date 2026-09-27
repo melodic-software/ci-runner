@@ -251,7 +251,10 @@ parsing YAML itself. `config validate --json` returns the normalized
 `diagnostics`) contract. `host status --json` returns the authenticated live
 controller's PID, exact version, phase, shutdown state, and job counts under
 `controller`; provisioning requires a new nonzero PID and the requested version
-before committing an install transaction.
+before committing an install transaction. `observed.controller` carries the
+controller's own cost: `lastTickDurationSeconds` (the previous reconcile tick's
+wall time) and `processCpuSeconds` (cumulative process CPU; diff two samples for
+a rate). Human `host status` prints both as `Controller cost`.
 
 Mutable local state is separate:
 
@@ -355,6 +358,13 @@ activate the global resource gate or retire healthy existing capacity. Invalid
 resource observations and sustained high CPU remain global gates. Target
 profiles change only Docker CPU, memory, memory-plus-swap, and PID limits. They
 cannot add the Docker socket, privileged mode, devices, or host mounts.
+
+On an interactive development host, set `resources.maximumConcurrentWorkers`
+below the sum of pool `maxCapacity` values, lower `resources.worker.cpus`, or
+both, so full CI load leaves CPU for editors, terminals, and other interactive
+tools. The `cpuBlockPercent` gate does not cover that case: it reacts only to
+host-wide CPU held above the threshold for `cpuObservationWindow`, not to
+interactive latency.
 
 Listener capacity uses a per-pool memory Schmitt trigger. A decrease crosses the
 raw worker-memory boundary immediately, preserving the fail-closed admission
