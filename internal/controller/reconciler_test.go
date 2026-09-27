@@ -44,6 +44,28 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 	}
 }
 
+func TestReconcilerPublishesPreviousTickCost(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	first, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Observed.Controller.LastTickDurationSeconds != 0 {
+		t.Fatalf("first tick duration = %v, want 0 before any tick completed", first.Observed.Controller.LastTickDurationSeconds)
+	}
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := harness.store.LoadObserved(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Controller.LastTickDurationSeconds <= 0 || stored.Controller.ProcessCPUSeconds <= 0 {
+		t.Fatalf("persisted controller cost = %#v, want nonzero previous tick and process CPU", stored.Controller)
+	}
+}
+
 func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

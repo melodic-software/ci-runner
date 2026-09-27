@@ -226,6 +226,24 @@ func TestMultiPoolAssignmentsRemainReservedWhileResourceGateAdvertisesZero(t *te
 	}
 }
 
+func TestResourceGatedAssignmentsHonorTemporaryCapacityOverride(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	one := 1
+	input.Desired.TemporaryCapacityOverride = &one
+	input.Pools[0].TotalAssignedJobs = 3
+	input.Pools[0].DrainServiceCapacity = 3
+	input.Resources = model.ResourceSnapshot{}
+
+	plan := BuildPlan(input)
+	if plan.Phase != model.PhaseResourceConstrained {
+		t.Fatalf("phase = %s, want resource constrained", plan.Phase)
+	}
+	if got := totalStarts(plan.Start); got != 1 {
+		t.Fatalf("starts = %d, want the override 1 over static cap 3", got)
+	}
+}
+
 func TestAssignmentReservationNeverExceedsPoolMaximum(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()

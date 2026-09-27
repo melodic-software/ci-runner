@@ -186,6 +186,13 @@ type Problem struct {
 	At        time.Time `json:"at"`
 }
 
+// ControllerCost is the controller's own cost: the previous reconcile tick's wall duration and the
+// process's cumulative CPU time (kernel+user), which consumers diff between samples.
+type ControllerCost struct {
+	LastTickDurationSeconds float64 `json:"lastTickDurationSeconds"`
+	ProcessCPUSeconds       float64 `json:"processCpuSeconds"`
+}
+
 // ObservedState is controller-owned. Sensitive values, JIT configurations,
 // credentials, and adapter request payloads must never be put here.
 type ObservedState struct {
@@ -202,5 +209,6 @@ type ObservedState struct {
 	Desktop        DesktopStatus     `json:"desktop"`
 	ResourceGate   ResourceGateState `json:"resourceGate"`
 	PowerGate      PowerGateState    `json:"powerGate"`
+	Controller     ControllerCost    `json:"controller"`
 	Problems       []Problem         `json:"problems,omitempty"`
 }
