@@ -705,6 +705,25 @@ func TestForceStopUsesExplicitKillThenPreservesDiagnostics(t *testing.T) {
 	assertCallBefore(t, engine.callsSnapshot(), "copy:/home/runner/_diag", "remove:busy-worker")
 }
 
+func TestListReportsArtifactCleanupErrorsThroughOnError(t *testing.T) {
+	t.Parallel()
+	sweepErr := errors.New("artifact path escapes configured root")
+	var reported []error
+	options := testOptions(&memoryArtifacts{adoptErr: sweepErr})
+	options.OnError = func(err error) { reported = append(reported, err) }
+	runtime, err := New(newFakeEngine(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+	if _, err := runtime.List(context.Background()); !errors.Is(err, sweepErr) {
+		t.Fatalf("List error = %v, want the sweep error", err)
+	}
+	if len(reported) != 1 || !errors.Is(reported[0], sweepErr) {
+		t.Fatalf("reported = %v, want the sweep error once", reported)
+	}
+}
+
 func TestListReconstructsStateFromOfficialHookFile(t *testing.T) {
 	t.Parallel()
 	engine := newFakeEngine()
@@ -1817,6 +1836,7 @@ type memoryArtifacts struct {
 	finalizeErr     error
 	diagnosticErr   error
 	resourceErr     error
+	adoptErr        error
 	resources       []ResourceEvidence
 	resourceWritten bool
 }
@@ -2056,7 +2076,7 @@ func (s *memoryArtifacts) AdoptAndCleanup(_ context.Context, metadata []Artifact
 	defer s.mu.Unlock()
 	s.events = append(s.events, "adopt")
 	s.adopted = append(s.adopted, append([]ArtifactMetadata(nil), metadata...))
-	return nil
+	return s.adoptErr
 }
 
 func (r *Runtime) watchForTest(id string) *containerWatch {

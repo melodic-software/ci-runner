@@ -270,7 +270,9 @@ func (r *Runtime) List(ctx context.Context) ([]model.Worker, error) {
 	// Persist every active/exited managed container as adopted before retention
 	// is allowed to inspect the catalog or any watcher can finalize a container.
 	if err := r.opts.Artifacts.AdoptAndCleanup(ctx, adopted); err != nil {
-		return nil, fmt.Errorf("adopt workers before artifact cleanup: %w", err)
+		err = fmt.Errorf("adopt workers before artifact cleanup: %w", err)
+		r.opts.OnError(err)
+		return nil, err
 	}
 	for _, metadata := range adopted {
 		r.ensureWatch(metadata.ContainerID, nil)
