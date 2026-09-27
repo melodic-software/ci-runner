@@ -1424,18 +1424,31 @@ func TestFreshAdmissionJitterBoundsImmediateReruns(t *testing.T) {
 	// fresh admission declines a start the step's own plan admitted.
 	resources := &jitterResources{}
 	harness.controller.deps.Resources = resources
+	trace := &callTrace{}
+	harness.controller.deps.ScaleSets = &tracingScaleSet{Client: harness.scaleSets, trace: trace}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := harness.controller.Step(ctx)
-	if !errors.Is(err, errReconcileInputsChanged) {
-		t.Fatalf("Step error = %v, want the inputs-changed cause after bounded reruns", err)
+	if err != nil {
+		t.Fatalf("Step error = %v, want the step to poll after bounded reruns", err)
 	}
-	if reads := resources.count(); reads > 2*(maxImmediateReruns+1) {
-		t.Fatalf("resource reads = %d, want at most %d inner steps", reads, maxImmediateReruns+1)
+	if reads := resources.count(); reads > 10 {
+		t.Fatalf("resource reads = %d, want at most 10: four inner steps and the post-poll plan", reads)
 	}
 	if harness.runtime.startCount() != 0 {
 		t.Fatal("worker started although every fresh admission declined")
+	}
+	polled := false
+	for _, entry := range trace.snapshot() {
+		polled = polled || strings.HasPrefix(entry, "statistics:")
+	}
+	if !polled {
+		t.Fatalf("scale-set operations = %v, want a statistics poll", trace.snapshot())
+	}
+	stored, loadErr := harness.store.LoadObserved(context.Background())
+	if loadErr != nil || stored.HeartbeatAt.IsZero() {
+		t.Fatalf("observed checkpoint = %#v, %v; want a persisted heartbeat", stored, loadErr)
 	}
 }
 

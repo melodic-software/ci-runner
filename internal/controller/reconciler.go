@@ -21,9 +21,8 @@ import (
 
 var ErrUnsafeObservedState = errors.New("observed state could not be loaded; refusing to reconcile persistent scale-set identities")
 
-// maxImmediateReruns bounds a Step's inputs-changed reruns: host readings differ on every read, so a
-// fresh admission can keep declining what the step's own plan admitted. Past the bound the Step
-// returns the cause and the next Step replans after the normal interval.
+// maxImmediateReruns bounds a Step's reruns for host readings that changed a fresh admission: memory
+// hovering at a slot boundary can flip it on every read. The final attempt skips the start and polls.
 const maxImmediateReruns = 3
 
 var (
@@ -73,6 +72,8 @@ type Reconciler struct {
 	// engineMemoryTotal caches the engine VM MemTotal for the current VM lifecycle. Only step() touches
 	// it, under stepMu; the poll-cadence goroutine gets a copy in pollCadenceState.
 	engineMemoryTotal uint64
+	// finalAdmissionAttempt is set by Step, under stepMu, once its resource-driven reruns are spent.
+	finalAdmissionAttempt bool
 
 	// registrationCheckCursor rotates which idle workers get their registration verified past
 	// registrationCheckCap. Only step() touches it, under stepMu, so it needs no other lock.
@@ -204,6 +205,7 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 		r.stateMu.Lock()
 		r.currentStepCancel = cancel
 		r.stateMu.Unlock()
+		r.finalAdmissionAttempt = reruns >= maxImmediateReruns
 
 		result, err := r.step(stepCtx, cancel)
 		cause := context.Cause(stepCtx)
@@ -212,7 +214,7 @@ func (r *Reconciler) Step(ctx context.Context) (result ReconcileResult, resultEr
 		r.stateMu.Unlock()
 		cancel(nil)
 
-		if errors.Is(cause, errReconcileInputsChanged) && ctx.Err() == nil && reruns < maxImmediateReruns {
+		if errors.Is(cause, errReconcileInputsChanged) && ctx.Err() == nil {
 			// Re-run immediately; waiting the normal reconciliation interval could leave stale nonzero
 			// capacity visible for an entire long poll.
 			continue
@@ -1319,18 +1321,29 @@ func (r *Reconciler) freshStartAllowed(
 	}
 
 	now := time.Now().UTC()
-	plan := BuildPlan(PlanInput{
+	input := PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
 		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
-	})
+	}
+	if plansStart(BuildPlan(input), poolID) {
+		return true, false, nil
+	}
+	if reservedMemory > 0 || r.finalAdmissionAttempt || (resources == baselineResources && desktop == baselineDesktop) {
+		return false, false, nil
+	}
+	// Only a decline the baseline readings would have admitted means the changed readings matter.
+	input.Resources, input.Desktop = baselineResources, baselineDesktop
+	return false, plansStart(BuildPlan(input), poolID), nil
+}
+
+func plansStart(plan Plan, poolID string) bool {
 	for _, decision := range plan.Start {
 		if decision.PoolID == poolID && decision.Count > 0 {
-			return true, false, nil
+			return true
 		}
 	}
-	changed := resources != baselineResources || desktop != baselineDesktop
-	return false, changed && reservedMemory == 0, nil
+	return false
 }
 
 func saturatingAddUint64(left, right uint64) uint64 {
