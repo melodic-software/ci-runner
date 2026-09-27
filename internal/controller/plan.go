@@ -513,7 +513,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	}
 	appendSafeRemovals(plan, workersByPool, known, reservations)
 
-	remaining := max(input.Config.Resources.MaximumConcurrentWorkers-activeWorkers, 0)
+	remaining := max(EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)-activeWorkers, 0)
 	gate := evaluateMemoryBasis(input)
 	memoryRemaining := gate.remaining
 	// The static budget stays authoritative even for an invalid host observation; the legacy basis
