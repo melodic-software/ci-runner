@@ -93,6 +93,9 @@ func (s staticJobStore) Load(context.Context) (jobindex.Catalog, error) {
 func (s staticJobStore) Upsert(context.Context, jobindex.Patch) (jobindex.Record, error) {
 	return jobindex.Record{}, errors.New("unexpected upsert")
 }
+func (s staticJobStore) UpsertMany(context.Context, []jobindex.Patch) ([]jobindex.Record, error) {
+	return nil, errors.New("unexpected upsert")
+}
 func (s staticJobStore) FindByJobID(_ context.Context, jobID string) (jobindex.Record, error) {
 	record, ok := s.records[jobID]
 	if !ok {

@@ -333,13 +333,13 @@ func (s *FileArtifactSink) AdoptAndCleanup(ctx context.Context, adopted []Artifa
 	if !due {
 		return nil
 	}
-	if err := s.cleanup(ctx, adopted, now); err != nil {
-		return err
-	}
+	// A failed sweep also waits for CleanupEvery: a persistent error must not
+	// rerun the whole sweep on every reconcile tick.
+	err = s.cleanup(ctx, adopted, now)
 	s.mu.Lock()
 	s.lastCleanupAt = now
 	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // CleanupNow is the explicit operator retention escape hatch. Callers must
@@ -424,6 +424,8 @@ func (s *FileArtifactSink) reconcileStaleOpen(ctx context.Context, catalog jobin
 	return nil
 }
 
+var readArtifactDirectory = os.ReadDir
+
 type artifactCleanupCandidate struct {
 	record       jobindex.Record
 	resourcePath string
@@ -497,36 +499,44 @@ func (s *FileArtifactSink) runArtifactSweeps(ctx context.Context, referenced map
 		return err
 	}
 
+	protected, err := protectedCountedBytes(s.logDirectory, s.diagnosticDirectory, referenced, candidatePaths, removalFailures)
+	if err != nil {
+		return err
+	}
+
+	// Candidates are oldest-first and total only shrinks, so the first kept
+	// candidate proves every later one is kept too.
+	var tombstones []jobindex.Patch
 	for _, candidate := range candidates {
-		protected, err := protectedCountedBytes(s.logDirectory, s.diagnosticDirectory, referenced, candidatePaths, removalFailures)
-		if err != nil {
-			return err
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(cleanupErrors, err)...)
 		}
 		expired := now.Sub(candidate.record.FinalizedAt) >= s.policy.Retention
-		capPressure := capDeletionPressure(total, protected, s.policy.TotalCapBytes)
-		if !expired && !capPressure {
-			continue
+		if !expired && !capDeletionPressure(total, protected, s.policy.TotalCapBytes) {
+			break
 		}
-		removeErr := errors.Join(
-			removeIfPresentWithin(s.logDirectory, candidate.record.LogPath),
-			removeIfPresentWithin(s.diagnosticDirectory, candidate.record.DiagnosticPath),
-			removeIfPresentWithin(s.diagnosticDirectory, candidate.resourcePath),
-		)
-		if removeErr != nil {
+		var removeErrors []error
+		for _, artifact := range [][2]string{
+			{s.logDirectory, candidate.record.LogPath},
+			{s.diagnosticDirectory, candidate.record.DiagnosticPath},
+			{s.diagnosticDirectory, candidate.resourcePath},
+		} {
+			removed, err := removeIfPresentWithin(artifact[0], artifact[1])
+			total = saturatingSub(total, removed)
+			removeErrors = append(removeErrors, err)
+		}
+		if removeErr := errors.Join(removeErrors...); removeErr != nil {
 			cleanupErrors = append(cleanupErrors, removeErr)
 			continue
 		}
-		total, err = artifactDiskTotal(s.logDirectory, s.diagnosticDirectory)
-		if err != nil {
-			return err
-		}
-		tombstone := now
-		if _, err := s.jobs.Upsert(ctx, jobindex.Patch{
+		tombstones = append(tombstones, jobindex.Patch{
 			PoolID: candidate.record.PoolID, RunnerName: candidate.record.RunnerName,
-			ContainerID: candidate.record.ContainerID, JobID: candidate.record.JobID, TombstonedAt: &tombstone,
-		}); err != nil {
+			ContainerID: candidate.record.ContainerID, JobID: candidate.record.JobID, TombstonedAt: &now,
+		})
+	}
+	if len(tombstones) > 0 {
+		if _, err := s.jobs.UpsertMany(ctx, tombstones); err != nil {
 			cleanupErrors = append(cleanupErrors, err)
-			continue
 		}
 	}
 
@@ -556,7 +566,7 @@ func capDeletionPressure(total, protected, cap uint64) bool {
 func artifactDiskTotal(logDirectory, diagnosticDirectory string) (uint64, error) {
 	var total uint64
 	for _, root := range []string{logDirectory, diagnosticDirectory} {
-		entries, err := os.ReadDir(root)
+		entries, err := readArtifactDirectory(root)
 		if err != nil {
 			return 0, fmt.Errorf("scan artifact directory %q: %w", root, err)
 		}
@@ -585,7 +595,7 @@ func protectedCountedBytes(
 ) (uint64, error) {
 	var protected uint64
 	for _, root := range []string{logDirectory, diagnosticDirectory} {
-		entries, err := os.ReadDir(root)
+		entries, err := readArtifactDirectory(root)
 		if err != nil {
 			return 0, fmt.Errorf("scan artifact directory %q: %w", root, err)
 		}
@@ -634,7 +644,7 @@ func (s *FileArtifactSink) sweepCapUnreferenced(referenced map[string]struct{}, 
 	}
 	var entries []capUnreferencedEntry
 	for _, root := range []string{s.logDirectory, s.diagnosticDirectory} {
-		dirEntries, err := os.ReadDir(root)
+		dirEntries, err := readArtifactDirectory(root)
 		if err != nil {
 			return fmt.Errorf("scan artifact directory %q: %w", root, err)
 		}
@@ -827,31 +837,32 @@ func saturatingAdd(left, right uint64) uint64 {
 	return left + right
 }
 
-func removeIfPresentWithin(root, path string) error {
+// removeIfPresentWithin returns the bytes it freed.
+func removeIfPresentWithin(root, path string) (uint64, error) {
 	if path == "" {
-		return nil
+		return 0, nil
 	}
 	if err := validateArtifactPath(root, path); err != nil {
-		return err
+		return 0, err
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refuse to remove non-regular artifact %q", path)
+		return 0, fmt.Errorf("refuse to remove non-regular artifact %q", path)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove finalized artifact %q: %w", path, err)
+		return 0, fmt.Errorf("remove finalized artifact %q: %w", path, err)
 	}
-	return nil
+	return uint64(info.Size()), nil
 }
 
 func cleanupOrphans(root string, referenced map[string]struct{}, cutoff time.Time) error {
-	entries, err := os.ReadDir(root)
+	entries, err := readArtifactDirectory(root)
 	if err != nil {
 		return fmt.Errorf("scan artifact directory %q: %w", root, err)
 	}

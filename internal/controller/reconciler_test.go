@@ -46,24 +46,30 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 
 func TestReconcilerPublishesPreviousTickCost(t *testing.T) {
 	t.Parallel()
-	harness := newHarness(t, model.ModeEnabled)
-	first, err := harness.controller.Step(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Observed.Controller.LastTickDurationSeconds != 0 {
-		t.Fatalf("first tick duration = %v, want 0 before any tick completed", first.Observed.Controller.LastTickDurationSeconds)
-	}
-	if _, err := harness.controller.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := harness.store.LoadObserved(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Controller.LastTickDurationSeconds <= 0 || stored.Controller.ProcessCPUSeconds <= 0 {
-		t.Fatalf("persisted controller cost = %#v, want nonzero previous tick and process CPU", stored.Controller)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		harness := newHarness(t, model.ModeEnabled)
+		harness.controller.deps.Resources = slowResources{ResourceMonitor: harness.controller.deps.Resources, delay: time.Second}
+		first, err := harness.controller.Step(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.Observed.Controller.LastTickDurationSeconds != 0 {
+			t.Fatalf("first tick duration = %v, want 0 before any tick completed", first.Observed.Controller.LastTickDurationSeconds)
+		}
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := harness.store.LoadObserved(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Controller.LastTickDurationSeconds < 1 {
+			t.Fatalf("persisted previous tick = %vs, want at least the 1s the first tick spent sampling resources", stored.Controller.LastTickDurationSeconds)
+		}
+		if stored.Controller.ProcessCPUSeconds < first.Observed.Controller.ProcessCPUSeconds {
+			t.Fatalf("process CPU went from %v to %v, want non-decreasing", first.Observed.Controller.ProcessCPUSeconds, stored.Controller.ProcessCPUSeconds)
+		}
+	})
 }
 
 func TestReconcilerReportsPriorCheckpointAgeForFreshnessTelemetry(t *testing.T) {
@@ -2352,6 +2358,17 @@ type staticResources struct {
 
 func (m staticResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {
 	return m.snapshot, m.err
+}
+
+// slowResources makes each sample take delay, so a synctest bubble clock gives Step a known wall duration.
+type slowResources struct {
+	ResourceMonitor
+	delay time.Duration
+}
+
+func (m slowResources) Snapshot(ctx context.Context) (model.ResourceSnapshot, error) {
+	time.Sleep(m.delay)
+	return m.ResourceMonitor.Snapshot(ctx)
 }
 
 type sequenceResources struct {
