@@ -65,6 +65,7 @@ type Patch struct {
 type Store interface {
 	Load(context.Context) (Catalog, error)
 	Upsert(context.Context, Patch) (Record, error)
+	UpsertMany(context.Context, []Patch) ([]Record, error)
 	FindByJobID(context.Context, string) (Record, error)
 	FindByRunner(context.Context, string, string) (Record, error)
 	PruneTombstones(context.Context, time.Time) (int, error)

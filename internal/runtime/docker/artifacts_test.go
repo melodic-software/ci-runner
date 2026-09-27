@@ -706,6 +706,65 @@ func TestAdoptAndCleanupLoadsTheCatalogOnceIndependentOfContainerCount(t *testin
 	}
 }
 
+func TestRetentionSweepDirectoryScansDoNotScaleWithRecordCount(t *testing.T) {
+	scans := 0
+	t.Cleanup(func() { readArtifactDirectory = os.ReadDir })
+	readArtifactDirectory = func(name string) ([]os.DirEntry, error) {
+		scans++
+		return os.ReadDir(name)
+	}
+	counts := map[int][2]int{}
+	for _, records := range []int{20, 80} {
+		root := t.TempDir()
+		store := &countingJobStore{Store: newTestJobStore(t, filepath.Join(root, "state"))}
+		policy := defaultArtifactPolicy()
+		sink := newArtifactSinkForTest(t, root, store, policy)
+		seedArtifactSweep(t, root, records, records/2, 0, policy.Retention)
+		scans = 0
+		if err := sink.AdoptAndCleanup(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		counts[records] = [2]int{scans, store.upserts}
+		remaining, err := os.ReadDir(filepath.Join(root, "logs"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(remaining) != records-records/2 {
+			t.Fatalf("%d records: %d logs remain, want %d", records, len(remaining), records-records/2)
+		}
+	}
+	if counts[20] != counts[80] {
+		t.Fatalf("[directory scans, catalog upserts] grew with record count: %v", counts)
+	}
+}
+
+func TestRetentionSweepStopsWhenTheContextIsCancelled(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := newTestJobStore(t, filepath.Join(root, "state"))
+	policy := defaultArtifactPolicy()
+	sink := newArtifactSinkForTest(t, root, store, policy)
+	seedArtifactSweep(t, root, 3, 3, 0, policy.Retention)
+	catalog, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := make([]artifactCleanupCandidate, 0, len(catalog.Records))
+	for _, record := range catalog.Records {
+		candidates = append(candidates, artifactCleanupCandidate{record: record})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sink.runArtifactSweeps(ctx, map[string]struct{}{}, candidates, time.Now().UTC()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled sweep error = %v, want context.Canceled", err)
+	}
+	for _, record := range catalog.Records {
+		if _, err := os.Stat(record.LogPath); err != nil {
+			t.Fatalf("cancelled sweep removed %q: %v", record.LogPath, err)
+		}
+	}
+}
+
 type countingJobStore struct {
 	jobindex.Store
 	loads, upserts int
@@ -719,6 +778,11 @@ func (s *countingJobStore) Load(ctx context.Context) (jobindex.Catalog, error) {
 func (s *countingJobStore) Upsert(ctx context.Context, patch jobindex.Patch) (jobindex.Record, error) {
 	s.upserts++
 	return s.Store.Upsert(ctx, patch)
+}
+
+func (s *countingJobStore) UpsertMany(ctx context.Context, patches []jobindex.Patch) ([]jobindex.Record, error) {
+	s.upserts++
+	return s.Store.UpsertMany(ctx, patches)
 }
 
 type failingJobStore struct{ jobindex.Store }

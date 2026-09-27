@@ -154,49 +154,72 @@ func (c Catalog) ActiveJob(poolID, runnerName string) (string, bool) {
 	return "", false
 }
 
-func (s *FileStore) Upsert(ctx context.Context, patch Patch) (result Record, resultErr error) {
+func (s *FileStore) Upsert(ctx context.Context, patch Patch) (Record, error) {
+	records, err := s.UpsertMany(ctx, []Patch{patch})
+	if err != nil {
+		return Record{}, err
+	}
+	return records[0], nil
+}
+
+// UpsertMany applies every patch under one lock and at most one save. A patch
+// that fails to merge is skipped so it cannot block the rest; its error is
+// returned alongside the saved results.
+func (s *FileStore) UpsertMany(ctx context.Context, patches []Patch) (results []Record, resultErr error) {
 	unlock, err := s.locker.Lock(ctx)
 	if err != nil {
-		return Record{}, fmt.Errorf("lock jobs index: %w", err)
+		return nil, fmt.Errorf("lock jobs index: %w", err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	catalog, err := s.loadUnlocked()
 	if errors.Is(err, ErrNotFound) {
 		catalog = Catalog{SchemaVersion: SchemaVersion}
 	} else if err != nil {
-		return Record{}, err
+		return nil, err
 	}
-	index := -1
+	indexes := make(map[string]int, len(catalog.Records))
 	for i, record := range catalog.Records {
-		if record.PoolID == patch.PoolID && record.RunnerName == patch.RunnerName {
-			index = i
-			break
+		indexes[record.PoolID+"\x00"+record.RunnerName] = i
+	}
+	now := s.now()
+	results = make([]Record, len(patches))
+	var mergeErrors []error
+	changed := false
+	for i, patch := range patches {
+		key := patch.PoolID + "\x00" + patch.RunnerName
+		index, found := indexes[key]
+		var current Record
+		if found {
+			current = catalog.Records[index]
+		}
+		merged, err := Merge(current, patch, now)
+		if err != nil {
+			mergeErrors = append(mergeErrors, err)
+			continue
+		}
+		results[i] = merged
+		if found && merged == current {
+			continue
+		}
+		changed = true
+		if found {
+			catalog.Records[index] = merged
+		} else {
+			indexes[key] = len(catalog.Records)
+			catalog.Records = append(catalog.Records, merged)
 		}
 	}
-	var current Record
-	if index >= 0 {
-		current = catalog.Records[index]
-	}
-	merged, err := Merge(current, patch, s.now())
-	if err != nil {
-		return Record{}, err
-	}
-	if index >= 0 && merged == current {
-		return merged, nil
-	}
-	if index < 0 {
-		catalog.Records = append(catalog.Records, merged)
-	} else {
-		catalog.Records[index] = merged
+	if !changed {
+		return results, errors.Join(mergeErrors...)
 	}
 	Sort(&catalog)
 	if err := Validate(catalog); err != nil {
-		return Record{}, fmt.Errorf("validate jobs index: %w", err)
+		return nil, fmt.Errorf("validate jobs index: %w", err)
 	}
 	if err := s.saveUnlocked(catalog); err != nil {
-		return Record{}, err
+		return nil, err
 	}
-	return merged, nil
+	return results, errors.Join(mergeErrors...)
 }
 
 func (s *FileStore) loadUnlocked() (Catalog, error) {
