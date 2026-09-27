@@ -1423,6 +1423,65 @@ func TestFreshAdmissionSkipsNewlyOversizedStartAndContinuesSmallerPool(t *testin
 	}
 }
 
+func TestFreshAdmissionJitterBoundsImmediateReruns(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	// Every read differs by a CPU fraction; odd reads fund one slot and even reads fund none, so each
+	// fresh admission declines a start the step's own plan admitted.
+	resources := &jitterResources{}
+	harness.controller.deps.Resources = resources
+	trace := &callTrace{}
+	harness.controller.deps.ScaleSets = &tracingScaleSet{Client: harness.scaleSets, trace: trace}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := harness.controller.Step(ctx)
+	if err != nil {
+		t.Fatalf("Step error = %v, want the step to poll after bounded reruns", err)
+	}
+	if reads := resources.count(); reads > 10 {
+		t.Fatalf("resource reads = %d, want at most 10: four inner steps and the post-poll plan", reads)
+	}
+	if harness.runtime.startCount() != 0 {
+		t.Fatal("worker started although every fresh admission declined")
+	}
+	polled := false
+	for _, entry := range trace.snapshot() {
+		polled = polled || strings.HasPrefix(entry, "statistics:")
+	}
+	if !polled {
+		t.Fatalf("scale-set operations = %v, want a statistics poll", trace.snapshot())
+	}
+	stored, loadErr := harness.store.LoadObserved(context.Background())
+	if loadErr != nil || stored.HeartbeatAt.IsZero() {
+		t.Fatalf("observed checkpoint = %#v, %v; want a persisted heartbeat", stored, loadErr)
+	}
+}
+
+type jitterResources struct {
+	mu    sync.Mutex
+	reads int
+}
+
+func (m *jitterResources) Snapshot(context.Context) (model.ResourceSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+	available := uint64(23 << 30)
+	if m.reads%2 == 1 {
+		available = 24 << 30
+	}
+	return model.ResourceSnapshot{
+		TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: available, CPUUtilizationPercent: 10 + float64(m.reads%100)/1000,
+	}, nil
+}
+
+func (m *jitterResources) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reads
+}
+
 func TestMemoryReservationSaturatesAndFailsClosed(t *testing.T) {
 	t.Parallel()
 	maximum := ^uint64(0)
