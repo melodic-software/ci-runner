@@ -170,6 +170,7 @@ func RunControllerMain(ctx context.Context, args []string, errOut io.Writer) err
 		Desktop:      host.NewControllerDesktopAdapter(),
 		Power:        host.WindowsPowerMonitor{},
 		Resources:    &host.WindowsResourceMonitor{},
+		Presence:     host.WindowsPresenceMonitor{},
 		State:        store,
 		Jobs:         jobs,
 		Logs:         logs,

@@ -4,6 +4,7 @@ package host
 
 import (
 	"context"
+	"time"
 
 	"github.com/melodic-software/ci-runner/internal/model"
 )
@@ -12,6 +13,12 @@ type WindowsPowerMonitor struct{}
 
 func (WindowsPowerMonitor) Snapshot(context.Context) (model.PowerSnapshot, error) {
 	return model.PowerSnapshot{}, errWindowsHostRequired
+}
+
+type WindowsPresenceMonitor struct{}
+
+func (WindowsPresenceMonitor) InputIdle() (time.Duration, error) {
+	return 0, errWindowsHostRequired
 }
 
 type WindowsResourceMonitor struct{}

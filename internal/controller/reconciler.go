@@ -44,6 +44,9 @@ type Dependencies struct {
 	// engine VM's real total memory. Optional: absent, the budget is trusted
 	// as configured.
 	EngineMemory EngineMemoryProbe
+	// Presence feeds resources.interactiveMaximumConcurrentWorkers. Optional:
+	// absent or failing, the host counts as unattended and keeps its full cap.
+	Presence PresenceMonitor
 	// ACL hardens goroutine dumps to the private runtime ACL that doctor
 	// verifies on every diagnostics entry. Optional: absent, dumps keep the
 	// directory's inherited ACL.
@@ -72,6 +75,9 @@ type Reconciler struct {
 	// engineMemoryTotal caches the engine VM MemTotal for the current VM lifecycle. Only step() touches
 	// it, under stepMu; the poll-cadence goroutine gets a copy in pollCadenceState.
 	engineMemoryTotal uint64
+	// inputIdle is read once per Step, under stepMu, so input arriving mid-Step cannot flip an
+	// admission already planned; the poll-cadence goroutine reads its own.
+	inputIdle *time.Duration
 	// finalAdmissionAttempt is set by Step, under stepMu, once its resource-driven reruns are spent.
 	finalAdmissionAttempt bool
 
@@ -176,13 +182,25 @@ func (r *Reconciler) setWatchIntervalForTest(interval time.Duration) error {
 // on a policy-compliant burst reconcile. A desired-state read failure fails
 // safe to the static configured cap -- the same value step() itself falls
 // back to when it cannot load desired state -- rather than assuming an
-// override might be in effect that cannot be verified.
+// override might be in effect that cannot be verified. The interactive cap
+// only lowers this, so the budget stays an upper bound without it.
 func (r *Reconciler) EffectiveMaximumConcurrentWorkers(ctx context.Context) int {
 	desired, err := r.deps.State.LoadDesired(ctx)
 	if err != nil {
 		return r.config.Resources.MaximumConcurrentWorkers
 	}
 	return EffectiveMaximumConcurrentWorkers(r.config.Resources, desired)
+}
+
+func (r *Reconciler) readInputIdle() *time.Duration {
+	if r.deps.Presence == nil {
+		return nil
+	}
+	idle, err := r.deps.Presence.InputIdle()
+	if err != nil {
+		return nil
+	}
+	return &idle
 }
 
 // Step performs one serialized reconciliation. Polling scale-set statistics
@@ -350,6 +368,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 
 	observationFailed := observedTransientLoadErr
+	r.inputIdle = r.readInputIdle()
 	power, powerErr := r.deps.Power.Snapshot(ctx)
 	if powerErr != nil {
 		observationFailed = true
@@ -485,7 +504,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	provisional := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: r.pendingCapacitySnapshot(), Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
-		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	})
 	var reservedMemory uint64
 	prePollRefreshFailed := false
@@ -719,7 +738,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	plan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: acknowledgedCapacity, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
-		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	})
 	alignAdvertisedCapacity(plan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
 	if recoveryOnly {
@@ -893,7 +912,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	postPlan := BuildPlan(PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, CapacityHysteresis: acknowledgedCapacity, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
-		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	})
 	alignAdvertisedCapacity(postPlan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
@@ -945,7 +964,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		QuiesceReason: postPlan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
-		Problems: problems, Controller: r.controllerCost(),
+		Problems: problems, Controller: r.controllerCost(), Presence: postPlan.Presence,
 	}
 	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
@@ -1324,7 +1343,7 @@ func (r *Reconciler) freshStartAllowed(
 	input := PlanInput{
 		Config: r.config, Desired: desired, Previous: previous, Pools: pools,
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
-		EngineMemoryTotalBytes: r.engineMemoryTotal, Now: now,
+		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	}
 	if plansStart(BuildPlan(input), poolID) {
 		return true, false, nil

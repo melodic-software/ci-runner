@@ -193,6 +193,13 @@ type ControllerCost struct {
 	ProcessCPUSeconds       float64 `json:"processCpuSeconds"`
 }
 
+// Presence is the age of the last keyboard or mouse input on the controller's session (absent when
+// the host cannot report it) and whether resources.interactiveMaximumConcurrentWorkers capped the plan.
+type Presence struct {
+	InputIdleSeconds     *float64 `json:"inputIdleSeconds,omitempty"`
+	InteractiveCapActive bool     `json:"interactiveCapActive"`
+}
+
 // ObservedState is controller-owned. Sensitive values, JIT configurations,
 // credentials, and adapter request payloads must never be put here.
 type ObservedState struct {
@@ -210,5 +217,6 @@ type ObservedState struct {
 	ResourceGate   ResourceGateState `json:"resourceGate"`
 	PowerGate      PowerGateState    `json:"powerGate"`
 	Controller     ControllerCost    `json:"controller"`
+	Presence       Presence          `json:"presence"`
 	Problems       []Problem         `json:"problems,omitempty"`
 }

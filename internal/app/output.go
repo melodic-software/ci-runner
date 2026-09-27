@@ -46,6 +46,11 @@ func (a *Application) writeHumanStatus(desired model.DesiredState, desiredErr er
 	writef(a.out, "Controller cost: last tick %.3fs, process CPU %.1fs\n", observed.Controller.LastTickDurationSeconds, observed.Controller.ProcessCPUSeconds)
 	writef(a.out, "Docker Desktop: running=%t engine=%t WSL=%d\n", observed.Desktop.DesktopRunning, observed.Desktop.EngineReachable, observed.Desktop.RunningWSLCount)
 	writef(a.out, "Power: AC connected=%t\n", observed.Power.ACConnected)
+	inputIdle := "unknown"
+	if observed.Presence.InputIdleSeconds != nil {
+		inputIdle = fmt.Sprintf("%.0fs", *observed.Presence.InputIdleSeconds)
+	}
+	writef(a.out, "Presence: input idle %s, interactive cap active=%t\n", inputIdle, observed.Presence.InteractiveCapActive)
 	memoryPercent := float64(0)
 	if observed.Resources.TotalMemoryBytes > 0 {
 		memoryPercent = float64(observed.Resources.AvailableMemoryBytes) * 100 / float64(observed.Resources.TotalMemoryBytes)

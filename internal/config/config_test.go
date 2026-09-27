@@ -240,6 +240,18 @@ func TestLoadOmittedWorkerMemoryBudgetStaysZero(t *testing.T) {
 	}
 }
 
+func TestLoadInteractiveCap(t *testing.T) {
+	t.Parallel()
+	input := strings.Replace(validYAML, "  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: 2\n  interactiveIdleThreshold: 5m\n", 1)
+	cfg, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resources.InteractiveMaximumConcurrentWorkers != 2 || cfg.Resources.InteractiveIdleThreshold.Duration != 5*time.Minute {
+		t.Fatalf("interactive cap = %d after %s, want 2 after 5m", cfg.Resources.InteractiveMaximumConcurrentWorkers, cfg.Resources.InteractiveIdleThreshold.Duration)
+	}
+}
+
 func TestLoadConfiguredTelemetry(t *testing.T) {
 	t.Parallel()
 	input := strings.Replace(validYAML, "paths:\n", `telemetry:
@@ -472,8 +484,15 @@ func TestValidateRejectsUnsafePathsDuplicatePoolsAndThresholds(t *testing.T) {
 		"v1 worker memory budget": strings.Replace(
 			strings.Replace(strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1), "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
 			"  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 36GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
-		"null worker memory budget":  strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: null\n  minimumAvailableMemoryPercent: 25\n", 1),
-		"zero worker memory budget":  strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 0GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"null worker memory budget":         strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: null\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"zero worker memory budget":         strings.Replace(validYAML, "  minimumAvailableMemoryPercent: 25\n", "  workerMemoryBudget: 0GiB\n  minimumAvailableMemoryPercent: 25\n", 1),
+		"interactive cap above host cap":    strings.Replace(validYAML, "  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: 4\n  interactiveIdleThreshold: 5m\n", 1),
+		"negative interactive cap":          strings.Replace(validYAML, "  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: -1\n", 1),
+		"interactive cap without threshold": strings.Replace(validYAML, "  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: 2\n", 1),
+		"zero interactive threshold":        strings.Replace(validYAML, "  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: 2\n  interactiveIdleThreshold: 0s\n", 1),
+		"v1 interactive cap": strings.Replace(
+			strings.Replace(strings.Replace(validYAML, "schemaVersion: 2", "schemaVersion: 1", 1), "  memoryCapacityIncreaseMarginPercent: 25\n", "", 1),
+			"  maximumConcurrentWorkers: 3\n", "  maximumConcurrentWorkers: 3\n  interactiveMaximumConcurrentWorkers: 2\n  interactiveIdleThreshold: 5m\n", 1),
 		"malformed URL":              strings.Replace(validYAML, "https://github.com/melodic-software", "https://example.com/melodic-software", 1),
 		"raw diagnostics bound":      strings.Replace(validYAML, "rawDiagnosticMaxInput: 512MiB", "rawDiagnosticMaxInput: 50MiB", 1),
 		"UNC path":                   strings.Replace(validYAML, `'C:\Users\runner\AppData\Local\ci-runner\state'`, `'\\server\share\state'`, 1),

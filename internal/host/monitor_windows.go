@@ -19,7 +19,28 @@ var (
 	procGetSystemPowerStatus = monitorKernel32.NewProc("GetSystemPowerStatus")
 	procGlobalMemoryStatusEx = monitorKernel32.NewProc("GlobalMemoryStatusEx")
 	procGetSystemTimes       = monitorKernel32.NewProc("GetSystemTimes")
+	procGetTickCount64       = monitorKernel32.NewProc("GetTickCount64")
+	procGetLastInputInfo     = syscall.NewLazyDLL("user32.dll").NewProc("GetLastInputInfo")
 )
+
+type lastInputInfo struct {
+	Size uint32
+	Time uint32
+}
+
+// WindowsPresenceMonitor reads the last input on the calling process's session. The controller
+// task runs with an interactive token in the user's session, so this is that user's input.
+type WindowsPresenceMonitor struct{}
+
+func (WindowsPresenceMonitor) InputIdle() (time.Duration, error) {
+	info := lastInputInfo{Size: uint32(unsafe.Sizeof(lastInputInfo{}))}
+	result, _, callErr := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&info)))
+	if result == 0 {
+		return 0, fmt.Errorf("GetLastInputInfo: %w", monitorCallError(callErr))
+	}
+	now, _, _ := procGetTickCount64.Call()
+	return inputIdleSince(uint64(now), info.Time), nil
+}
 
 type systemPowerStatus struct {
 	ACLineStatus        byte

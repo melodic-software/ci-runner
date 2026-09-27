@@ -65,6 +65,12 @@ type ResourceMonitor interface {
 	Snapshot(context.Context) (model.ResourceSnapshot, error)
 }
 
+// PresenceMonitor reports how long the controller's interactive session has gone without keyboard
+// or mouse input.
+type PresenceMonitor interface {
+	InputIdle() (time.Duration, error)
+}
+
 // EngineMemoryProbe reports the total memory of the VM backing the Docker
 // engine (the WSL2 VM on Windows), the kernel-truth ceiling a configured
 // worker memory budget is cross-checked against.

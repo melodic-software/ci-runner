@@ -206,6 +206,12 @@ type Resources struct {
 	CPUResumePercent                float64  `yaml:"cpuResumePercent"`
 	CPUObservationWindow            Duration `yaml:"cpuObservationWindow"`
 	CPUHysteresisWindow             Duration `yaml:"cpuHysteresisWindow"`
+	// InteractiveMaximumConcurrentWorkers, when positive, replaces
+	// MaximumConcurrentWorkers while keyboard or mouse input on the
+	// controller's session is younger than InteractiveIdleThreshold. Zero
+	// means unset: the host cap never depends on presence.
+	InteractiveMaximumConcurrentWorkers int      `yaml:"interactiveMaximumConcurrentWorkers"`
+	InteractiveIdleThreshold            Duration `yaml:"interactiveIdleThreshold"`
 }
 
 type Worker struct {
@@ -641,8 +647,17 @@ func (c Config) Validate() error {
 		if resources.WorkerMemoryBudget != 0 {
 			add(errors.New("resources.workerMemoryBudget: not defined by schemaVersion 1"))
 		}
+		if resources.InteractiveMaximumConcurrentWorkers != 0 || resources.InteractiveIdleThreshold.Duration != 0 {
+			add(errors.New("resources.interactiveMaximumConcurrentWorkers, interactiveIdleThreshold: not defined by schemaVersion 1"))
+		}
 	} else {
 		add(validatePercent("resources.memoryCapacityIncreaseMarginPercent", resources.MemoryCapacityIncreaseMarginPct, false))
+	}
+	if resources.InteractiveMaximumConcurrentWorkers < 0 || resources.InteractiveMaximumConcurrentWorkers > resources.MaximumConcurrentWorkers {
+		add(errors.New("resources.interactiveMaximumConcurrentWorkers: must be between 0 and maximumConcurrentWorkers"))
+	}
+	if resources.InteractiveMaximumConcurrentWorkers > 0 && resources.InteractiveIdleThreshold.Duration <= 0 {
+		add(errors.New("resources.interactiveIdleThreshold: required when interactiveMaximumConcurrentWorkers is set"))
 	}
 	add(validatePercent("resources.cpuBlockPercent", resources.CPUBlockPercent, false))
 	add(validatePercent("resources.cpuResumePercent", resources.CPUResumePercent, true))
