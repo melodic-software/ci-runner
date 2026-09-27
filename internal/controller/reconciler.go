@@ -938,11 +938,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		QuiesceReason: postPlan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
-		Problems: problems,
-		Controller: model.ControllerCost{
-			LastTickDurationSeconds: time.Duration(r.lastTickNanos.Load()).Seconds(),
-			ProcessCPUSeconds:       processCPUSeconds(),
-		},
+		Problems: problems, Controller: r.controllerCost(),
 	}
 	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))

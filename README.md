@@ -254,7 +254,9 @@ controller's PID, exact version, phase, shutdown state, and job counts under
 before committing an install transaction. `observed.controller` carries the
 controller's own cost: `lastTickDurationSeconds` (the previous reconcile tick's
 wall time) and `processCpuSeconds` (cumulative process CPU; diff two samples for
-a rate). Human `host status` prints both as `Controller cost`.
+a rate). Human `host status` prints both as `Controller cost`. Tick duration is
+wall time that includes the listener long poll, so `processCpuSeconds` deltas
+are the measure of controller cost.
 
 Mutable local state is separate:
 
