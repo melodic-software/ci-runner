@@ -301,3 +301,47 @@ test("peels nested annotated tags through exact Git object endpoints", async () 
   assert.equal(calls.length, 3);
   assert(calls.every((call) => call.authorization === "Bearer test-token"));
 });
+
+test("draft and publish requests rely on the existing tag instead of target_commitish", async () => {
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return response({id: 7});
+  };
+  const api = createGitHubAPI({token: "test-token", repository: "melodic-software/ci-runner", fetchImpl});
+  const input = releaseInput();
+
+  await api.createDraft(input);
+  await api.publishDraft(7, input);
+
+  assert.equal(bodies.length, 2);
+  for (const body of bodies) {
+    assert.equal(body.tag_name, input.tag);
+    assert.equal("target_commitish" in body, false);
+  }
+  assert.equal(bodies[0].body, `${input.marker}\n`);
+});
+
+test("API errors report method, path, status, message, and diagnostic headers without the token", async () => {
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({message: `Resource not accessible by integration ${"x".repeat(600)}`}), {
+      status: 403,
+      statusText: "Forbidden",
+      headers: {"x-github-request-id": "ABCD:1234", "x-ratelimit-remaining": "4999"},
+    });
+  const api = createGitHubAPI({token: "secret-token", repository: "melodic-software/ci-runner", fetchImpl});
+
+  const error = await api.createDraft(releaseInput()).then(
+    () => assert.fail("expected rejection"),
+    (rejection) => rejection,
+  );
+  assert.equal(error.name, "GitHubAPIError");
+  assert.equal(error.status, 403);
+  assert.match(error.message, /403 Forbidden/);
+  assert.match(error.message, /POST \/repos\/melodic-software\/ci-runner\/releases;/);
+  assert.match(error.message, /message: Resource not accessible by integration x+;/);
+  assert.match(error.message, /x-github-request-id: ABCD:1234/);
+  assert.match(error.message, /x-ratelimit-remaining: 4999/);
+  assert.doesNotMatch(error.message, /retry-after|secret-token/);
+  assert(error.message.length < 800);
+});

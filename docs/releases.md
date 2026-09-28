@@ -26,7 +26,9 @@ comment check on `actions-budget-monitor.yml` and has no release assets;
 the sync-managed `managed-files-guard.yml` and has no release assets;
 `v0.1.28` is reserved by a failed official-source dependency freshness check
 (hosted PowerShell 7.6.5 pinned past the 14-day window) and has no release
-assets.
+assets; `v0.1.29` is reserved by a failed release publication (`GITHUB_TOKEN`
+draft creation was refused because `main` gained a workflow change after
+tagging) and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
@@ -75,7 +77,10 @@ GitHub release, and only then promotes the same image index to both verified
 version/source tags. Publication explicitly creates a source-marked draft, reconciles its
 exact four assets by digest, and publishes it only after re-peeling the remote
 tag to the event source SHA. A cancelled run can resume that exact owned draft;
-ambiguous or foreign same-tag drafts fail closed. Lost responses after draft
+ambiguous or foreign same-tag drafts fail closed. The draft and publish requests
+omit `target_commitish`: GitHub ignores it when the tag already exists, and a
+target commit that differs from the default branch under `.github/workflows/`
+makes GitHub refuse the request for a `GITHUB_TOKEN`. Lost responses after draft
 creation, asset upload, and publication are covered by injected-failure tests.
 A rerun accepts an existing published destination only after proving the release
 is immutable, its asset set and checksums are exact, every asset and the worker

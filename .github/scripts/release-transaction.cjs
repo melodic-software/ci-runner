@@ -209,7 +209,22 @@ function createGitHubAPI(options) {
     });
     const text = await response.text();
     if (!response.ok) {
-      throw new GitHubAPIError(`GitHub API request failed (${response.status} ${response.statusText})`, response.status);
+      // Authorization is a request header; only these response headers are reported.
+      let detail = text;
+      try {
+        detail = JSON.parse(text).message ?? text;
+      } catch {}
+      const context = [
+        `${requestOptions.method || "GET"} ${new URL(url, apiURL).pathname}`,
+        `message: ${String(detail).slice(0, 500)}`,
+        ...["x-github-request-id", "retry-after", "x-ratelimit-remaining"]
+          .filter((name) => response.headers.get(name) !== null)
+          .map((name) => `${name}: ${response.headers.get(name)}`),
+      ];
+      throw new GitHubAPIError(
+        `GitHub API request failed (${response.status} ${response.statusText}; ${context.join("; ")})`,
+        response.status,
+      );
     }
     if (text.length === 0) {
       return null;
@@ -259,7 +274,6 @@ function createGitHubAPI(options) {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
           tag_name: input.tag,
-          target_commitish: input.sourceSHA,
           name: input.name,
           body: `${input.marker}\n`,
           draft: true,
@@ -288,7 +302,6 @@ function createGitHubAPI(options) {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
           tag_name: input.tag,
-          target_commitish: input.sourceSHA,
           name: input.name,
           draft: false,
           prerelease: input.prerelease,
