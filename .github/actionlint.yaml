@@ -5,3 +5,7 @@ paths:
     # requires the exact `queue: max` value; no other diagnostic is suppressed.
     ignore:
       - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/claude-review-hosted.yml:
+    # Synced from standards (claude-review-hosted-caller); same parser gap.
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
