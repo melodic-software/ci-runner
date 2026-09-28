@@ -417,6 +417,11 @@ func validateResourceSchemaSyntax(document *yaml.Node) error {
 		if present {
 			return errors.New("resources.memoryCapacityIncreaseMarginPercent is not defined by schemaVersion 1")
 		}
+		for _, key := range []string{"interactiveMaximumConcurrentWorkers", "interactiveIdleThreshold"} {
+			if _, found := yamlMappingValue(resources, key); found {
+				return fmt.Errorf("resources.%s is not defined by schemaVersion 1", key)
+			}
+		}
 	case SupportedSchemaVersion:
 		if !present || yamlNodeIsNull(dereferenceYAMLNode(margin)) {
 			return errors.New("resources.memoryCapacityIncreaseMarginPercent is required by schemaVersion 2")
