@@ -93,7 +93,7 @@ func (r *Reconciler) pollCheckpoint(
 		QuiesceReason: plan.QuiesceReason, Version: r.version,
 		Pools: observedPools, Workers: append([]model.Worker(nil), workers...), Resources: resources,
 		Power: power, Desktop: desktop, ResourceGate: plan.ResourceGate, PowerGate: plan.PowerGate,
-		Problems: problems, Controller: r.controllerCost(),
+		Problems: problems, Controller: r.controllerCost(), Presence: plan.Presence,
 	}
 }
 
@@ -186,7 +186,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				plan := BuildPlan(PlanInput{
 					Config: r.config, Desired: state.desired, Previous: checkpoint, CapacityHysteresis: state.advertised, Pools: state.pools,
 					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop,
-					EngineMemoryTotalBytes: state.engineMemoryTotal, Now: now,
+					EngineMemoryTotalBytes: state.engineMemoryTotal, InputIdle: r.readInputIdle(), Now: now,
 				})
 				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
 				checkpoint = r.pollCheckpoint(checkpoint, state.pools, state.workers, resources, power, state.desktop, plan, now, state.operationProblems)

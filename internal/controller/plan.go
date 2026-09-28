@@ -40,7 +40,10 @@ type PlanInput struct {
 	// VM promises memory the workers' kernel does not have, so the effective
 	// budget clamps to the probe.
 	EngineMemoryTotalBytes uint64
-	Now                    time.Time
+	// InputIdle is the age of the last keyboard or mouse input on the
+	// controller's session, or nil when the host cannot report it.
+	InputIdle *time.Duration
+	Now       time.Time
 }
 
 type StartDecision struct {
@@ -75,6 +78,7 @@ type Plan struct {
 	MemoryHeadroom   uint64
 	MemoryAffordable map[string]int
 	MemoryClamped    map[string]bool
+	Presence         model.Presence
 }
 
 // EffectiveMaximumConcurrentWorkers resolves the host-wide worker cap
@@ -91,6 +95,23 @@ func EffectiveMaximumConcurrentWorkers(resources config.Resources, desired model
 		return *desired.TemporaryCapacityOverride
 	}
 	return resources.MaximumConcurrentWorkers
+}
+
+// hostWorkerLimit is the cap BuildPlan enforces: EffectiveMaximumConcurrentWorkers, lowered to the
+// interactive cap while someone is using the host.
+func hostWorkerLimit(input PlanInput) int {
+	if interactiveCapActive(input) {
+		return input.Config.Resources.InteractiveMaximumConcurrentWorkers
+	}
+	return EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)
+}
+
+// interactiveCapActive holds the interactive cap until input has been idle for the threshold, so
+// short pauses do not flap it. A temporary override wins, and an unknown input age means unattended.
+func interactiveCapActive(input PlanInput) bool {
+	resources := input.Config.Resources
+	return resources.InteractiveMaximumConcurrentWorkers > 0 && input.Desired.TemporaryCapacityOverride == nil &&
+		input.InputIdle != nil && *input.InputIdle < resources.InteractiveIdleThreshold.Duration
 }
 
 // quiesce records why this plan drains. The first reason wins so a multi-pool reconcile
@@ -119,6 +140,11 @@ func BuildPlan(input PlanInput) Plan {
 	}
 	if input.Now.IsZero() {
 		input.Now = time.Now().UTC()
+	}
+	plan.Presence.InteractiveCapActive = interactiveCapActive(input)
+	if input.InputIdle != nil {
+		seconds := input.InputIdle.Seconds()
+		plan.Presence.InputIdleSeconds = &seconds
 	}
 
 	var resourceHealthy bool
@@ -233,7 +259,7 @@ func BuildPlan(input PlanInput) Plan {
 	}
 	targets := sortedTargetsByPriority(input.Config.GitHub.Targets)
 
-	hostLimit := EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)
+	hostLimit := hostWorkerLimit(input)
 	if hostLimit < 0 {
 		plan.Phase = model.PhaseDegraded
 		plan.Problems = append(plan.Problems, problem(input.Now, "invalid-capacity-override", "temporary capacity override must not be negative", "", false))
@@ -513,7 +539,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 	}
 	appendSafeRemovals(plan, workersByPool, known, reservations)
 
-	remaining := max(EffectiveMaximumConcurrentWorkers(input.Config.Resources, input.Desired)-activeWorkers, 0)
+	remaining := max(hostWorkerLimit(input)-activeWorkers, 0)
 	gate := evaluateMemoryBasis(input)
 	memoryRemaining := gate.remaining
 	// The static budget stays authoritative even for an invalid host observation; the legacy basis

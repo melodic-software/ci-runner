@@ -202,6 +202,7 @@ func TestStatusDisabledAndHealthyExitsZero(t *testing.T) {
 func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 	store := state.NewMemoryStore()
 	now := time.Now().UTC()
+	idleSeconds := 42.0
 	_ = store.SaveDesired(context.Background(), model.DesiredState{SchemaVersion: 1, Mode: model.ModeEnabled, UpdatedAt: now})
 	_ = store.SaveObserved(context.Background(), model.ObservedState{
 		SchemaVersion: 1,
@@ -212,6 +213,7 @@ func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 			{ID: "idle", PoolID: "org", Name: "worker-idle", State: model.WorkerIdle, StartedAt: now},
 		},
 		Controller: model.ControllerCost{LastTickDurationSeconds: 0.25, ProcessCPUSeconds: 12.5},
+		Presence:   model.Presence{InputIdleSeconds: &idleSeconds, InteractiveCapActive: true},
 	})
 	application, out, _ := newTestApplication(t, "", store, nil)
 	application.dependencies.Control = &fakeControllerControl{statuses: []control.Status{
@@ -224,6 +226,7 @@ func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 		`"schemaVersion": 1`, `"controllerAvailable": true`, `"activeJobCount": 1`,
 		`"workerId": "busy"`, `"pid": 4242`, `"version": "1.2.3"`,
 		`"lastTickDurationSeconds": 0.25`, `"processCpuSeconds": 12.5`,
+		`"inputIdleSeconds": 42`, `"interactiveCapActive": true`,
 	} {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("status JSON missing %s: %s", expected, out.String())
@@ -235,6 +238,9 @@ func TestStatusJSONExposesStableBusyWorkContract(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Controller cost: last tick 0.250s, process CPU 12.5s") {
 		t.Fatalf("status text missing controller cost: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "Presence: input idle 42s, interactive cap active=true") {
+		t.Fatalf("status text missing presence: %s", out.String())
 	}
 }
 

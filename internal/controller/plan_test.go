@@ -885,6 +885,50 @@ func TestEffectiveMaximumConcurrentWorkersPrefersOverride(t *testing.T) {
 	}
 }
 
+func TestInteractiveCapFollowsInputIdle(t *testing.T) {
+	t.Parallel()
+	idle := func(d time.Duration) *time.Duration { return &d }
+	two := 2
+	tests := map[string]struct {
+		inputIdle *time.Duration
+		override  *int
+		want      int
+		active    bool
+	}{
+		"present":                  {inputIdle: idle(time.Minute), want: 1, active: true},
+		"brief pause holds cap":    {inputIdle: idle(5*time.Minute - time.Second), want: 1, active: true},
+		"idle past threshold":      {inputIdle: idle(5 * time.Minute), want: 3},
+		"presence unavailable":     {want: 3},
+		"override wins over cap":   {inputIdle: idle(time.Minute), override: &two, want: 2},
+		"assignments gated closed": {inputIdle: idle(time.Minute), want: 1, active: true},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := healthyInput()
+			input.Config.Resources.InteractiveMaximumConcurrentWorkers = 1
+			input.Config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
+			input.InputIdle = test.inputIdle
+			input.Desired.TemporaryCapacityOverride = test.override
+			input.Pools[0].TotalAssignedJobs = 3
+			if name == "assignments gated closed" {
+				input.Pools[0].DrainServiceCapacity = 3
+				input.Resources = model.ResourceSnapshot{}
+			}
+			plan := BuildPlan(input)
+			if got := totalStarts(plan.Start); got != test.want {
+				t.Fatalf("starts = %d, want %d", got, test.want)
+			}
+			if plan.Presence.InteractiveCapActive != test.active {
+				t.Fatalf("interactive cap active = %t, want %t", plan.Presence.InteractiveCapActive, test.active)
+			}
+			if (plan.Presence.InputIdleSeconds == nil) != (test.inputIdle == nil) {
+				t.Fatalf("input idle seconds = %v, want reported iff observed", plan.Presence.InputIdleSeconds)
+			}
+		})
+	}
+}
+
 func TestUnavailablePoolFailsClosedLocally(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()

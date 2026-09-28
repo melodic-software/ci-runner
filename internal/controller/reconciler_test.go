@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -43,6 +44,37 @@ func TestReconcilerCreatesOneWarmWorkerAndAdvertisesFullServiceCapacity(t *testi
 		}
 	}
 }
+
+func TestReconcilerAppliesInteractiveCapWhilePresent(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.InteractiveMaximumConcurrentWorkers = 1
+	harness.controller.config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
+	harness.controller.deps.Presence = newPresence(time.Minute)
+	result, err := harness.controller.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	presence := result.Observed.Presence
+	if !presence.InteractiveCapActive || presence.InputIdleSeconds == nil || *presence.InputIdleSeconds != 60 {
+		t.Fatalf("presence = %+v, want interactive cap active at 60s idle", presence)
+	}
+	for _, call := range harness.scaleSets.SnapshotCalls() {
+		if call.Operation == "statistics" && call.MaxCapacity != 1 {
+			t.Fatalf("listener poll maxCapacity = %d, want interactive cap 1", call.MaxCapacity)
+		}
+	}
+}
+
+type presence struct{ idle atomic.Int64 }
+
+func newPresence(idle time.Duration) *presence {
+	p := &presence{}
+	p.idle.Store(int64(idle))
+	return p
+}
+
+func (p *presence) InputIdle() (time.Duration, error) { return time.Duration(p.idle.Load()), nil }
 
 func TestReconcilerPublishesPreviousTickCost(t *testing.T) {
 	t.Parallel()

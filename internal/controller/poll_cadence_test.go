@@ -64,6 +64,37 @@ func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	})
 }
 
+func TestReturningUserWithdrawsCapacityFromOpenLongPoll(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	harness.controller.config.Resources.InteractiveMaximumConcurrentWorkers = 1
+	harness.controller.config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
+	presence := newPresence(time.Hour)
+	harness.controller.deps.Presence = presence
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan ReconcileResult, 1)
+	go func() {
+		result, _ := harness.controller.Step(context.Background())
+		done <- result
+	}()
+	waitForSignal(t, blocking.entered, "unattended listener poll did not begin")
+	presence.idle.Store(int64(time.Second))
+
+	select {
+	case result := <-done:
+		if !result.Observed.Presence.InteractiveCapActive {
+			t.Fatalf("interactive cap not active after the user returned: %#v", result.Observed.Presence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("returning user did not restart the listener poll")
+	}
+	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 1]" {
+		t.Fatalf("advertised capacities = %v, want [3 1]", got)
+	}
+}
+
 func TestPowerRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
