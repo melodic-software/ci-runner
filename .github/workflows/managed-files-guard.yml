@@ -23,8 +23,8 @@ name: managed-files-guard
 #
 # Hosted-only shape: `runs-on` names the approved hosted label directly, so the
 # same bytes serve public and un-enrolled private targets. A private target
-# enrolled for local CI routing needs a sibling that names the managed fleet
-# label instead (see the component README) and is not a consumer of this file.
+# enrolled for local CI routing takes the fleet-routed sibling,
+# components/managed-files-guard/managed-files-guard-fleet.yml, instead.
 
 on:
   pull_request:
@@ -60,7 +60,7 @@ jobs:
         # now contains that commit, so the pin-comment takes the convention's
         # release-tag form rather than the short-SHA fallback
         # (components/managed-files-guard/README.md).
-        uses: melodic-software/ci-workflows/.github/actions/managed-files-guard@0d3e6a6f3851cf678f82fa9a8a17f10faa909ac9 # v0.29.1
+        uses: melodic-software/ci-workflows/.github/actions/managed-files-guard@35880dcbb2f174aac90159e276dc7eddf1bc20b9 # v0.30.1
         with:
           # `main` for the soak, per the action's own input contract ("Pin to
           # a full SHA in callers once soak completes"): the guard must read
