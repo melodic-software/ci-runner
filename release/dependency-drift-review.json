@@ -1,31 +1,31 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-09-27T23:25:00.0000000Z",
+  "reviewedAt": "2026-09-28T00:00:00.0000000Z",
   "issue": null,
-  "cycle": "2026-09-27",
+  "cycle": "2026-09-28",
   "held": [],
   "bumped": [
     {
-      "dependency": "github-hosted-powershell",
-      "from": "7.6.5",
-      "to": "7.6.6",
-      "reviewedAt": "2026-09-27T23:25:00.0000000Z",
-      "cycle": "2026-09-27",
+      "dependency": "docker/setup-buildx-action",
+      "from": "4.4.0",
+      "to": "4.4.1",
+      "reviewedAt": "2026-09-28T00:00:00.0000000Z",
+      "cycle": "2026-09-28",
       "decision": "bump",
-      "rationale": "Release-gate drain after v0.1.28 failed the freshness gate (run 36358282441). PowerShell tracks GitHub's Ubuntu 24.04 hosted-image manifest; actions/runner-images c9dd57c6b6333892b46abcc439ba0676fd03867a (2026-09-25, https://github.com/actions/runner-images/blob/c9dd57c6b6333892b46abcc439ba0676fd03867a/images/ubuntu/Ubuntu2404-Readme.md) lists PowerShell 7.6.6, and v7.6.6 (2026-09-08) passed the 14-day hard fail. The powershell-7.6.6-linux-x64.tar.gz checksum ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc matches the GitHub release asset digest, the SHA256 list in the release notes, and an independent download hash. The v7.6.6 notes are a servicing patch (a Windows FileOnlyEntry crash fix, the WLDP EnableFileOnlyEntry setting, .NET SDK 10.0.401) with no security advisory or documented breaking change.",
-      "requiresFleetRollout": true,
-      "rolloutNote": "PowerShell is baked into the worker image (Dockerfile POWERSHELL_VERSION / POWERSHELL_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
+      "rationale": "Release-gate drain before the 14-day hard fail. v4.4.1 (2026-09-16) is a patch that skips BuildKit image pre-pulls for explicit endpoints (docker/setup-buildx-action#624; compare v4.4.0...v4.4.1). Commit f87e5991a6d7451dcb8d9637bfbc97413f497069 is the tag's commit via the GitHub git ref API. No security advisory or breaking change.",
+      "requiresFleetRollout": false,
+      "rolloutNote": "CI/release-workflow tooling only; not baked into the worker image, so no fleet rollout."
     },
     {
-      "dependency": "github-hosted-gh",
-      "from": "2.100.0",
-      "to": "2.101.0",
-      "reviewedAt": "2026-09-27T23:25:00.0000000Z",
-      "cycle": "2026-09-27",
+      "dependency": "syft",
+      "from": "1.51.1",
+      "to": "1.52.0",
+      "reviewedAt": "2026-09-28T00:00:00.0000000Z",
+      "cycle": "2026-09-28",
       "decision": "bump",
-      "rationale": "Drained ahead of its hard fail: v2.101.0 (2026-09-15) was 12 days into the 14-day window, and the same manifest, actions/runner-images c9dd57c6b6333892b46abcc439ba0676fd03867a, lists GitHub CLI 2.101.0. The gh_2.101.0_linux_amd64.tar.gz checksum 9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8 matches the GitHub release asset digest, gh_2.101.0_checksums.txt, and an independent download hash. The v2.101.0 notes carry no security advisory; the auth-flow clipboard default and the APT/RPM signing-key rotation do not affect the release-archive install in the worker image.",
-      "requiresFleetRollout": true,
-      "rolloutNote": "The GitHub CLI is baked into the worker image (Dockerfile GH_VERSION / GH_SHA256) and is a compatibility-pair input. Promotion requires a new reviewed compatibility pair and the provisioning rolling-upgrade runbook, not a merge alone."
+      "rationale": "Release-gate drain before the 14-day hard fail. v1.52.0 (2026-09-17, https://github.com/anchore/syft/releases/tag/v1.52.0). The pinned image ghcr.io/anchore/syft:v1.52.0 index digest sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02 comes from docker buildx imagetools inspect of the official image.",
+      "requiresFleetRollout": false,
+      "rolloutNote": "CI/release-workflow tooling only; not baked into the worker image, so no fleet rollout."
     }
   ]
 }

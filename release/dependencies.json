@@ -67,10 +67,10 @@
     "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.30.1"
   },
   "syft": {
-    "version": "1.51.1",
-    "image": "ghcr.io/anchore/syft:v1.51.1",
-    "digest": "sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c",
-    "source": "https://github.com/anchore/syft/releases/tag/v1.51.1"
+    "version": "1.52.0",
+    "image": "ghcr.io/anchore/syft:v1.52.0",
+    "digest": "sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02",
+    "source": "https://github.com/anchore/syft/releases/tag/v1.52.0"
   },
   "githubActions": [
     {
@@ -115,8 +115,8 @@
     },
     {
       "repository": "docker/setup-buildx-action",
-      "version": "4.4.0",
-      "commit": "594f3bf4285d9ea8dc53c9a0c9c4092420091003"
+      "version": "4.4.1",
+      "commit": "f87e5991a6d7451dcb8d9637bfbc97413f497069"
     },
     {
       "repository": "zizmorcore/zizmor-action",
