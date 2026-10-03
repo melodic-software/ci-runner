@@ -60,3 +60,17 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
 The extensive repo-hygiene lanes in `ci.yml` (markdown, shellcheck, shfmt,
 typos, editorconfig, actionlint, zizmor, worker-image, etc.) run through
 external reusable workflows and are not needed for local Go development.
+
+## Code Review Rules
+
+Each line names a rule CI does not enforce; the linked file states it in full.
+
+- Org-wide criteria: [`REVIEW.md`](https://github.com/melodic-software/standards/blob/main/REVIEW.md) in `melodic-software/standards`.
+- Workers get no host mount, Docker socket, host credential or JIT payload outside the container, and always carry resource limits:
+  [worker invariants](docs/worker-image.md#mandatory-runtime-invariants).
+- Releases deploy by exact digest, tags are write-once, rollback never retags, and package write access stays on the publication job:
+  [release output](docs/releases.md#release-output).
+- Controller, runner, image, toolchain and Action pin bumps are never auto-merged, and a held cross-repository pin is recorded in the drift review:
+  [freshness policy](docs/releases.md#freshness-policy).
+- Telemetry attributes carry no runner name, container ID, job ID or secret ID, and collector credentials never reach logs, state or workers:
+  [resource identity](docs/observability.md#resource-identity).
