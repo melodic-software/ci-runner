@@ -96,8 +96,7 @@ A rerun changes nothing about placement: there is no selector verdict to
 recompute, so **Re-run all jobs** and a failed-job rerun are equivalent as far
 as routing is concerned. Do not re-run a stale run on a superseded head SHA in a
 pull request whose concurrency group key does not vary with the head; that
-hazard is unrelated to routing and is recorded in github-iac
-`docs/topics/ci-perf/POSTURE.md` under "Stale re-runs". A `workflow_dispatch`
+hazard is unrelated to routing. A `workflow_dispatch`
 still creates a separate run with different event and ref context and does not
 recover the original pull-request check. GitHub documents the distinct
 [full and partial rerun
