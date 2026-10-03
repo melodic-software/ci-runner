@@ -60,3 +60,13 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
 The extensive repo-hygiene lanes in `ci.yml` (markdown, shellcheck, shfmt,
 typos, editorconfig, actionlint, zizmor, worker-image, etc.) run through
 external reusable workflows and are not needed for local Go development.
+
+## Code Review Rules
+
+Each line names a rule CI does not enforce; the linked file states it in full.
+
+- Org-wide criteria: [`REVIEW.md`](https://github.com/melodic-software/standards/blob/main/REVIEW.md) in `melodic-software/standards`.
+- Worker runtime invariants: [rule](docs/worker-image.md#mandatory-runtime-invariants).
+- Release output (digest deploys, write-once tags): [rule](docs/releases.md#release-output).
+- Freshness policy: [rule](docs/releases.md#freshness-policy).
+- Telemetry resource identity: [rule](docs/observability.md#resource-identity).
