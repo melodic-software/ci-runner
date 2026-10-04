@@ -218,7 +218,7 @@ foreach ($match in $setupBuildxMatches) {
         throw 'setup-buildx must not download or execute a version before checksum verification'
     }
 }
-$releaseWorkflow = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot '.github\workflows\release.yml')
+$releaseWorkflow = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot '.github\workflows\release-publish-image.yml')
 $releaseTransaction = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot '.github\scripts\release-transaction.cjs')
 $publishEvidenceMatch = [regex]::Match(
     $releaseWorkflow,

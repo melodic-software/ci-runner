@@ -1,4 +1,4 @@
-name: Release
+name: release-publish-image
 
 on:
   push:
@@ -421,14 +421,14 @@ jobs:
             gh release verify-asset "$RELEASE_VERSION" "$asset" --repo "$GITHUB_REPOSITORY"
             gh attestation verify "$asset" \
               --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-publish-image.yml" \
               --source-ref "$GITHUB_REF" \
               --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
           gh attestation verify "oci://ghcr.io/$GITHUB_REPOSITORY@$WORKER_DIGEST" \
             --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-publish-image.yml" \
             --source-ref "$GITHUB_REF" \
             --source-digest "$GITHUB_SHA" \
             --deny-self-hosted-runners

@@ -18,24 +18,25 @@ const advisoryReference =
 // fails here. It is deliberately independent of the pin: a Dependabot bump
 // moves every SHA and leaves this inventory untouched, so the bump stays green.
 const expectedCiWorkflowsCallers = [
-  ["ci.yml", ".github/actions/actionlint"],
-  ["ci.yml", ".github/actions/check-jsonschema"],
-  ["ci.yml", ".github/actions/check-jsonschema"],
-  ["ci.yml", ".github/actions/ci-status"],
-  ["ci.yml", ".github/actions/comment-hygiene"],
-  ["ci.yml", ".github/actions/editorconfig"],
-  ["ci.yml", ".github/actions/eol-renormalize"],
-  ["ci.yml", ".github/actions/exec-bit"],
-  ["ci.yml", ".github/actions/gitleaks"],
-  ["ci.yml", ".github/actions/lychee-offline"],
-  ["ci.yml", ".github/actions/machine-specific-paths"],
-  ["ci.yml", ".github/actions/markdown"],
-  ["ci.yml", ".github/actions/pr-contract"],
-  ["ci.yml", ".github/actions/shellcheck"],
-  ["ci.yml", ".github/actions/shfmt"],
-  ["ci.yml", ".github/actions/typos"],
-  ["ci.yml", ".github/workflows/go-quality.yml"],
-  ["ci.yml", ".github/workflows/zizmor.yml"],
+  ["pr-automerge-dependabot.yml", ".github/workflows/pr-automerge-dependabot.yml"],
+  ["pr-require-checks.yml", ".github/actions/actionlint"],
+  ["pr-require-checks.yml", ".github/actions/check-comment-markers"],
+  ["pr-require-checks.yml", ".github/actions/check-exec-bit"],
+  ["pr-require-checks.yml", ".github/actions/check-jsonschema"],
+  ["pr-require-checks.yml", ".github/actions/check-jsonschema"],
+  ["pr-require-checks.yml", ".github/actions/check-line-endings"],
+  ["pr-require-checks.yml", ".github/actions/check-machine-paths"],
+  ["pr-require-checks.yml", ".github/actions/editorconfig-checker"],
+  ["pr-require-checks.yml", ".github/actions/gitleaks"],
+  ["pr-require-checks.yml", ".github/actions/lychee-offline"],
+  ["pr-require-checks.yml", ".github/actions/markdownlint"],
+  ["pr-require-checks.yml", ".github/actions/pr-require-checks/aggregate-results"],
+  ["pr-require-checks.yml", ".github/actions/pr-require-checks/check-contract"],
+  ["pr-require-checks.yml", ".github/actions/shellcheck"],
+  ["pr-require-checks.yml", ".github/actions/shfmt"],
+  ["pr-require-checks.yml", ".github/actions/typos"],
+  ["pr-require-checks.yml", ".github/workflows/pr-audit-workflows.yml"],
+  ["pr-require-checks.yml", ".github/workflows/pr-run-checks-go.yml"],
 ];
 
 function workflowSource(name) {
@@ -177,12 +178,12 @@ test("ci-workflows references use a full SHA with one release version", () => {
   ciWorkflowsPin();
 });
 
-test("go-quality uses the exact reusable caller contract", () => {
+test("pr-run-checks-go uses the exact reusable caller contract", () => {
   const { sha, version } = ciWorkflowsPin();
-  const block = jobBlock(workflowSource("ci.yml"), "go-quality");
+  const block = jobBlock(workflowSource("pr-require-checks.yml"), "pr-run-checks-go");
 
   // `if` is admitted because the required-check contract gates every lane job
-  // on the contract-only predicate, go-quality included: a `labeled`,
+  // on the contract-only predicate, pr-run-checks-go included: a `labeled`,
   // `unlabeled` or `edited` event cannot change any Go result, so the lane is
   // skipped and ci-status carries the recorded `ci-lanes` verdict forward. The
   // predicate is asserted below so the caller cannot smuggle in an arbitrary
@@ -190,21 +191,21 @@ test("go-quality uses the exact reusable caller contract", () => {
   assert.deepEqual(
     directMappingKeys(block),
     ["if", "permissions", "uses", "with"],
-    "go-quality must not add a runner, caller secrets, or undeclared inputs",
+    "pr-run-checks-go must not add a runner, caller secrets, or undeclared inputs",
   );
   assert.ok(
     block.includes(
       "    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('[\"labeled\",\"unlabeled\"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}",
     ),
-    "go-quality's only condition is the contract-only gate",
+    "pr-run-checks-go's only condition is the contract-only gate",
   );
   assert.deepEqual(nestedMapping(block, "permissions"), { contents: "read" });
   assert.deepEqual(nestedMapping(block, "with"), { config: ".golangci.yml" });
   assert.ok(
     block.includes(
-      `    uses: melodic-software/ci-workflows/.github/workflows/go-quality.yml@${sha} # ${version}`,
+      `    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@${sha} # ${version}`,
     ),
-    "go-quality must call the exact released reusable workflow every other reference names",
+    "pr-run-checks-go must call the exact released reusable workflow every other reference names",
   );
 });
 
@@ -228,11 +229,11 @@ test("release metadata tracks the same ci-workflows release", () => {
 });
 
 test("local Go jobs do not duplicate reusable quality checks", () => {
-  const source = workflowSource("ci.yml");
+  const source = workflowSource("pr-require-checks.yml");
   assert.doesNotMatch(source, /^ {2}go:\s*$/mu);
   assert.doesNotMatch(source, /^ {2}go-windows:\s*$/mu);
 
-  const crossBuild = jobBlock(source, "go-windows-build").join("\n");
+  const crossBuild = jobBlock(source, "build-go-windows").join("\n");
   assert.match(crossBuild, /^ {4}runs-on: ubuntu-24\.04$/mu);
   assert.match(crossBuild, /^ {10}GOOS: windows$/mu);
   assert.equal((crossBuild.match(/^ {10}go build /gmu) ?? []).length, 2);
@@ -240,7 +241,7 @@ test("local Go jobs do not duplicate reusable quality checks", () => {
     assert.ok(!crossBuild.includes(duplicate), `cross-build must not duplicate ${duplicate}`);
   }
 
-  const fuzz = jobBlock(source, "go-fuzz").join("\n");
+  const fuzz = jobBlock(source, "fuzz-go").join("\n");
   assert.match(
     fuzz,
     /^ {4}if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'$/mu,
@@ -249,28 +250,28 @@ test("local Go jobs do not duplicate reusable quality checks", () => {
 });
 
 test("ci-status is the stable gateway for every Go lane", () => {
-  const block = jobBlock(workflowSource("ci.yml"), "ci-status");
+  const block = jobBlock(workflowSource("pr-require-checks.yml"), "ci-status");
   const expectedNeeds = [
-    "markdown",
+    "markdownlint",
     "shellcheck",
     "shfmt",
     "typos",
-    "editorconfig",
+    "editorconfig-checker",
     "gitleaks",
     "lychee",
-    "comment-hygiene",
+    "check-comment-markers",
     "actionlint",
     "jsonschema",
-    "exec-bit",
-    "machine-specific-paths",
-    "eol-renormalize",
-    "zizmor",
-    "policy",
-    "go-quality",
-    "go-windows-build",
-    "go-fuzz",
-    "worker-image",
-    "dependency-review",
+    "check-exec-bit",
+    "check-machine-paths",
+    "check-line-endings",
+    "pr-audit-workflows",
+    "test-policy-contracts",
+    "pr-run-checks-go",
+    "build-go-windows",
+    "fuzz-go",
+    "build-worker-image",
+    "review-dependencies",
   ];
   assert.deepEqual(directList(block, "needs"), expectedNeeds);
 

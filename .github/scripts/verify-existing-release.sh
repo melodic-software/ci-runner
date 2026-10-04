@@ -99,7 +99,7 @@ version_symbol='github.com/melodic-software/ci-runner/internal/buildinfo.Version
 go run -trimpath -ldflags="-X ${version_symbol}=${version}" ./cmd/ci-runner \
   release validate --manifest "$(realpath "$manifest")" --version "$version" >/dev/null
 
-signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+signer="$GITHUB_REPOSITORY/.github/workflows/release-publish-image.yml"
 for asset in "${expected[@]}"; do
   gh attestation verify "dist/$asset" \
     --repo "$GITHUB_REPOSITORY" \

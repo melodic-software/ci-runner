@@ -8,7 +8,7 @@ updates:
       time: '05:20'
       timezone: America/New_York
     cooldown:
-      default-days: 7
+      default-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
@@ -31,7 +31,7 @@ updates:
       time: '05:30'
       timezone: America/New_York
     cooldown:
-      default-days: 7
+      default-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
@@ -48,22 +48,25 @@ updates:
       time: '05:40'
       timezone: America/New_York
     cooldown:
-      default-days: 7
+      default-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
+    # Every melodic-software/ci-workflows ref (reusable workflows and composite
+    # actions) moves only through deliberate reviewed PRs, so all of them are
+    # ignored here.
     ignore:
-      # The runner-policy allowlist pins ci-workflows reusable-workflow refs to
-      # independently reviewed SHAs, so a Dependabot bump to an unreviewed main
-      # commit can only fail the Runner policy lane. Those pins move through
-      # deliberate reviewed PRs after a standards allowlist update. Composite
-      # actions (melodic-software/ci-workflows/.github/actions/*) are not
-      # SHA-allowlisted and stay Dependabot-managed.
-      # Pattern source: melodic-software/standards PR #102.
-      - dependency-name: "melodic-software/ci-workflows/.github/workflows/*"
-      # The GitHub Actions conventions rename migrates this repo's ci-workflows pins deliberately. Until then this also pauses composite-action bumps, overriding the policy above; remove this ignore at that migration.
       - dependency-name: "melodic-software/ci-workflows/*"
+    # The `vendor-actions` group (non-major only) is the auto-merge lane armed
+    # by pr-automerge-dependabot.yml; a dependency joins the first group that
+    # matches it, so majors fall through to the reviewed `github-actions` group.
     groups:
+      vendor-actions:
+        patterns:
+          - actions/*
+          - github/*
+          - anthropics/*
+        update-types: [minor, patch]
       github-actions:
         patterns:
           - '*'

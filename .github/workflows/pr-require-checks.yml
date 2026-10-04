@@ -1,4 +1,4 @@
-name: ci
+name: pr-require-checks
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
     # check has to re-evaluate. Whether such an event is CONTRACT-ONLY (lanes
     # gated off, ci-status carrying the recorded `ci-lanes` verdict forward) is
     # decided by one predicate, repeated verbatim in `concurrency.group` and in
-    # every job's `if:` except `ci-status` and `go-fuzz`:
+    # every job's `if:` except `ci-status` and `fuzz-go`:
     #
     #   github.event.pull_request.head.repo.full_name == github.repository &&
     #   (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
@@ -20,7 +20,7 @@ on:
     # pull request is never contract-only — its token is read-only on
     # `pull_request` whatever `permissions:` requests, so it cannot record lane
     # state — and runs the full workflow on every event exactly as before.
-    # `go-fuzz` is left ungated because its own condition already restricts it
+    # `fuzz-go` is left ungated because its own condition already restricts it
     # to `schedule` and `workflow_dispatch`, and the predicate is true only on
     # `pull_request`, so the gate would be a no-op there.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
@@ -57,7 +57,7 @@ permissions:
 #
 # The cost of the branch: a contract-only run no longer queues behind the full
 # run whose `ci-lanes` status it carries forward, so the two race. The
-# `ci-status` composite closes that with a bounded wait on EARLIER incomplete
+# `aggregate-results` composite closes that with a bounded wait on EARLIER incomplete
 # runs on the same head SHA; see `carry-forward-wait-seconds` on the job below.
 #
 # One hazard the branch does not remove, because no concurrency setting both
@@ -76,7 +76,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  markdown:
+  markdownlint:
     name: Markdown
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -87,7 +87,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdown@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/markdownlint@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -102,7 +102,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           rcfile: .shellcheckrc
 
@@ -117,7 +117,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
 
   typos:
     name: Spelling
@@ -130,11 +130,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/typos@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           config: _typos.toml
 
-  editorconfig:
+  editorconfig-checker:
     name: EditorConfig
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -145,7 +145,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           config: .editorconfig-checker.json
 
@@ -161,7 +161,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           config: .gitleaks.toml
 
@@ -176,11 +176,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           config: lychee.toml
 
-  comment-hygiene:
+  check-comment-markers:
     name: Comment hygiene
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -191,7 +191,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@69e506b7c119517ef1dfc421479232b386b93a52 # v0.35.0
 
   actionlint:
     name: Actionlint
@@ -204,7 +204,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
 
   jsonschema:
     name: JSON schemas
@@ -217,17 +217,17 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
 
-  exec-bit:
+  check-exec-bit:
     name: Executable bits
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -238,9 +238,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
 
-  machine-specific-paths:
+  check-machine-paths:
     name: Machine-specific paths
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -251,7 +251,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@69e506b7c119517ef1dfc421479232b386b93a52 # v0.35.0
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
@@ -263,7 +263,7 @@ jobs:
             :(exclude)worker/entrypoint.sh
             :(exclude)worker/set-state.sh
 
-  eol-renormalize:
+  check-line-endings:
     name: EOL normalization
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -274,23 +274,23 @@ jobs:
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
 
-  zizmor:
+  pr-audit-workflows:
     name: Zizmor
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read # Reusable advisory audit reads the checked-in workflow graph.
-      # Reusable zizmor.yml always declares security-events: write (expressions
+      # Reusable pr-audit-workflows.yml always declares security-events: write (expressions
       # are illegal in that scope). Callers must grant it too — reusable
       # workflows cannot elevate. Lane stays annotations-only
       # (upload-sarif defaults false); grant write so the job can start.
       security-events: write # Mandatory match for the reusable's own grant; see above.
-    uses: melodic-software/ci-workflows/.github/workflows/zizmor.yml@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+    uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
     with:
       paths: .
 
-  policy:
+  test-policy-contracts:
     name: Product policy
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -316,15 +316,15 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-ReleasePins.ps1
 
-  go-quality:
+  pr-run-checks-go:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: melodic-software/ci-workflows/.github/workflows/go-quality.yml@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
     with:
       config: .golangci.yml
 
-  go-windows-build:
+  build-go-windows:
     name: Go Windows builds
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -348,7 +348,7 @@ jobs:
           go build -trimpath -o /tmp/ci-runner.exe ./cmd/ci-runner
           go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
 
-  go-fuzz:
+  fuzz-go:
     name: Go fuzz
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -411,7 +411,7 @@ jobs:
           echo "Docker archive fuzz outcome: $DOCKER_ARCHIVE_OUTCOME"
           exit 1
 
-  worker-image:
+  build-worker-image:
     name: Worker image
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -444,7 +444,7 @@ jobs:
       - name: Verify worker image contract
         run: ./scripts/verify-worker-image.sh ci-runner-worker:test
 
-  dependency-review:
+  review-dependencies:
     name: Dependency review
     if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
@@ -459,26 +459,26 @@ jobs:
     name: ci-status
     if: always()
     needs:
-      - markdown
+      - markdownlint
       - shellcheck
       - shfmt
       - typos
-      - editorconfig
+      - editorconfig-checker
       - gitleaks
       - lychee
-      - comment-hygiene
+      - check-comment-markers
       - actionlint
       - jsonschema
-      - exec-bit
-      - machine-specific-paths
-      - eol-renormalize
-      - zizmor
-      - policy
-      - go-quality
-      - go-windows-build
-      - go-fuzz
-      - worker-image
-      - dependency-review
+      - check-exec-bit
+      - check-machine-paths
+      - check-line-endings
+      - pr-audit-workflows
+      - test-policy-contracts
+      - pr-run-checks-go
+      - build-go-windows
+      - fuzz-go
+      - build-worker-image
+      - review-dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -488,14 +488,14 @@ jobs:
       # permissions block the default is none, so the Actions reads would 403
       # and the composite would degrade to the unwaited status read.
       actions: read # Lists in-flight sibling runs for the carry-forward wait.
-      # pr-contract upserts the advisory linkage comment and moves the linkage
+      # check-contract upserts the advisory linkage comment and moves the linkage
       # label; ci-status records the `ci-lanes` commit status the carry-forward
       # branch reads back on the next contract-only event.
       pull-requests: write # Advisory linkage comment and label writes.
       statuses: write # Records and reads back the `ci-lanes` commit status.
     steps:
       - name: Check the pull-request contract
-        uses: melodic-software/ci-workflows/.github/actions/pr-contract@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           token: ${{ github.token }}
           # Dependabot and the standards sync open pull requests that close no
@@ -507,33 +507,33 @@ jobs:
           # skipped.
           exempt-authors: 'dependabot[bot],melodic-standards-sync[bot]'
       - name: Aggregate lane results
-        # `!cancelled()` so a failing pr-contract step does not skip the
+        # `!cancelled()` so a failing check-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
         # the `ci-lanes` status is on the SHA for the next contract-only run.
         if: ${{ !cancelled() }}
-        uses: melodic-software/ci-workflows/.github/actions/ci-status@4610c31e92eb1c4b24981e2f200ac87bdb2a1753 # v0.27.1
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
         with:
           results: >-
-            ${{ needs.markdown.result }}
+            ${{ needs.markdownlint.result }}
             ${{ needs.shellcheck.result }}
             ${{ needs.shfmt.result }}
             ${{ needs.typos.result }}
-            ${{ needs.editorconfig.result }}
+            ${{ needs.editorconfig-checker.result }}
             ${{ needs.gitleaks.result }}
             ${{ needs.lychee.result }}
-            ${{ needs.comment-hygiene.result }}
+            ${{ needs.check-comment-markers.result }}
             ${{ needs.actionlint.result }}
             ${{ needs.jsonschema.result }}
-            ${{ needs.exec-bit.result }}
-            ${{ needs.machine-specific-paths.result }}
-            ${{ needs.eol-renormalize.result }}
-            ${{ needs.zizmor.result }}
-            ${{ needs.policy.result }}
-            ${{ needs.go-quality.result }}
-            ${{ needs.go-windows-build.result }}
-            ${{ needs.go-fuzz.result }}
-            ${{ needs.worker-image.result }}
-            ${{ needs.dependency-review.result }}
+            ${{ needs.check-exec-bit.result }}
+            ${{ needs.check-machine-paths.result }}
+            ${{ needs.check-line-endings.result }}
+            ${{ needs.pr-audit-workflows.result }}
+            ${{ needs.test-policy-contracts.result }}
+            ${{ needs.pr-run-checks-go.result }}
+            ${{ needs.build-go-windows.result }}
+            ${{ needs.fuzz-go.result }}
+            ${{ needs.build-worker-image.result }}
+            ${{ needs.review-dependencies.result }}
           treat-skipped-as: pass
           # Contract-only runs no longer queue behind the full run whose
           # `ci-lanes` status they read, so each poll lists any in-flight
