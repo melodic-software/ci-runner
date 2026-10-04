@@ -378,7 +378,10 @@ interactive cap applies until input has been idle for the threshold, which also
 keeps short pauses from flapping it. A temporary capacity override wins over
 it, lowering the cap never stops running jobs, and a host that cannot report
 input keeps the full cap. Omit both fields (schema version 2 only) to turn the
-feature off; there is no zero "pause while present" value. On melo-lap-001, 8
+feature off; there is no zero "pause while present" value. Each change of cap
+state writes an `interactive-cap-activated` or `interactive-cap-deactivated`
+line to the controller log, so cap-active intervals can be rebuilt after the
+fact. On melo-lap-001, 8
 is a starting value (judgment, from the #391 replay).
 
 Listener capacity uses a per-pool memory Schmitt trigger. A decrease crosses the

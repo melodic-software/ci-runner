@@ -9,13 +9,14 @@ import (
 	"testing/synctest"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	"github.com/melodic-software/ci-runner/internal/telemetry"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestResourceRecoveryInterruptsLongPollAtReconcileCadence(t *testing.T) {
@@ -170,6 +171,45 @@ func TestInvalidResourceObservationCancelsNonzeroPollAndPreservesRacingAssignmen
 	}
 	if got := blocking.capacitiesSnapshot(); fmt.Sprint(got) != "[3 0]" {
 		t.Fatalf("advertised capacities = %v, want [3 0]", got)
+	}
+}
+
+func TestPollCadenceLogsInteractiveCapActivationOnce(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	harness.controller.config.Resources.InteractiveMaximumConcurrentWorkers = 1
+	harness.controller.config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
+	presence := newPresence(time.Hour)
+	harness.controller.deps.Presence = presence
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan struct{}, 1)
+	go func() {
+		_, _ = harness.controller.Step(context.Background())
+		done <- struct{}{}
+	}()
+	waitForSignal(t, blocking.entered, "listener poll did not begin")
+	presence.idle.Store(int64(time.Minute))
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("interactive cap did not restart the listener poll")
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	var codes []string
+	for _, event := range logs.events {
+		if event.Code == "interactive-cap-activated" || event.Code == "listener-poll-superseded" {
+			codes = append(codes, event.Code)
+		}
+	}
+	// The cadence watcher logs the activation when it sees it, before withdrawing capacity.
+	if fmt.Sprint(codes) != "[interactive-cap-activated listener-poll-superseded]" {
+		t.Fatalf("cap and poll events = %v, want activation logged once before the poll restart", codes)
 	}
 }
 

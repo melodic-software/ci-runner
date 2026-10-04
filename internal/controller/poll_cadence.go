@@ -183,11 +183,13 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 					cancel(errReconcileInputsChanged)
 					return result
 				}
-				plan := BuildPlan(PlanInput{
+				input := PlanInput{
 					Config: r.config, Desired: state.desired, Previous: checkpoint, CapacityHysteresis: state.advertised, Pools: state.pools,
 					Workers: workers, Resources: resources, Power: power, Desktop: state.desktop,
 					EngineMemoryTotalBytes: state.engineMemoryTotal, InputIdle: r.readInputIdle(), Now: now,
-				})
+				}
+				r.noteInteractiveCap(ctx, input, now)
+				plan := BuildPlan(input)
 				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
 				checkpoint = r.pollCheckpoint(checkpoint, state.pools, state.workers, resources, power, state.desktop, plan, now, state.operationProblems)
 				state.observed = checkpoint

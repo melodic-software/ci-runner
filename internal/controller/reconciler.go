@@ -99,6 +99,9 @@ type Reconciler struct {
 	heartbeat atomic.Int64
 	// lastTickNanos holds the wall duration of the previous Step, published in the next observed state.
 	lastTickNanos atomic.Int64
+	// capLogged is the interactive-cap state last written to the log. Step and the poll-cadence
+	// goroutine both report through it, so each transition is logged once.
+	capLogged atomic.Int32
 }
 
 const handshakeStaleCycleLimit = 3
@@ -369,6 +372,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 
 	observationFailed := observedTransientLoadErr
 	r.inputIdle = r.readInputIdle()
+	// Seed from the checkpoint so a transition across a controller restart is still logged.
+	r.capLogged.CompareAndSwap(capStateUnknown, capStateOf(previous.Presence.InteractiveCapActive))
+	r.noteInteractiveCap(ctx, PlanInput{Config: r.config, Desired: desired, InputIdle: r.inputIdle}, now)
 	power, powerErr := r.deps.Power.Snapshot(ctx)
 	if powerErr != nil {
 		observationFailed = true
@@ -1436,6 +1442,37 @@ func (r *Reconciler) persistPollCheckpoint(ctx context.Context, observed model.O
 }
 
 const diagnosticLogWriteTimeout = 2 * time.Second
+
+const (
+	capStateUnknown int32 = iota
+	capStateReleased
+	capStateEngaged
+)
+
+func capStateOf(active bool) int32 {
+	if active {
+		return capStateEngaged
+	}
+	return capStateReleased
+}
+
+// noteInteractiveCap logs a change of interactive-cap state, so cap-active intervals can be
+// rebuilt from the controller log without a live host status.
+func (r *Reconciler) noteInteractiveCap(ctx context.Context, input PlanInput, now time.Time) {
+	active := interactiveCapActive(input)
+	if r.capLogged.Swap(capStateOf(active)) == capStateOf(active) {
+		return
+	}
+	code, state := "interactive-cap-deactivated", "released"
+	if active {
+		code, state = "interactive-cap-activated", "engaged"
+	}
+	idle := "unknown"
+	if input.InputIdle != nil {
+		idle = fmt.Sprintf("%.0fs", input.InputIdle.Seconds())
+	}
+	r.writeLog(ctx, LogEvent{At: now, Code: code, Message: fmt.Sprintf("interactive worker cap %s; input idle %s", state, idle)})
+}
 
 func (r *Reconciler) writeLog(ctx context.Context, event LogEvent) {
 	writeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosticLogWriteTimeout)
