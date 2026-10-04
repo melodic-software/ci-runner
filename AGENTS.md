@@ -8,7 +8,7 @@ that ships two commands: the operator CLI `./cmd/ci-runner` and the windowless
 (DPAPI, Docker Desktop, WSL, Task Scheduler), but every Windows-only source file
 has a `//go:build !windows` (`*_other.go`) counterpart, so the whole module
 builds, tests, and lints cleanly on the Linux dev VM. Standard build/test/lint
-lanes live in `.github/workflows/ci.yml`; the CLI surface is documented in
+lanes live in `.github/workflows/pr-require-checks.yml`; the CLI surface is documented in
 `README.md`.
 
 ### Go toolchain (non-obvious)
@@ -35,8 +35,8 @@ golangci-lint run ./...
 golangci-lint must be v2.13.1 or newer: go1.27 support landed in v2.13.0
 ([golangci-lint#6643](https://github.com/golangci/golangci-lint/issues/6643)),
 and older releases reject this module outright. The version is kept aligned with
-`GOLANGCI_LINT_VERSION` in the shared `go-quality` reusable that
-`.github/workflows/ci.yml` calls, so local lint matches CI.
+`GOLANGCI_LINT_VERSION` in the shared `pr-run-checks-go` reusable that
+`.github/workflows/pr-require-checks.yml` calls, so local lint matches CI.
 
 `GOTOOLCHAIN=go1.27.1` is required — without it, `go install` honors
 golangci-lint's own (older) `toolchain` directive and produces a binary that
@@ -45,9 +45,9 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
 ### Build / test / run
 
 - Build (Linux, all packages): `go build ./...`
-- Cross-compile the shipped Windows executables (same as the `go-windows-build`
+- Cross-compile the shipped Windows executables (same as the `build-go-windows`
   CI lane): `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath ./cmd/...`
-- Test with the race detector (matches the reusable go-quality lane):
+- Test with the race detector (matches the reusable pr-run-checks-go lane):
   `go test -race ./...`
 - Run: the CLI resolves a host config **before** dispatching any subcommand
   (even `help`). Pass `--config <abs-path>` or set `CI_RUNNER_CONFIG` /
@@ -57,8 +57,8 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
   Most `host …` and `secret import` operations require Windows or a live
   controller and are not exercisable on this VM.
 
-The extensive repo-hygiene lanes in `ci.yml` (markdown, shellcheck, shfmt,
-typos, editorconfig, actionlint, zizmor, worker-image, etc.) run through
+The extensive repo-hygiene lanes in `pr-require-checks.yml` (markdownlint, shellcheck, shfmt,
+typos, editorconfig-checker, actionlint, pr-audit-workflows, build-worker-image, etc.) run through
 external reusable workflows and are not needed for local Go development.
 
 ## Code Review Rules
