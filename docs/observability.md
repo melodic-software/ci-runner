@@ -90,7 +90,7 @@ monotonic process-lifetime events.
 
 | Metric | Meaning | Attributes |
 | --- | --- | --- |
-| `ci_runner.controller.reconcile.duration` | Reconcile duration in seconds; without OTEL, `host status` shows the previous tick's duration and cumulative process CPU as `observed.controller` | `ci_runner.reconcile.result` |
+| `ci_runner.controller.reconcile.duration` | Reconcile duration in seconds, including the listener long poll (about 50 s) and immediate reruns, so values far above `reconcileInterval` are normal; without OTEL, `host status` shows the previous tick's duration and cumulative process CPU as `observed.controller` | `ci_runner.reconcile.result` |
 | `ci_runner.controller.reconcile.errors` | Unexpected reconcile failures | none |
 | `ci_runner.controller.observed.checkpoint.age` | Prior durable checkpoint age at reconcile start; omitted when missing, corrupt, or future-dated | none |
 | `ci_runner.capacity.advertised` | Capacity acknowledged to GitHub | `ci_runner.pool.id` |
