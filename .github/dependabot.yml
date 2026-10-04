@@ -52,9 +52,9 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
-    # Every melodic-software/ci-workflows ref (reusable workflows and composite
-    # actions) moves only through deliberate reviewed PRs, so all of them are
-    # ignored here.
+    # Temporary: pauses every melodic-software/ci-workflows bump while the GitHub
+    # Actions conventions migration moves these pins by hand across the org.
+    # Remove it in the migration's close-out sweep, once every repo is migrated.
     ignore:
       - dependency-name: "melodic-software/ci-workflows/*"
     # The `vendor-actions` group (non-major only) is the auto-merge lane armed

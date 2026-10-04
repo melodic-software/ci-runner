@@ -58,7 +58,7 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
   controller and are not exercisable on this VM.
 
 The extensive repo-hygiene lanes in `pr-require-checks.yml` (markdownlint, shellcheck, shfmt,
-typos, editorconfig, actionlint, pr-audit-workflows, build-worker-image, etc.) run through
+typos, editorconfig-checker, actionlint, pr-audit-workflows, build-worker-image, etc.) run through
 external reusable workflows and are not needed for local Go development.
 
 ## Code Review Rules
