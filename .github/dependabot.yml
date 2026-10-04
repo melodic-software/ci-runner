@@ -52,9 +52,8 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
-    # Temporary: pauses every melodic-software/ci-workflows bump while the GitHub
-    # Actions conventions migration moves these pins by hand across the org.
-    # Remove it in the migration's close-out sweep, once every repo is migrated.
+    # ci-workflows pins move only in the org-wide repin wave, so every repo stays on one
+    # ci-workflows release; a Dependabot bump would move this repo's pins alone.
     ignore:
       - dependency-name: "melodic-software/ci-workflows/*"
     # The `vendor-actions` group (non-major only) is the auto-merge lane armed
