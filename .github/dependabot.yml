@@ -61,7 +61,7 @@ updates:
       # SHA-allowlisted and stay Dependabot-managed.
       # Pattern source: melodic-software/standards PR #102.
       - dependency-name: "melodic-software/ci-workflows/.github/workflows/*"
-      # The GitHub Actions conventions rename migrates this repo's ci-workflows pins deliberately; remove this ignore at that migration.
+      # The GitHub Actions conventions rename migrates this repo's ci-workflows pins deliberately. Until then this also pauses composite-action bumps, overriding the policy above; remove this ignore at that migration.
       - dependency-name: "melodic-software/ci-workflows/*"
     groups:
       github-actions:
