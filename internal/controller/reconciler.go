@@ -942,6 +942,19 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			note("memory-clamped-capacity", "the memory term or host-floor backstop clamped worker starts or advertised capacity below host and pool limits", target.ID)
 		}
 	}
+	// Compared against the persisted checkpoint, so a transition across a controller restart is
+	// still logged and cap-active intervals can be rebuilt from the log alone.
+	if postPlan.Presence.InteractiveCapActive != previous.Presence.InteractiveCapActive {
+		code, state := "interactive-cap-deactivated", "released"
+		if postPlan.Presence.InteractiveCapActive {
+			code, state = "interactive-cap-activated", "engaged"
+		}
+		idle := "unknown"
+		if postPlan.Presence.InputIdleSeconds != nil {
+			idle = fmt.Sprintf("%.0fs", *postPlan.Presence.InputIdleSeconds)
+		}
+		note(code, fmt.Sprintf("interactive worker cap %s; input idle %s", state, idle), "")
+	}
 	problems := append([]model.Problem(nil), postPlan.Problems...)
 	problems = append(problems, operationProblems...)
 	var drainStartedAt *time.Time

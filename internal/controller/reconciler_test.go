@@ -66,6 +66,51 @@ func TestReconcilerAppliesInteractiveCapWhilePresent(t *testing.T) {
 	}
 }
 
+func TestReconcilerLogsInteractiveCapTransitions(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.InteractiveMaximumConcurrentWorkers = 1
+	harness.controller.config.Resources.InteractiveIdleThreshold = config.Duration{Duration: 5 * time.Minute}
+	presence := newPresence(time.Minute)
+	harness.controller.deps.Presence = presence
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	countTransitions := func() (activated, deactivated int) {
+		logs.mu.Lock()
+		defer logs.mu.Unlock()
+		for _, event := range logs.events {
+			switch event.Code {
+			case "interactive-cap-activated":
+				activated++
+			case "interactive-cap-deactivated":
+				deactivated++
+			}
+		}
+		return activated, deactivated
+	}
+	step := func() {
+		t.Helper()
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	step()
+	step()
+	if activated, deactivated := countTransitions(); activated != 1 || deactivated != 0 {
+		t.Fatalf("after two present steps: activated=%d deactivated=%d, want 1/0", activated, deactivated)
+	}
+	if event, _ := logs.find("interactive-cap-activated"); event.At.IsZero() || !strings.Contains(event.Message, "60s") {
+		t.Fatalf("activation event = %+v, want timestamped message with idle 60s", event)
+	}
+	presence.idle.Store(int64(10 * time.Minute))
+	step()
+	step()
+	if activated, deactivated := countTransitions(); activated != 1 || deactivated != 1 {
+		t.Fatalf("after two idle steps: activated=%d deactivated=%d, want 1/1", activated, deactivated)
+	}
+}
+
 type presence struct{ idle atomic.Int64 }
 
 func newPresence(idle time.Duration) *presence {
