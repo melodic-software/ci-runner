@@ -127,8 +127,8 @@
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "95732fda50a95d3297320a6f2c791a1a91870a7f",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/95732fda50a95d3297320a6f2c791a1a91870a7f"
+      "commit": "2531d56a21e79b7b5222643fadbee95c23a4525b",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/2531d56a21e79b7b5222643fadbee95c23a4525b"
     }
   ],
   "reusableWorkflows": []
