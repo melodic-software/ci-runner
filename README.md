@@ -225,7 +225,7 @@ window, invoke a shell, request elevation or UAC, or terminate the draining
 controller. Battery, resource admission, drain, Docker Desktop, and WSL policy
 remain in the shared Go state machine.
 
-The logon task `ci-runner-enable-on-logon` is installed by
+The logon task `ci-runner-fleet` is installed by
 [melodic-software/provisioning](https://github.com/melodic-software/provisioning),
 not by this module, and this repository does not define its exit codes. When
 that task was started while Docker Desktop's engine was down, it exited 5:
