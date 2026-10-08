@@ -2143,5 +2143,98 @@ func assertCallBefore(t *testing.T, calls []string, first, second string) {
 	}
 }
 
+// archiveLockEngine models Docker Engine holding the container lock while it
+// streams an archive: an inspect of that container waits until the stream is
+// drained or closed, and the stream fails once its request context ends.
+type archiveLockEngine struct {
+	*fakeEngine
+	lockMu   sync.Mutex
+	unlocked chan struct{}
+}
+
+func (e *archiveLockEngine) CopyFromContainer(ctx context.Context, id string, options client.CopyFromContainerOptions) (client.CopyFromContainerResult, error) {
+	result, err := e.fakeEngine.CopyFromContainer(ctx, id, options)
+	if err != nil || options.SourcePath != defaultDiagPath {
+		return result, err
+	}
+	unlocked := make(chan struct{})
+	e.lockMu.Lock()
+	e.unlocked = unlocked
+	e.lockMu.Unlock()
+	result.Content = &lockedArchive{ctx: ctx, source: result.Content, unlocked: unlocked}
+	return result, nil
+}
+
+func (e *archiveLockEngine) ContainerInspect(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	e.lockMu.Lock()
+	unlocked := e.unlocked
+	e.lockMu.Unlock()
+	if unlocked != nil {
+		select {
+		case <-unlocked:
+		case <-ctx.Done():
+			return client.ContainerInspectResult{}, ctx.Err()
+		}
+	}
+	return e.fakeEngine.ContainerInspect(ctx, id, options)
+}
+
+type lockedArchive struct {
+	ctx      context.Context
+	source   io.ReadCloser
+	unlocked chan struct{}
+	once     sync.Once
+}
+
+func (a *lockedArchive) Read(value []byte) (int, error) {
+	if err := a.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := a.source.Read(value)
+	if errors.Is(err, io.EOF) {
+		a.once.Do(func() { close(a.unlocked) })
+	}
+	return n, err
+}
+
+func (a *lockedArchive) Close() error {
+	a.once.Do(func() { close(a.unlocked) })
+	return a.source.Close()
+}
+
+func TestDiagnosticsCaptureDoesNotInspectWhileArchiveStreamIsOpen(t *testing.T) {
+	t.Parallel()
+	engine := &archiveLockEngine{fakeEngine: newFakeEngine()}
+	sink := &memoryArtifacts{}
+	runtime, err := New(engine, testOptions(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntime(t, runtime)
+	worker, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "org", Name: "worker", ResourceTier: "target_override",
+		JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits:    config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := runtime.watchForTest(worker.ID)
+	engine.signalExit(worker.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitForWatch(ctx, watch); err != nil {
+		t.Fatalf("diagnostics capture deadlocked on the open archive stream: %v", err)
+	}
+	if engine.hasContainer(worker.ID) {
+		t.Fatal("worker was retained although its diagnostics could be captured")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.diagnostics) != 1 || len(sink.diagnostics[0]) == 0 {
+		t.Fatalf("diagnostics = %d archives, want one nonempty archive", len(sink.diagnostics))
+	}
+}
+
 var _ Engine = (*fakeEngine)(nil)
 var _ client.ImagePullResponse = (*fakePull)(nil)
