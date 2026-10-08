@@ -1,0 +1,3 @@
+# Matches standards' synced root .editorconfig; delete once the standards sync PR (#448) merges.
+[*.sh]
+switch_case_indent = true
