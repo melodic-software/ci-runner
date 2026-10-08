@@ -492,7 +492,7 @@ jobs:
       # `rerun-contract-only-siblings` re-runs the red contract-only ones once
       # the full run records `success`. Under an explicit permissions block every
       # unlisted scope defaults to none; write covers the read.
-      actions: write
+      actions: write # Lists this workflow's runs and re-runs contract-only siblings.
       # check-contract upserts the advisory linkage comment and moves the linkage
       # label; ci-status records the `ci-lanes` commit status the carry-forward
       # branch reads back on the next contract-only event.
