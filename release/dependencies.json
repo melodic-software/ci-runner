@@ -34,11 +34,11 @@
     "source": "https://github.com/actions/scaleset/releases/tag/v0.4.0"
   },
   "runner": {
-    "version": "2.337.0",
-    "image": "ghcr.io/actions/actions-runner:2.337.0",
-    "digest": "sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4",
-    "archiveSha256": "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613",
-    "source": "https://github.com/actions/runner/releases/tag/v2.337.0"
+    "version": "2.338.0",
+    "image": "ghcr.io/actions/actions-runner:2.338.0",
+    "digest": "sha256:4ffadc0002b2581327e06101fc8c06cd189232baf79fe561fac9caeb76f5e807",
+    "archiveSha256": "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32",
+    "source": "https://github.com/actions/runner/releases/tag/v2.338.0"
   },
   "powerShell": {
     "version": "7.6.6",
