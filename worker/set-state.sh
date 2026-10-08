@@ -3,11 +3,11 @@ set -Eeuo pipefail
 
 readonly state="${1:?state is required}"
 case "$state" in
-idle | busy | completed) ;;
-*)
-  echo "invalid worker state: $state" >&2
-  exit 64
-  ;;
+  idle | busy | completed) ;;
+  *)
+    echo "invalid worker state: $state" >&2
+    exit 64
+    ;;
 esac
 
 readonly state_directory=/home/runner/_runner_state
