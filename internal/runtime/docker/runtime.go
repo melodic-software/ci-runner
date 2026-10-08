@@ -718,7 +718,7 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	}
 	// Evidence and diagnostics are independent: attempt both even when either fails,
 	// retaining the container unless the complete artifact set can be finalized.
-	if err := r.captureDiagnostics(finalizeCtx, id); err != nil {
+	if err := r.captureDiagnostics(finalizeCtx, id, metadata); err != nil {
 		r.opts.OnError(err)
 		watch.err = errors.Join(watch.err, err)
 	}
@@ -787,7 +787,10 @@ func (r *Runtime) captureLogs(ctx context.Context, id string) logCaptureResult {
 	}
 }
 
-func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr error) {
+// captureDiagnostics takes metadata read before the copy: Docker holds the
+// container lock while it streams the archive, so a Docker call on the same
+// container before the stream is drained deadlocks until ctx expires.
+func (r *Runtime) captureDiagnostics(ctx context.Context, id string, metadata ArtifactMetadata) (resultErr error) {
 	result, err := r.engine.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: r.opts.DiagnosticPath})
 	if err != nil {
 		return fmt.Errorf("copy worker diagnostics: %w", err)
@@ -795,7 +798,7 @@ func (r *Runtime) captureDiagnostics(ctx context.Context, id string) (resultErr 
 	defer func() {
 		resultErr = errors.Join(resultErr, wrapIfError("close worker diagnostics archive", result.Content.Close()))
 	}()
-	return r.opts.Artifacts.WriteDiagnostics(ctx, r.metadata(ctx, id), result.Content)
+	return r.opts.Artifacts.WriteDiagnostics(ctx, metadata, result.Content)
 }
 
 func (r *Runtime) captureResourceEvidence(ctx context.Context, id string, metadata ArtifactMetadata, marker *ResourceEvidence) (ResourceEvidence, bool, error) {
