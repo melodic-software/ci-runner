@@ -30,7 +30,9 @@ assets; `v0.1.29` is reserved by a failed release publication (`GITHUB_TOKEN`
 draft creation was refused because `main` gained a workflow change after
 tagging) and has no release assets; `v0.1.31` is reserved by a failed
 official-source dependency freshness check (runner 2.338.0 flagged critical)
-and has no release assets.
+and has no release assets; `v0.1.32` is reserved by pedantic zizmor findings
+(Dependabot cooldown below zizmor's default and an uncommented `actions: write`
+permission) and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
