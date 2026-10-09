@@ -205,22 +205,22 @@ for timestamped_line in "${production_lines[@]}"; do
   line="${timestamped_line#* }"
   [[ "$timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]
   case "$line" in
-  "$resource_marker_prefix"*)
-    marker_count=$((marker_count + 1))
-    resource_marker="$line"
-    ;;
-  "$harness_sentinel")
-    sentinel_count=$((sentinel_count + 1))
-    ;;
-  "$sidecar_digest_prefix"*)
-    digest_count=$((digest_count + 1))
-    sidecar_digest="${line#"$sidecar_digest_prefix"}"
-    ;;
-  "$pipe_buffer_prefix"*)
-    pipe_buffer_count=$((pipe_buffer_count + 1))
-    pipe_buffer="${line#"$pipe_buffer_prefix"}"
-    ;;
-  *) ;;
+    "$resource_marker_prefix"*)
+      marker_count=$((marker_count + 1))
+      resource_marker="$line"
+      ;;
+    "$harness_sentinel")
+      sentinel_count=$((sentinel_count + 1))
+      ;;
+    "$sidecar_digest_prefix"*)
+      digest_count=$((digest_count + 1))
+      sidecar_digest="${line#"$sidecar_digest_prefix"}"
+      ;;
+    "$pipe_buffer_prefix"*)
+      pipe_buffer_count=$((pipe_buffer_count + 1))
+      pipe_buffer="${line#"$pipe_buffer_prefix"}"
+      ;;
+    *) ;;
   esac
 done
 [[ "$marker_count" == 1 ]]
