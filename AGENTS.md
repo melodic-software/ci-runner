@@ -61,6 +61,10 @@ The extensive repo-hygiene lanes in `pr-require-checks.yml` (markdownlint, shell
 typos, editorconfig-checker, actionlint, pr-audit-workflows, build-worker-image, etc.) run through
 external reusable workflows and are not needed for local Go development.
 
+## Org architecture
+
+Org architecture (cross-repo decisions, glossary, why each trust link exists): private repo `melodic-software/architecture`. Repo map: `gh api orgs/melodic-software/properties/values` (system and role per repo). Read it with `gh api repos/melodic-software/architecture/contents/<path>`; on Claude Code on the web, attach it at session start; in CI, check it out with a read-only App token. If access is denied, stop and tell the user.
+
 ## Code Review Rules
 
 Each line names a rule CI does not enforce; the linked file states it in full.
