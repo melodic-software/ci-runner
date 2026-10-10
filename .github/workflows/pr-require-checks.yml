@@ -88,7 +88,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdownlint@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/markdownlint@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -103,7 +103,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           rcfile: .shellcheckrc
 
@@ -118,7 +118,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
 
   typos:
     name: Spelling
@@ -131,7 +131,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/typos@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           config: _typos.toml
 
@@ -146,7 +146,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           config: .editorconfig-checker.json
 
@@ -162,7 +162,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           config: .gitleaks.toml
 
@@ -177,7 +177,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           config: lychee.toml
 
@@ -192,7 +192,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
 
   actionlint:
     name: Actionlint
@@ -205,7 +205,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
 
   jsonschema:
     name: JSON schemas
@@ -218,12 +218,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
@@ -239,7 +239,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
 
   check-machine-paths:
     name: Machine-specific paths
@@ -252,7 +252,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
@@ -275,7 +275,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
 
   pr-audit-workflows:
     name: Zizmor
@@ -287,7 +287,7 @@ jobs:
       # workflows cannot elevate. Lane stays annotations-only
       # (upload-sarif defaults false); grant write so the job can start.
       security-events: write # Mandatory match for the reusable's own grant; see above.
-    uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+    uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
     with:
       paths: .
 
@@ -321,7 +321,7 @@ jobs:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
     with:
       config: .golangci.yml
 
@@ -500,7 +500,7 @@ jobs:
       statuses: write # Records and reads back the `ci-lanes` commit status.
     steps:
       - name: Check the pull-request contract
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           token: ${{ github.token }}
           # Dependabot and the standards sync open pull requests that close no
@@ -516,7 +516,7 @@ jobs:
         # aggregation: the job still fails on the contract step's exit code, and
         # the `ci-lanes` status is on the SHA for the next contract-only run.
         if: ${{ !cancelled() }}
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@ab83b01273026ab5c23c6f3b40e946d97a863fa2 # v0.39.3
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@594987abe8657a40bccc13d301f1f0d5cccb5348 # v0.39.8
         with:
           results: >-
             ${{ needs.markdownlint.result }}
