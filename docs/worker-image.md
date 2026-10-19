@@ -124,6 +124,8 @@ The controller must create every worker with all of these properties:
 - no bind mounts or named volumes, including `_work`, home, temp, toolcache, or
   diagnostic paths;
 - no Docker socket, host path, device, GPU, or privileged mode;
+- Docker's built-in seccomp profile, or the embedded profile the target names
+  in `seccompProfile`, passed inline and never read from a path;
 - no GitHub App key, observer key, controller JWT, installation token, or other
   host credential in environment variables, arguments, labels, or files;
 - no encoded JIT configuration in Docker config, inspection output, process

@@ -19,6 +19,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/model"
+	"github.com/melodic-software/ci-runner/internal/seccomp"
 	"github.com/melodic-software/ci-runner/internal/telemetry"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	containertypes "github.com/moby/moby/api/types/container"
@@ -306,6 +307,10 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	if len(jit) == 0 || bytes.ContainsAny(jit, "\x00\r\n") {
 		return model.Worker{}, safeWorkerStartError(errors.New("JIT configuration must be a nonempty single line with no NUL byte"))
 	}
+	securityOpt, err := workerSecurityOpt(request.SeccompProfile)
+	if err != nil {
+		return model.Worker{}, safeWorkerStartError(err)
+	}
 	startedAt := time.Now().UTC()
 	pids := request.Limits.PIDs
 	create := client.ContainerCreateOptions{
@@ -328,7 +333,7 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 		},
 		HostConfig: &containertypes.HostConfig{
 			Binds: nil, Mounts: nil, VolumesFrom: nil, Privileged: false, AutoRemove: false,
-			NetworkMode: "bridge", PublishAllPorts: false,
+			NetworkMode: "bridge", PublishAllPorts: false, SecurityOpt: securityOpt,
 			RestartPolicy: containertypes.RestartPolicy{Name: containertypes.RestartPolicyDisabled},
 			LogConfig: containertypes.LogConfig{Type: "local", Config: map[string]string{
 				"max-size": strconv.FormatUint(r.opts.DockerLogMaxSizeBytes, 10),
@@ -387,6 +392,19 @@ func (r *Runtime) Start(ctx context.Context, request controller.StartWorkerReque
 	attached.Close()
 	attachedClosed = true
 	return model.Worker{ID: created.ID, AdapterID: created.ID, PoolID: request.PoolID, Name: request.Name, RunnerID: runnerID, State: model.WorkerStarting, StartedAt: startedAt, MemoryLimitBytes: int64(request.Limits.Memory)}, nil
+}
+
+// workerSecurityOpt returns nil for Docker's built-in default profile, or the
+// inline seccomp option for a named embedded profile.
+func workerSecurityOpt(profile string) ([]string, error) {
+	if profile == "" {
+		return nil, nil
+	}
+	encoded, err := seccomp.Profile(profile)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"seccomp=" + string(encoded)}, nil
 }
 
 func (r *Runtime) validateEngine(ctx context.Context) error {

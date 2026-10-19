@@ -1266,6 +1266,7 @@ func (r *Reconciler) executePlannedStarts(
 			}
 			_, startErr := r.deps.Workers.Start(ctx, StartWorkerRequest{
 				PoolID: decision.PoolID, Name: name, ResourceTier: resourceTier, JITConfig: jit, Limits: limits,
+				SeccompProfile: r.config.SeccompProfileForTarget(decision.PoolID),
 			})
 			if startErr != nil {
 				// Start is intentionally not retried: it may have created a running

@@ -237,6 +237,23 @@ func TestReconcilerStartsWorkerWithTargetEffectiveLimits(t *testing.T) {
 	if requests[0].Limits != want {
 		t.Fatalf("worker limits = %#v, want %#v", requests[0].Limits, want)
 	}
+	if requests[0].SeccompProfile != "" {
+		t.Fatalf("seccomp profile = %q, want empty when the target sets none", requests[0].SeccompProfile)
+	}
+}
+
+func TestReconcilerStartsWorkerWithTargetSeccompProfile(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.GitHub.Targets[0].SeccompProfile = "userns"
+
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests := harness.runtime.startRequests()
+	if len(requests) != 1 || requests[0].SeccompProfile != "userns" {
+		t.Fatalf("start requests = %#v, want one with seccomp profile userns", requests)
+	}
 }
 
 func TestEnabledStartsDesktopBeforeWorkerInventory(t *testing.T) {

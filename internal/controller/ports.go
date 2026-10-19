@@ -25,6 +25,9 @@ type StartWorkerRequest struct {
 	ResourceTier string
 	JITConfig    scaleset.JITConfig
 	Limits       config.Worker
+	// SeccompProfile names an embedded seccomp profile; empty keeps Docker's
+	// built-in default.
+	SeccompProfile string
 }
 
 type WorkerStartError struct {
