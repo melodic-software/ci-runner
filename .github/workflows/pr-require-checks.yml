@@ -281,15 +281,17 @@ jobs:
     name: Zizmor
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
-      contents: read # Reusable advisory audit reads the checked-in workflow graph.
+      contents: read # The reusable audit reads the checked-in workflow graph.
       # Reusable pr-audit-workflows.yml always declares security-events: write (expressions
       # are illegal in that scope). Callers must grant it too — reusable
-      # workflows cannot elevate. Lane stays annotations-only
+      # workflows cannot elevate. The lane uploads no SARIF
       # (upload-sarif defaults false); grant write so the job can start.
       security-events: write # Mandatory match for the reusable's own grant; see above.
+    # Gates: any finding fails the lane and so ci-status.
     uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@d223a6446680fb261e264d1dea9efba46f20ead2 # v0.50.0
     with:
       paths: .
+      fail-on-severity: low
 
   test-policy-contracts:
     name: Product policy
