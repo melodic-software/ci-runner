@@ -9,8 +9,9 @@ import (
 	"slices"
 )
 
-// UserNS is the moby default profile plus two rules that let a process without
-// CAP_SYS_ADMIN call clone and unshare when the flags include CLONE_NEWUSER.
+// UserNS is the moby default profile plus rules that let a process without
+// CAP_SYS_ADMIN call clone and unshare when the flags include CLONE_NEWUSER,
+// and call mount, umount2 and pivot_root, which bubblewrap needs.
 const UserNS = "userns"
 
 // MobyDefaultBlobSHA is the git blob SHA of moby-default.json, which is
@@ -26,7 +27,9 @@ const cloneNewUser = 0x10000000
 // userNSRules are inserted directly after the default's own non-CAP_SYS_ADMIN
 // clone rules. SCMP_CMP_MASKED_EQ with value and valueTwo both CLONE_NEWUSER
 // matches when (flags & CLONE_NEWUSER) == CLONE_NEWUSER. The kernel still
-// decides what the new user namespace may do.
+// decides what the new user namespace may do: mount, umount2 and pivot_root
+// still need CAP_SYS_ADMIN in the namespace that owns the mount namespace.
+// fsopen, fsconfig and the rest of the new mount API stay gated.
 var userNSRules = []map[string]any{
 	{
 		"names":    []string{"clone"},
@@ -40,6 +43,12 @@ var userNSRules = []map[string]any{
 		"action":   "SCMP_ACT_ALLOW",
 		"args":     []map[string]any{{"index": 0, "value": cloneNewUser, "valueTwo": cloneNewUser, "op": "SCMP_CMP_MASKED_EQ"}},
 		"comment":  "ci-runner userns: unshare with CLONE_NEWUSER",
+		"excludes": map[string]any{"caps": []string{"CAP_SYS_ADMIN"}},
+	},
+	{
+		"names":    []string{"mount", "umount2", "pivot_root"},
+		"action":   "SCMP_ACT_ALLOW",
+		"comment":  "ci-runner userns: mount, umount2 and pivot_root for bubblewrap",
 		"excludes": map[string]any{"caps": []string{"CAP_SYS_ADMIN"}},
 	},
 }
