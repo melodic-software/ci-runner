@@ -1,31 +1,53 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-09-28T00:00:00.0000000Z",
+  "reviewedAt": "2026-10-20T00:00:00.0000000Z",
   "issue": null,
-  "cycle": "2026-09-28",
+  "cycle": "2026-10-20",
   "held": [],
   "bumped": [
     {
-      "dependency": "docker/setup-buildx-action",
-      "from": "4.4.0",
-      "to": "4.4.1",
-      "reviewedAt": "2026-09-28T00:00:00.0000000Z",
-      "cycle": "2026-09-28",
+      "dependency": "docker-buildx",
+      "from": "0.37.1",
+      "to": "0.38.0",
+      "reviewedAt": "2026-10-20T00:00:00.0000000Z",
+      "cycle": "2026-10-20",
       "decision": "bump",
-      "rationale": "Release-gate drain before the 14-day hard fail. v4.4.1 (2026-09-16) is a patch that skips BuildKit image pre-pulls for explicit endpoints (docker/setup-buildx-action#624; compare v4.4.0...v4.4.1). Commit f87e5991a6d7451dcb8d9637bfbc97413f497069 is the tag's commit via the GitHub git ref API. No security advisory or breaking change.",
+      "rationale": "v0.1.34 release freshness gate hard fail (19 days). The linux-amd64 asset SHA-256 4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287 matches both the GitHub release asset digest and the release checksums.txt (https://github.com/docker/buildx/releases/tag/v0.38.0).",
+      "requiresFleetRollout": false,
+      "rolloutNote": "CI/release-workflow tooling only; not baked into the worker image, so no fleet rollout."
+    },
+    {
+      "dependency": "moby-buildkit",
+      "from": "0.33.0",
+      "to": "0.34.0",
+      "reviewedAt": "2026-10-20T00:00:00.0000000Z",
+      "cycle": "2026-10-20",
+      "decision": "bump",
+      "rationale": "v0.1.34 release freshness gate hard fail (19 days). Index digest sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c and linux/amd64 digest sha256:3eea2ed5d1766c44eb4740853abf56ba85ad40b2c8d4a22e047cbacf15f463c8 come from docker buildx imagetools inspect of moby/buildkit:v0.34.0 (https://github.com/moby/buildkit/releases/tag/v0.34.0).",
       "requiresFleetRollout": false,
       "rolloutNote": "CI/release-workflow tooling only; not baked into the worker image, so no fleet rollout."
     },
     {
       "dependency": "syft",
-      "from": "1.51.1",
-      "to": "1.52.0",
-      "reviewedAt": "2026-09-28T00:00:00.0000000Z",
-      "cycle": "2026-09-28",
+      "from": "1.52.0",
+      "to": "1.55.0",
+      "reviewedAt": "2026-10-20T00:00:00.0000000Z",
+      "cycle": "2026-10-20",
       "decision": "bump",
-      "rationale": "Release-gate drain before the 14-day hard fail. v1.52.0 (2026-09-17, https://github.com/anchore/syft/releases/tag/v1.52.0). The pinned image ghcr.io/anchore/syft:v1.52.0 index digest sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02 comes from docker buildx imagetools inspect of the official image.",
+      "rationale": "v0.1.34 release freshness gate hard fail (18 days). Index digest sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a comes from docker buildx imagetools inspect of ghcr.io/anchore/syft:v1.55.0 (https://github.com/anchore/syft/releases/tag/v1.55.0).",
       "requiresFleetRollout": false,
       "rolloutNote": "CI/release-workflow tooling only; not baked into the worker image, so no fleet rollout."
+    },
+    {
+      "dependency": "github-hosted-gh",
+      "from": "2.101.0",
+      "to": "2.102.0",
+      "reviewedAt": "2026-10-20T00:00:00.0000000Z",
+      "cycle": "2026-10-20",
+      "decision": "bump",
+      "rationale": "v0.1.34 release freshness gate hard fail (20 days). The Ubuntu 24.04 hosted-image manifest at runner-images commit 06f4a9146f061c2776b044dab74b5390d9c000b9 lists GitHub CLI 2.102.0 (PowerShell stays 7.6.6). Archive SHA-256 bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386 matches both the release asset digest and gh_2.102.0_checksums.txt (https://github.com/cli/cli/releases/tag/v2.102.0).",
+      "requiresFleetRollout": true,
+      "rolloutNote": "Baked into the worker image; ships with the next worker image release."
     }
   ]
 }

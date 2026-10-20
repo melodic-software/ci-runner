@@ -32,7 +32,10 @@ tagging) and has no release assets; `v0.1.31` is reserved by a failed
 official-source dependency freshness check (runner 2.338.0 flagged critical)
 and has no release assets; `v0.1.32` is reserved by pedantic zizmor findings
 (Dependabot cooldown below zizmor's default and an uncommented `actions: write`
-permission) and has no release assets.
+permission) and has no release assets; `v0.1.34` is reserved by a failed
+official-source dependency freshness check (Buildx 0.37.1, BuildKit 0.33.0,
+Syft 1.52.0, and hosted gh 2.101.0 pinned past the 14-day window) and has no
+release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "resolvedAt": "2026-09-27T23:25:00.0000000Z",
+  "resolvedAt": "2026-10-20T00:00:00.0000000Z",
   "go": {
     "version": "1.27.2",
     "source": "https://go.dev/dl/?mode=json"
@@ -10,16 +10,16 @@
     "source": "https://nodejs.org/dist/v24.21.0/"
   },
   "buildx": {
-    "version": "0.37.1",
-    "linuxAmd64Sha256": "9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b",
-    "source": "https://github.com/docker/buildx/releases/tag/v0.37.1"
+    "version": "0.38.0",
+    "linuxAmd64Sha256": "4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287",
+    "source": "https://github.com/docker/buildx/releases/tag/v0.38.0"
   },
   "buildKit": {
-    "version": "0.33.0",
-    "image": "moby/buildkit:v0.33.0",
-    "digest": "sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3",
-    "linuxAmd64Digest": "sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d",
-    "source": "https://github.com/moby/buildkit/releases/tag/v0.33.0"
+    "version": "0.34.0",
+    "image": "moby/buildkit:v0.34.0",
+    "digest": "sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c",
+    "linuxAmd64Digest": "sha256:3eea2ed5d1766c44eb4740853abf56ba85ad40b2c8d4a22e047cbacf15f463c8",
+    "source": "https://github.com/moby/buildkit/releases/tag/v0.34.0"
   },
   "buildKitSbomScanner": {
     "version": "1.12.0",
@@ -48,11 +48,11 @@
     "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c9dd57c6b6333892b46abcc439ba0676fd03867a/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "gh": {
-    "version": "2.101.0",
-    "linuxAmd64ArchiveSha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
-    "source": "https://github.com/cli/cli/releases/tag/v2.101.0",
-    "hostedImageManifestCommit": "c9dd57c6b6333892b46abcc439ba0676fd03867a",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c9dd57c6b6333892b46abcc439ba0676fd03867a/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "2.102.0",
+    "linuxAmd64ArchiveSha256": "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386",
+    "source": "https://github.com/cli/cli/releases/tag/v2.102.0",
+    "hostedImageManifestCommit": "06f4a9146f061c2776b044dab74b5390d9c000b9",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/06f4a9146f061c2776b044dab74b5390d9c000b9/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "govulncheck": {
     "version": "1.8.0",
@@ -67,10 +67,10 @@
     "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.30.1"
   },
   "syft": {
-    "version": "1.52.0",
-    "image": "ghcr.io/anchore/syft:v1.52.0",
-    "digest": "sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02",
-    "source": "https://github.com/anchore/syft/releases/tag/v1.52.0"
+    "version": "1.55.0",
+    "image": "ghcr.io/anchore/syft:v1.55.0",
+    "digest": "sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a",
+    "source": "https://github.com/anchore/syft/releases/tag/v1.55.0"
   },
   "githubActions": [
     {
