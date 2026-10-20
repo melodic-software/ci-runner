@@ -35,7 +35,9 @@ and has no release assets; `v0.1.32` is reserved by pedantic zizmor findings
 permission) and has no release assets; `v0.1.34` is reserved by a failed
 official-source dependency freshness check (Buildx 0.37.1, BuildKit 0.33.0,
 Syft 1.52.0, and hosted gh 2.101.0 pinned past the 14-day window) and has no
-release assets.
+release assets; `v0.1.35` is reserved by a pedantic zizmor
+`undocumented-permissions` finding on the sync-managed
+`pr-check-managed-files-hosted.yml` and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
