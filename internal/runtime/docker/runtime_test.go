@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/melodic-software/ci-runner/internal/jobindex"
 	"github.com/melodic-software/ci-runner/internal/model"
 	"github.com/melodic-software/ci-runner/internal/scaleset"
+	"github.com/melodic-software/ci-runner/internal/seccomp"
 	"github.com/melodic-software/ci-runner/internal/telemetry"
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
@@ -103,6 +105,9 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	if len(host.Devices) != 0 || len(host.DeviceRequests) != 0 || len(host.DeviceCgroupRules) != 0 {
 		t.Fatalf("worker received devices: %#v", host.Resources)
 	}
+	if len(host.SecurityOpt) != 0 || len(host.CapAdd) != 0 || len(host.CapDrop) != 0 {
+		t.Fatalf("default worker security options = %#v cap-add %#v cap-drop %#v", host.SecurityOpt, host.CapAdd, host.CapDrop)
+	}
 	if host.NanoCPUs != 2_000_000_000 || host.Memory != 8<<30 || host.MemorySwap != 8<<30 || host.PidsLimit == nil || *host.PidsLimit != 4096 {
 		t.Fatalf("resource limits = %#v", host.Resources)
 	}
@@ -117,6 +122,66 @@ func TestStartCreatesConstrainedSecretMinimalContainer(t *testing.T) {
 	}
 	if engine.pullCount() != 0 {
 		t.Fatal("cached pinned image was pulled unnecessarily")
+	}
+}
+
+func startForHostConfig(t *testing.T, profile string) *containertypes.HostConfig {
+	t.Helper()
+	engine := newFakeEngine()
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+	if _, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "review", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits:         config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+		SeccompProfile: profile,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	host := engine.createOptions().HostConfig
+	if host == nil {
+		t.Fatal("missing host configuration")
+	}
+	return host
+}
+
+func TestStartWithUserNSProfileChangesOnlyTheSeccompOption(t *testing.T) {
+	t.Parallel()
+	want, err := seccomp.Profile(seccomp.UserNS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := startForHostConfig(t, seccomp.UserNS)
+	if len(host.SecurityOpt) != 1 || host.SecurityOpt[0] != "seccomp="+string(want) {
+		t.Fatalf("security options = %d entries, want exactly the inline userns profile", len(host.SecurityOpt))
+	}
+	if slices.Contains(host.SecurityOpt, "no-new-privileges") || slices.Contains(host.SecurityOpt, "no-new-privileges:true") {
+		t.Fatal("no-new-privileges appeared; the default worker does not set it today")
+	}
+	if host.Privileged || len(host.CapAdd) != 0 || len(host.CapDrop) != 0 {
+		t.Fatalf("privileged %v cap-add %#v cap-drop %#v", host.Privileged, host.CapAdd, host.CapDrop)
+	}
+	withoutProfile := *host
+	withoutProfile.SecurityOpt = nil
+	if baseline := startForHostConfig(t, ""); !reflect.DeepEqual(&withoutProfile, baseline) {
+		t.Fatalf("userns worker host config differs from the default beyond SecurityOpt:\n got %#v\nwant %#v", withoutProfile, *baseline)
+	}
+}
+
+func TestStartRejectsUnknownSeccompProfileBeforeCreate(t *testing.T) {
+	t.Parallel()
+	engine := newFakeEngine()
+	runtime := newTestRuntime(t, engine, &memoryArtifacts{})
+	defer closeRuntime(t, runtime)
+	_, err := runtime.Start(context.Background(), controller.StartWorkerRequest{
+		PoolID: "review", Name: "worker", JITConfig: scaleset.NewRunnerJITConfig([]byte("jit"), 99),
+		Limits:         config.Worker{CPUs: 1, Memory: 1 << 30, MemorySwap: 1 << 30, PIDs: 128},
+		SeccompProfile: "unconfined",
+	})
+	if err == nil || controller.RunnerStartMayBeActive(err) {
+		t.Fatalf("error = %v, want a definite pre-create failure", err)
+	}
+	if engine.createOptions().HostConfig != nil {
+		t.Fatal("a container was created for an unknown seccomp profile")
 	}
 }
 

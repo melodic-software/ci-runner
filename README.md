@@ -360,8 +360,30 @@ saturates fail-closed, and `maximumConcurrentWorkers` remains the host-wide
 ceiling. Insufficient memory headroom caps only prospective starts; it does not
 activate the global resource gate or retire healthy existing capacity. Invalid
 resource observations and sustained high CPU remain global gates. Target
-profiles change only Docker CPU, memory, memory-plus-swap, and PID limits. They
-cannot add the Docker socket, privileged mode, devices, or host mounts.
+resource profiles change only Docker CPU, memory, memory-plus-swap, and PID
+limits. A target may also set `seccompProfile` to select a seccomp profile
+embedded in the binary, by name; omitted, its workers keep Docker's built-in
+default. Neither setting can add the Docker socket, privileged mode, devices,
+host mounts, or capabilities, and no setting accepts a profile path.
+
+The only profile is `userns`: the moby default profile (`seccomp/v0.2.3` of
+[moby/profiles](https://github.com/moby/profiles/blob/seccomp/v0.2.3/seccomp/default.json),
+the version Docker Engine 29.8.2 vendors) plus rules that allow, for a process
+without `CAP_SYS_ADMIN`, `clone` and `unshare` when the flags include
+`CLONE_NEWUSER`, and `mount`, `umount2`, and `pivot_root`. Everything else,
+including `fsopen`, `fsconfig`, `setns`, and `clone3` (still `ENOSYS`), is as in
+the default. It lets a job create an unprivileged user namespace and run a
+sandbox that mounts inside it, such as bubblewrap. The kernel still requires
+`CAP_SYS_ADMIN` in the user namespace that owns the mount namespace, so a mount
+outside a job-created user namespace still fails.
+
+```yaml
+github:
+  targets:
+    - id: review
+      seccompProfile: userns
+      # The remaining required target fields are omitted.
+```
 
 On an interactive development host, set `resources.maximumConcurrentWorkers`
 below the sum of pool `maxCapacity` values, lower `resources.worker.cpus`, or

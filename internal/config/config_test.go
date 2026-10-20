@@ -332,6 +332,46 @@ func TestTargetWorkerOverridesInheritUnspecifiedGlobalValues(t *testing.T) {
 	}
 }
 
+func TestTargetSeccompProfileAcceptsTheEmbeddedName(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(strings.NewReader(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.SeccompProfileForTarget("melodic-org"); got != "" {
+		t.Fatalf("omitted seccompProfile = %q, want empty (Docker default)", got)
+	}
+	input := strings.Replace(validYAML, "      warmIdle: 1", "      seccompProfile: userns\n      warmIdle: 1", 1)
+	cfg, err = Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.SeccompProfileForTarget("melodic-org"); got != "userns" {
+		t.Fatalf("seccompProfile = %q, want userns", got)
+	}
+}
+
+func TestTargetSeccompProfileRejectsUnknownNullAndBlankValues(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"unknown name": "      seccompProfile: unconfined",
+		"path":         "      seccompProfile: /etc/docker/seccomp.json",
+		"null":         "      seccompProfile: null",
+		"blank":        "      seccompProfile:",
+		"empty string": `      seccompProfile: ""`,
+		"wrong casing": "      seccompProfile: UserNS",
+	}
+	for name, fragment := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := strings.Replace(validYAML, "      warmIdle: 1", fragment+"\n      warmIdle: 1", 1)
+			if _, err := Load(strings.NewReader(input)); err == nil || !strings.Contains(err.Error(), "seccompProfile") {
+				t.Fatalf("error = %v, want seccompProfile rejection", err)
+			}
+		})
+	}
+}
+
 func TestTargetWorkerOverridesUseGlobalValidationContract(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {

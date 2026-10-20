@@ -1,0 +1,5 @@
+# moby-default.json is kept byte-identical to the pinned upstream file, which
+# indents with tabs and has no final newline.
+[moby-default.json]
+indent_style = tab
+insert_final_newline = unset

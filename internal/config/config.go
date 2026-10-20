@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/melodic-software/ci-runner/internal/seccomp"
 )
 
 const (
@@ -172,6 +174,9 @@ type Target struct {
 	MaxCapacity    int             `yaml:"maxCapacity"`
 	Priority       int             `yaml:"priority"`
 	Resources      TargetResources `yaml:"resources"`
+	// SeccompProfile names an embedded worker seccomp profile (see package
+	// seccomp). Empty keeps Docker's built-in default profile.
+	SeccompProfile string `yaml:"seccompProfile"`
 }
 
 type TargetResources struct {
@@ -241,6 +246,17 @@ func (t Target) EffectiveWorker(defaults Worker) Worker {
 		defaults.PIDs = *overrides.PIDs
 	}
 	return defaults
+}
+
+// SeccompProfileForTarget returns the seccomp profile name configured for a
+// target, or empty for Docker's built-in default.
+func (c Config) SeccompProfileForTarget(id string) string {
+	for _, target := range c.GitHub.Targets {
+		if target.ID == id {
+			return target.SeccompProfile
+		}
+	}
+	return ""
 }
 
 // WorkerForTarget resolves the exact runtime profile for a configured target.
@@ -482,6 +498,12 @@ func validateTargetResourceSyntax(document *yaml.Node) error {
 	}
 	for index, rawTarget := range targets.Content {
 		target := dereferenceYAMLNode(rawTarget)
+		if profile, present := yamlMappingValue(target, "seccompProfile"); present {
+			profile = dereferenceYAMLNode(profile)
+			if yamlNodeIsNull(profile) || profile.Kind == yaml.ScalarNode && strings.TrimSpace(profile.Value) == "" {
+				return fmt.Errorf("github.targets[%d].seccompProfile: must not be null or blank", index)
+			}
+		}
 		resources, present := yamlMappingValue(target, "resources")
 		if !present {
 			continue
@@ -637,6 +659,9 @@ func (c Config) Validate() error {
 		}
 		if target.Resources.Worker != nil {
 			add(validateWorker(path+".resources.worker", target.EffectiveWorker(c.Resources.Worker)))
+		}
+		if target.SeccompProfile != "" && !seccomp.Valid(target.SeccompProfile) {
+			add(fmt.Errorf("%s.seccompProfile: must be one of %s", path, strings.Join(seccomp.Names(), ", ")))
 		}
 	}
 	resources := c.Resources
