@@ -106,6 +106,8 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/shellcheck@d223a6446680fb261e264d1dea9efba46f20ead2 # v0.50.0
         with:
           rcfile: .shellcheckrc
+          # Plugin-owned copies the guardrails installer writes; linted upstream.
+          exclude: .githooks/guardrails/
 
   shfmt:
     name: Shell format
@@ -119,6 +121,9 @@ jobs:
           persist-credentials: false
       - name: Check shell formatting
         uses: melodic-software/ci-workflows/.github/actions/shfmt@d223a6446680fb261e264d1dea9efba46f20ead2 # v0.50.0
+        with:
+          # Plugin-owned copies the guardrails installer writes; linted upstream.
+          exclude: .githooks/guardrails/
 
   typos:
     name: Spelling
@@ -256,6 +261,7 @@ jobs:
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
+          # The guardrails pattern sources carry the path forms they detect.
           exclude: >-
             :(exclude)docs/worker-image.md
             :(exclude)scripts/Test-ReleasePins.ps1
@@ -263,6 +269,7 @@ jobs:
             :(exclude)worker/capture-cgroup.sh
             :(exclude)worker/entrypoint.sh
             :(exclude)worker/set-state.sh
+            :(exclude).githooks/guardrails/**
 
   check-line-endings:
     name: EOL normalization

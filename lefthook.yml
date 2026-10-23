@@ -1,0 +1,15 @@
+pre-commit:
+  jobs:
+    - name: guardrails-pre-commit-content
+      run: bash .githooks/guardrails/pre-commit-content.sh
+
+commit-msg:
+  jobs:
+    - name: guardrails-commit-msg-convention
+      run: bash .githooks/guardrails/commit-msg-convention.sh {0}
+
+pre-push:
+  jobs:
+    - name: guardrails-reference-verify
+      run: bash .githooks/guardrails/reference-verify.sh {0}
+      use_stdin: true
