@@ -3,7 +3,7 @@ module github.com/melodic-software/ci-runner
 go 1.27.3
 
 require (
-	github.com/Microsoft/go-winio v0.6.3
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/actions/scaleset v0.4.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/google/uuid v1.6.0
