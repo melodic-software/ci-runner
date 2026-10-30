@@ -76,9 +76,16 @@ publication job that performs this check.
 
 The image base, GitHub Actions, analyzers, and publication actions are immutable
 pins. Same-line release comments allow Dependabot to recognize SHA-pinned
-Actions. Every external Action also appears in `release/dependencies.json`; the
-release workflow's freshness gate validates its current tag and tag-to-commit
-mapping. Update PRs are review-only and are never auto-merged.
+Actions. The workflow `uses:` lines and the Dockerfile `FROM` line are the only
+record of those pins, so a Dependabot bump needs no other edit:
+`scripts/ReleasePinSources.ps1` reads them, and `Test-ReleasePins.ps1` requires
+every external Action to carry a `# vX.Y.Z` comment and name one release per
+repository. `release/dependencies.json` keeps only what those lines cannot
+carry: archive checksums, image digests of release tooling, sources, and the
+`melodic-software/ci-workflows` repository pin. The release workflow's freshness
+gate validates each Action's current tag and tag-to-commit mapping, the runner
+tag's GHCR digest, and the runner archive digest against the SHA-256 the runner
+release notes publish. Update PRs are review-only and are never auto-merged.
 
 On a first run, the workflow pushes the BuildKit result without a tag, pulls and
 contract-tests that exact registry digest, publishes and verifies the immutable

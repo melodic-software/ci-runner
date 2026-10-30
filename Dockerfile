@@ -1,6 +1,7 @@
 # The tag and multi-platform index digest are intentionally both pinned. The
 # official image is Ubuntu 24.04 and contains the exact runner binary named by
-# the tag. release/dependencies.json records the independent release evidence.
+# the tag. This line is the runner pin's single source: Dependabot rewrites it,
+# and scripts/ReleasePinSources.ps1 reads it for every release check.
 FROM ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
 
 ARG POWERSHELL_VERSION=7.6.6

@@ -7,6 +7,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $dependencies = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'release\dependencies.json') | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'ReleasePinSources.ps1')
+foreach ($retired in @('runner', 'githubActions')) {
+    if ($dependencies.PSObject.Properties.Name -contains $retired) {
+        throw "release/dependencies.json must not record $retired; it is read from the Dockerfile FROM line and the workflow uses: lines (scripts/ReleasePinSources.ps1)"
+    }
+}
 $dockerfile = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'Dockerfile')
 $freshnessMonitor = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'scripts\Test-DependencyFreshness.ps1')
 $readme = Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'README.md')
@@ -51,7 +57,9 @@ foreach ($fragment in @(
         '$pinnedRunnerRelease',
         '$pinnedScaleSetRelease',
         '$pinnedActionRelease',
-        '$dependencies.runner.image',
+        '$runnerBase.image',
+        '<!-- BEGIN SHA linux-x64 -->',
+        'Get-WorkflowActionPins',
         '$dependencies.syft.image')) {
     if (-not $freshnessMonitor.Contains($fragment)) {
         throw "Dependency freshness monitor is missing a fail-closed integrity/aging contract: $fragment"
@@ -74,10 +82,7 @@ foreach ($dependency in @($dependencies.buildKit, $dependencies.buildKitSbomScan
     }
 }
 
-$expectedFrom = "FROM $($dependencies.runner.image)@$($dependencies.runner.digest)"
-if (-not $dockerfile.Contains($expectedFrom)) {
-    throw "Dockerfile must contain the pinned official runner image: $expectedFrom"
-}
+$null = Get-RunnerBasePin (Join-Path $RepositoryRoot 'Dockerfile')
 
 $expectedPowerShellVersion = "ARG POWERSHELL_VERSION=$($dependencies.powerShell.version)"
 $expectedPowerShellDigest = "ARG POWERSHELL_SHA256=$($dependencies.powerShell.linuxX64ArchiveSha256)"
@@ -297,18 +302,6 @@ if (-not $releaseWorkflow.Contains('push-by-digest=true') -or
     $releaseWorkflow.IndexOf('docker buildx imagetools create', [StringComparison]::Ordinal) -le $promoteIndex) {
     throw 'Worker publication must build by digest and promote tags only in the final promotion job'
 }
-$actionPins = @{}
-foreach ($action in $dependencies.githubActions) {
-    if ($action.repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
-        $action.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
-        $action.commit -notmatch '^[0-9a-f]{40}$') {
-        throw "Invalid GitHub Action dependency manifest entry: $($action | ConvertTo-Json -Compress)"
-    }
-    if ($actionPins.ContainsKey($action.repository)) {
-        throw "Duplicate GitHub Action dependency manifest entry: $($action.repository)"
-    }
-    $actionPins[$action.repository] = $action
-}
 $reusablePins = @{}
 foreach ($workflow in $dependencies.reusableWorkflows) {
     if ($workflow.reference -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$' -or
@@ -333,7 +326,6 @@ foreach ($pin in $dependencies.repositoryPins) {
     }
     $repositoryPins[$pin.repository] = $pin
 }
-$observedActions = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $observedReusableWorkflows = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $observedRepositoryPins = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $toolPins = @{
@@ -389,13 +381,6 @@ foreach ($workflow in $workflowFiles) {
             $observedRepositoryPins.Add($repositoryPin.Key) | Out-Null
             continue
         }
-        if (-not $actionPins.ContainsKey($parts[0])) {
-            throw "$($workflow.Name) uses $($parts[0]), which is missing from release/dependencies.json githubActions"
-        }
-        if ($actionPins[$parts[0]].commit -ne $parts[1]) {
-            throw "$($workflow.Name) pin for $($parts[0]) disagrees with release/dependencies.json: $($parts[1])"
-        }
-        $observedActions.Add($parts[0]) | Out-Null
     }
     if ($content -match '(?m)^\s*runs-on:\s*ubuntu-latest\s*$') {
         throw "$($workflow.Name) uses the moving ubuntu-latest label"
@@ -405,11 +390,9 @@ foreach ($workflow in $workflowFiles) {
     }
 }
 
-foreach ($repository in $actionPins.Keys) {
-    if (-not $observedActions.Contains($repository)) {
-        throw "Stale GitHub Action dependency manifest entry is not used by a workflow: $repository"
-    }
-}
+# Every other external Action: a full SHA with a same-line release comment, one release per repository.
+$pinnedElsewhere = @($repositoryPins.Keys) + @($reusablePins.Keys | ForEach-Object { ($_ -split '/')[0..1] -join '/' })
+$null = Get-WorkflowActionPins (Join-Path $RepositoryRoot '.github\workflows') $pinnedElsewhere
 foreach ($reference in $reusablePins.Keys) {
     if (-not $observedReusableWorkflows.Contains($reference)) {
         throw "Stale reusable-workflow dependency manifest entry is not used by a workflow: $reference"

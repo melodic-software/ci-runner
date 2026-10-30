@@ -23,9 +23,10 @@ script runs inside the worker.
   reviewed commit `c9dd57c6b6333892b46abcc439ba0676fd03867a`. The remaining
   compatibility packages come from Ubuntu 24.04.
 
-The immutable evidence and original source URLs are recorded in
-`release/dependencies.json`. The release workflow's freshness gate independently
-resolves the official feeds and blocks publication when a reviewed pin is stale.
+The runner image pin is the Dockerfile `FROM` line; the other immutable
+evidence and original source URLs are recorded in `release/dependencies.json`.
+The release workflow's freshness gate independently resolves the official feeds
+and blocks publication when a reviewed pin is stale.
 
 Authoritative references:
 

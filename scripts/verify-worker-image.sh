@@ -4,11 +4,17 @@ set -Eeuo pipefail
 # is swallowed and the verifier reports success.
 shopt -s inherit_errexit
 
-image="${1:?usage: verify-worker-image.sh IMAGE}"
-dependencies="${2:-release/dependencies.json}"
+image="${1:?usage: verify-worker-image.sh IMAGE [DOCKERFILE]}"
+dockerfile="${2:-Dockerfile}"
 
-expected_runner_version="$(jq --exit-status --raw-output '.runner.version' "$dependencies")"
-expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$dependencies")"
+# The Dockerfile FROM line is the runner pin's single source (scripts/ReleasePinSources.ps1).
+base_pin="$(sed --regexp-extended --silent \
+  's/^FROM ghcr\.io\/actions\/actions-runner:([0-9]+\.[0-9]+\.[0-9]+)@(sha256:[0-9a-f]{64})[[:space:]]*$/\1 \2/p' "$dockerfile")"
+if [[ ! "$base_pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+\ sha256:[0-9a-f]{64}$ ]]; then
+  echo "$dockerfile must have exactly one pinned official runner FROM line" >&2
+  exit 1
+fi
+read -r expected_runner_version expected_base_digest <<<"$base_pin"
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
