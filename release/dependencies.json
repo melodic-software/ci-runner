@@ -120,8 +120,8 @@
     },
     {
       "repository": "zizmorcore/zizmor-action",
-      "version": "0.6.4",
-      "commit": "cc914d7f3750a2d13d75c7f184a1060aa0e9d482"
+      "version": "0.7.1",
+      "commit": "85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e"
     }
   ],
   "repositoryPins": [
