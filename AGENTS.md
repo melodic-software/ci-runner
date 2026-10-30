@@ -69,7 +69,7 @@ Org architecture (cross-repo decisions, glossary, why each trust link exists): p
 
 Each line names a rule CI does not enforce; the linked file states it in full.
 
-- Org-wide criteria: [`REVIEW.md`](https://github.com/melodic-software/standards/blob/main/REVIEW.md) in `melodic-software/standards`.
+- Org-wide criteria: [`REVIEW.md`](REVIEW.md), synced from `melodic-software/standards`.
 - Worker runtime invariants: [rule](docs/worker-image.md#mandatory-runtime-invariants).
 - Release output (digest deploys, write-once tags): [rule](docs/releases.md#release-output).
 - Freshness policy: [rule](docs/releases.md#freshness-policy).
