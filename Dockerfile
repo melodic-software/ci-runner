@@ -1,7 +1,7 @@
 # The tag and multi-platform index digest are intentionally both pinned. The
 # official image is Ubuntu 24.04 and contains the exact runner binary named by
 # the tag. release/dependencies.json records the independent release evidence.
-FROM ghcr.io/actions/actions-runner:2.338.0@sha256:4ffadc0002b2581327e06101fc8c06cd189232baf79fe561fac9caeb76f5e807
+FROM ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
 
 ARG POWERSHELL_VERSION=7.6.6
 ARG POWERSHELL_SHA256=ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc
@@ -74,8 +74,8 @@ ENV DOTNET_INSTALL_DIR=/home/runner/.dotnet \
     ImageOS=ubuntu24
 
 LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
-      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.338.0" \
-      org.opencontainers.image.base.digest="sha256:4ffadc0002b2581327e06101fc8c06cd189232baf79fe561fac9caeb76f5e807" \
+      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.338.2" \
+      org.opencontainers.image.base.digest="sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232" \
       org.opencontainers.image.description="Ephemeral one-job GitHub Actions worker for ci-runner"
 
 # The upstream user is uid/gid 1001 and has passwordless sudo, matching the
