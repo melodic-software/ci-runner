@@ -74,9 +74,9 @@ ENV DOTNET_INSTALL_DIR=/home/runner/.dotnet \
     ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/libexec/ci-runner-job-completed.sh \
     ImageOS=ubuntu24
 
+# No base-image labels: Dependabot rewrites only the FROM line, and release
+# provenance records the resolved base digest.
 LABEL org.opencontainers.image.source="https://github.com/melodic-software/ci-runner" \
-      org.opencontainers.image.base.name="ghcr.io/actions/actions-runner:2.338.2" \
-      org.opencontainers.image.base.digest="sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232" \
       org.opencontainers.image.description="Ephemeral one-job GitHub Actions worker for ci-runner"
 
 # The upstream user is uid/gid 1001 and has passwordless sudo, matching the

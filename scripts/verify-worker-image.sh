@@ -8,13 +8,12 @@ image="${1:?usage: verify-worker-image.sh IMAGE [DOCKERFILE]}"
 dockerfile="${2:-Dockerfile}"
 
 # The Dockerfile FROM line is the runner pin's single source (scripts/ReleasePinSources.ps1).
-base_pin="$(sed --regexp-extended --silent \
-  's/^FROM ghcr\.io\/actions\/actions-runner:([0-9]+\.[0-9]+\.[0-9]+)@(sha256:[0-9a-f]{64})[[:space:]]*$/\1 \2/p' "$dockerfile")"
-if [[ ! "$base_pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+\ sha256:[0-9a-f]{64}$ ]]; then
+expected_runner_version="$(sed --regexp-extended --silent \
+  's/^FROM ghcr\.io\/actions\/actions-runner:([0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}[[:space:]]*$/\1/p' "$dockerfile")"
+if [[ ! "$expected_runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "$dockerfile must have exactly one pinned official runner FROM line" >&2
   exit 1
 fi
-read -r expected_runner_version expected_base_digest <<<"$base_pin"
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
@@ -27,13 +26,13 @@ image_env() {
   ' <<<"$config"
 }
 
-jq --exit-status --arg expected_base_digest "$expected_base_digest" '
+jq --exit-status '
   .User == "runner" and
   .WorkingDir == "/home/runner" and
   .Cmd == ["/home/runner/run.sh"] and
   .Entrypoint == ["/usr/local/bin/ci-runner-entrypoint"] and
   .Volumes == null and
-  .Labels["org.opencontainers.image.base.digest"] == $expected_base_digest and
+  (.Labels | has("org.opencontainers.image.base.digest") | not) and
   ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED="))]
     == ["ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh"]) and
   ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))]
