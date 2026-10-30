@@ -358,6 +358,11 @@ foreach ($workflow in $workflowFiles) {
         if ($reference.StartsWith('./')) {
             continue
         }
+        # A standards-sync caller may float a first-party reusable workflow on @main
+        # (standards#911); actions still need a full SHA.
+        if ($syncManaged -and $reference -cmatch '^melodic-software/ci-workflows/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml@main$') {
+            continue
+        }
         if ($reference -notmatch '@[0-9a-f]{40}$') {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
         }
