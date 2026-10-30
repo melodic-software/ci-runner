@@ -17,6 +17,12 @@ if ($env:GITHUB_TOKEN) {
     $headers.Authorization = "Bearer $($env:GITHUB_TOKEN)"
 }
 $dependencies = Get-Content -Raw -LiteralPath $DependencyManifest | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'ReleasePinSources.ps1')
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$runnerBase = Get-RunnerBasePin (Join-Path $repositoryRoot 'Dockerfile')
+$pinnedElsewhere = @($dependencies.repositoryPins.repository) +
+    @($dependencies.reusableWorkflows | ForEach-Object { ($_.reference -split '/')[0..1] -join '/' })
+$githubActions = Get-WorkflowActionPins (Join-Path $repositoryRoot '.github\workflows') $pinnedElsewhere
 $now = [DateTimeOffset]::UtcNow
 $drift = [Collections.Generic.List[object]]::new()
 
@@ -142,21 +148,27 @@ function Add-IntegrityDrift(
 
 $runnerReleases = Get-GitHubReleases 'actions/runner'
 $runner = Get-LatestRelease $runnerReleases
-$runnerPendingDate = Get-FirstUnadoptedReleaseDate $runnerReleases $dependencies.runner.version
+$runnerPendingDate = Get-FirstUnadoptedReleaseDate $runnerReleases $runnerBase.version
 $runnerCritical = @($runnerReleases | Where-Object {
-    [version]$_.tag_name.TrimStart('v') -gt [version]$dependencies.runner.version -and
+    [version]$_.tag_name.TrimStart('v') -gt [version]$runnerBase.version -and
     $_.body -match '(?i)\bcritical\b|\bsecurity\b|CVE-[0-9]{4}-[0-9]+'
 }).Count -gt 0
 $runnerDriftDate = if ($runnerPendingDate) { $runnerPendingDate } else { [DateTimeOffset]$runner.published_at }
-Add-Drift 'actions-runner' $dependencies.runner.version $runner.tag_name.TrimStart('v') $runnerDriftDate $runner.html_url $runnerCritical
+Add-Drift 'actions-runner' $runnerBase.version $runner.tag_name.TrimStart('v') $runnerDriftDate $runner.html_url $runnerCritical
 
-$pinnedRunnerRelease = Get-ReleaseForVersion $runnerReleases $dependencies.runner.version 'actions/runner'
-$runnerAssetName = "actions-runner-linux-x64-$($dependencies.runner.version).tar.gz"
+$pinnedRunnerRelease = Get-ReleaseForVersion $runnerReleases $runnerBase.version 'actions/runner'
+$runnerAssetName = "actions-runner-linux-x64-$($runnerBase.version).tar.gz"
 $runnerAsset = $pinnedRunnerRelease.assets | Where-Object { $_.name -eq $runnerAssetName }
 if (-not $runnerAsset -or $runnerAsset.digest -notmatch '^sha256:[0-9a-f]{64}$') {
     throw "Official runner release is missing a checksummed $runnerAssetName asset"
 }
-Add-IntegrityDrift 'actions-runner-archive-digest' "sha256:$($dependencies.runner.archiveSha256)" `
+# The runner release notes publish each archive's SHA-256 independently of the
+# asset digest GitHub computes on upload; the two must agree.
+$runnerNotesDigest = [regex]::Match($pinnedRunnerRelease.body, '<!-- BEGIN SHA linux-x64 -->([0-9a-f]{64})<!-- END SHA linux-x64 -->')
+if (-not $runnerNotesDigest.Success) {
+    throw "Official runner release notes do not publish a linux-x64 SHA-256: $($pinnedRunnerRelease.html_url)"
+}
+Add-IntegrityDrift 'actions-runner-archive-digest' "sha256:$($runnerNotesDigest.Groups[1].Value)" `
     $runnerAsset.digest ([DateTimeOffset]$pinnedRunnerRelease.published_at) $runnerAsset.browser_download_url
 
 $scaleSetReleases = Get-GitHubReleases 'actions/scaleset'
@@ -225,7 +237,7 @@ foreach ($repositoryPin in $dependencies.repositoryPins) {
         $firstUnadoptedDate $repositoryPin.source
 }
 
-foreach ($action in $dependencies.githubActions) {
+foreach ($action in $githubActions) {
     $actionReleases = Get-GitHubReleases $action.repository
     $semanticActionReleases = @($actionReleases |
         Where-Object { $_.tag_name -match '^v?[0-9]+\.[0-9]+\.[0-9]+$' })
@@ -381,7 +393,7 @@ if ($pendingGoTags.Count -gt 0) {
 }
 Add-Drift 'go' $dependencies.go.version $go.version.TrimStart('go') $goDriftDate 'https://go.dev/dl/'
 
-$runnerImage = $dependencies.runner.image
+$runnerImage = $runnerBase.image
 $inspect = & docker buildx imagetools inspect $runnerImage 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to inspect official runner image $runnerImage`: $inspect"
@@ -391,7 +403,7 @@ if (-not $digestMatch.Success) {
     throw "Official runner image inspection did not return an index digest: $runnerImage"
 }
 $observedRunnerDigest = $digestMatch.Groups[1].Value
-Add-IntegrityDrift 'actions-runner-image-digest' $dependencies.runner.digest $observedRunnerDigest `
+Add-IntegrityDrift 'actions-runner-image-digest' $runnerBase.digest $observedRunnerDigest `
     ([DateTimeOffset]$pinnedRunnerRelease.published_at) 'https://github.com/actions/actions-runner/pkgs/container/actions-runner'
 
 $report = [ordered]@{

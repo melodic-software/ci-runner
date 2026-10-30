@@ -4,11 +4,16 @@ set -Eeuo pipefail
 # is swallowed and the verifier reports success.
 shopt -s inherit_errexit
 
-image="${1:?usage: verify-worker-image.sh IMAGE}"
-dependencies="${2:-release/dependencies.json}"
+image="${1:?usage: verify-worker-image.sh IMAGE [DOCKERFILE]}"
+dockerfile="${2:-Dockerfile}"
 
-expected_runner_version="$(jq --exit-status --raw-output '.runner.version' "$dependencies")"
-expected_base_digest="$(jq --exit-status --raw-output '.runner.digest' "$dependencies")"
+# The Dockerfile FROM line is the runner pin's single source (scripts/ReleasePinSources.ps1).
+expected_runner_version="$(sed --regexp-extended --silent \
+  's/^FROM ghcr\.io\/actions\/actions-runner:([0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}[[:space:]]*$/\1/p' "$dockerfile")"
+if [[ ! "$expected_runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "$dockerfile must have exactly one pinned official runner FROM line" >&2
+  exit 1
+fi
 
 config="$(docker image inspect "$image" --format '{{json .Config}}')"
 
@@ -21,13 +26,13 @@ image_env() {
   ' <<<"$config"
 }
 
-jq --exit-status --arg expected_base_digest "$expected_base_digest" '
+jq --exit-status '
   .User == "runner" and
   .WorkingDir == "/home/runner" and
   .Cmd == ["/home/runner/run.sh"] and
   .Entrypoint == ["/usr/local/bin/ci-runner-entrypoint"] and
   .Volumes == null and
-  .Labels["org.opencontainers.image.base.digest"] == $expected_base_digest and
+  (.Labels | has("org.opencontainers.image.base.digest") | not) and
   ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED="))]
     == ["ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/ci-runner-job-started.sh"]) and
   ([.Env[] | select(startswith("ACTIONS_RUNNER_HOOK_JOB_COMPLETED="))]

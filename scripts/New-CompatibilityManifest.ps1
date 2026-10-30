@@ -51,6 +51,9 @@ if ($dependencies.schemaVersion -ne 1) {
     throw "Unsupported dependency manifest schema version: $($dependencies.schemaVersion)"
 }
 
+. (Join-Path $PSScriptRoot 'ReleasePinSources.ps1')
+$runnerBase = Get-RunnerBasePin (Join-Path (Split-Path -Parent $PSScriptRoot) 'Dockerfile')
+
 $archive = Get-Item -LiteralPath $ControllerArchive
 $archiveDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName).Hash.ToLowerInvariant()
 
@@ -72,7 +75,7 @@ $manifest = [ordered]@{
         digest = $WorkerDigest
     }
     dependencies = [ordered]@{
-        runnerVersion = $dependencies.runner.version
+        runnerVersion = $runnerBase.version
         scaleSetClientVersion = $dependencies.scaleSetClient.version
         scaleSetClientCommit = $dependencies.scaleSetClient.commit
         goToolchain = "go$($dependencies.go.version)"

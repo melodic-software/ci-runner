@@ -48,6 +48,9 @@ mapfile -t expected_checksum_names < <(printf '%s\n' "${expected_checksum_names[
 (cd dist && sha256sum --check --strict SHA256SUMS)
 
 manifest=dist/compatibility.json
+runner_version="$(sed --regexp-extended --silent \
+  's/^FROM ghcr\.io\/actions\/actions-runner:([0-9]+\.[0-9]+\.[0-9]+)@sha256:[0-9a-f]{64}[[:space:]]*$/\1/p' Dockerfile)"
+[[ "$runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 archive_digest="sha256:$(sha256sum "dist/$archive" | cut --delimiter=' ' --fields=1)"
 jq --exit-status \
   --arg version "$RELEASE_VERSION" \
@@ -56,6 +59,7 @@ jq --exit-status \
   --arg archive "$archive" \
   --arg archive_digest "$archive_digest" \
   --arg sbom "$sbom" \
+  --arg runner_version "$runner_version" \
   --slurpfile pins release/dependencies.json \
   '
     (keys | sort) == (["controller","createdAt","dependencies","evidence","releaseVersion","schemaVersion","source","worker"] | sort)
@@ -69,7 +73,7 @@ jq --exit-status \
     and .worker.image == ("ghcr.io/" + $repository)
     and (.worker.digest | test("^sha256:[0-9a-f]{64}$"))
     and .dependencies == {
-      runnerVersion: $pins[0].runner.version,
+      runnerVersion: $runner_version,
       scaleSetClientVersion: $pins[0].scaleSetClient.version,
       scaleSetClientCommit: $pins[0].scaleSetClient.commit,
       goToolchain: ("go" + $pins[0].go.version),

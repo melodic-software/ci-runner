@@ -528,7 +528,8 @@ Releases produce an immutable pair:
 
 Dependencies and Actions are exact pins. Release publication resolves official
 sources and fails when a pin has been behind for more than 14 days or a critical
-release is pending; updates remain reviewed and are never auto-merged. Deployment uses a versioned install
+release is pending; updates other than the `vendor-actions` lane's minor and patch Action bumps are
+reviewed, never auto-merged. Deployment uses a versioned install
 directory plus `current` junction; how many known-good pairs are retained is a
 floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
 

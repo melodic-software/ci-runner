@@ -21,6 +21,10 @@ function run(mode) {
   const output = join(directory, "output");
   mkdirSync(bin);
   writeFileSync(output, "");
+  writeFileSync(
+    join(directory, "Dockerfile"),
+    `FROM ghcr.io/actions/actions-runner:2.338.2@sha256:${"0".repeat(64)}\n`,
+  );
   writeShim(bin, "gh", `
 case "\${1:-} \${2:-}" in
   "api --include")
