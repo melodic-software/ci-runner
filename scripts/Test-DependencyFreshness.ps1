@@ -20,7 +20,9 @@ $dependencies = Get-Content -Raw -LiteralPath $DependencyManifest | ConvertFrom-
 . (Join-Path $PSScriptRoot 'ReleasePinSources.ps1')
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $runnerBase = Get-RunnerBasePin (Join-Path $repositoryRoot 'Dockerfile')
-$githubActions = Get-WorkflowActionPins (Join-Path $repositoryRoot '.github\workflows') @($dependencies.repositoryPins.repository)
+$pinnedElsewhere = @($dependencies.repositoryPins.repository) +
+    @($dependencies.reusableWorkflows | ForEach-Object { ($_.reference -split '/')[0..1] -join '/' })
+$githubActions = Get-WorkflowActionPins (Join-Path $repositoryRoot '.github\workflows') $pinnedElsewhere
 $now = [DateTimeOffset]::UtcNow
 $drift = [Collections.Generic.List[object]]::new()
 

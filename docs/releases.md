@@ -85,7 +85,10 @@ carry: archive checksums, image digests of release tooling, sources, and the
 `melodic-software/ci-workflows` repository pin. The release workflow's freshness
 gate validates each Action's current tag and tag-to-commit mapping, the runner
 tag's GHCR digest, and the runner archive digest against the SHA-256 the runner
-release notes publish. Update PRs are review-only and are never auto-merged.
+release notes publish. Minor and patch bumps of `actions/*`, `github/*` and
+`anthropics/*` Actions take the `vendor-actions` auto-merge lane
+(`pr-automerge-dependabot.yml`), which merges once `ci-status` passes; every
+other update PR is review-only.
 
 On a first run, the workflow pushes the BuildKit result without a tag, pulls and
 contract-tests that exact registry digest, publishes and verifies the immutable
@@ -163,7 +166,8 @@ installer or `latest`:
   when the digest behind the pinned runner tag changes;
 - retain at least the latest three known-good compatibility pairs;
 - never auto-merge controller, runner, image, toolchain, Scale Set Client,
-  Action, or release changes.
+  Action, or release changes, except the `vendor-actions` lane's minor and
+  patch Action bumps.
 
 A partial drain may advance mechanical toolchain and publication pins while
 holding a cross-repository SHA pin such as `melodic-software/ci-workflows`.
