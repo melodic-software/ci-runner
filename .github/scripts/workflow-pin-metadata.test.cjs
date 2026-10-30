@@ -11,6 +11,8 @@ const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
+const advisoryReusableAtMain =
+  /^\s*uses:\s+melodic-software\/ci-workflows\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@main(?:\s+#.*)?$/u;
 
 // Which files call which ci-workflows composite or reusable, sorted, with
 // duplicates kept. This is the omitted-caller regression check: a lane that
@@ -128,14 +130,14 @@ function ciWorkflowsPin() {
         continue;
       }
 
-      // SYNC-MANAGED soak callers may pin a pre-release SHA with the
-      // fallback comment form until a reviewed release carries the action.
-      // They stay out of the one-release compatibility inventory so a
-      // standards-sync cannot break Product policy; they still require a
-      // full 40-hex SHA (https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
+      // SYNC-MANAGED callers stay out of the one-release compatibility
+      // inventory so a standards-sync cannot break Product policy. A
+      // first-party reusable workflow may float on `@main` (standards#911);
+      // an action still needs a full 40-hex SHA, which the org Actions policy
+      // also enforces (https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
       if (advisory) {
         assert.ok(
-          advisoryReference.exec(line),
+          advisoryReference.exec(line) || advisoryReusableAtMain.exec(line),
           `${path.relative(workflowDirectory, file)}:${index + 1} is not a SHA-pinned advisory ci-workflows reference`,
         );
         continue;
