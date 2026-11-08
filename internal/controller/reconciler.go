@@ -940,7 +940,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	alignAdvertisedCapacity(postPlan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
 	if superseded(ctx) {
 		// Inputs changed after the poll-time check: the remaining calls ran on a canceled context, so a
-		// degraded checkpoint here would report the cancellation as a host failure (#491). Return before
+		// degraded checkpoint here would report the cancellation as a host failure. Return before
 		// the pool loop clears pending capacity, so the rerun still holds this poll's in-flight value.
 		if staleThisStep {
 			r.noteStaleHandshake()
