@@ -28,15 +28,15 @@ targeted Go version (1.27.3)`. Build golangci-lint from source with the repo's
 toolchain (`.cursor/environment.json` runs this same install on Cursor Cloud):
 
 ```bash
-GOTOOLCHAIN=go1.27.3 GOFLAGS=-mod=mod go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+GOTOOLCHAIN=go1.27.3 GOFLAGS=-mod=mod go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 golangci-lint run ./...
 ```
 
-golangci-lint must be v2.13.1 or newer: go1.27 support landed in v2.13.0
-([golangci-lint#6643](https://github.com/golangci/golangci-lint/issues/6643)),
-and older releases reject this module outright. The version is kept aligned with
-`GOLANGCI_LINT_VERSION` in the shared `pr-run-checks-go` reusable that
-`.github/workflows/pr-require-checks.yml` calls, so local lint matches CI.
+Use the `GOLANGCI_LINT_VERSION` of the shared `pr-run-checks-go` reusable at the
+ref `.github/workflows/pr-require-checks.yml` pins, so local lint matches CI; bump
+the pin here and in `.cursor/environment.json` when that ref moves. Releases
+before v2.13.0 reject this module outright: go1.27 support landed there
+([golangci-lint#6643](https://github.com/golangci/golangci-lint/issues/6643)).
 
 `GOTOOLCHAIN=go1.27.3` is required — without it, `go install` honors
 golangci-lint's own (older) `toolchain` directive and produces a binary that
