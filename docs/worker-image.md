@@ -191,7 +191,12 @@ bound by its own quota, because the kernel counts only throttling "caused by
 this cgroup's own bandwidth limit"
 ([cgroup v2 `cpu.stat`](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)).
 Well below the limit with little throttling, it was waiting on something
-else: host CPU contention, I/O, or the network.
+else: other containers on the engine, I/O, or the network. These counters see
+only the Linux VM. The Docker Desktop WSL2 kernel builds without
+`CONFIG_PARAVIRT_TIME_ACCOUNTING` and reports zero steal time, so time Windows
+withholds the VM's vCPUs is not subtracted from usage. Windows-side contention
+can therefore still look like quota use; cross-check it against
+`ci_runner.host.cpu.utilization`.
 It publishes that file by same-directory atomic rename, then writes the identical
 JSON as one reserved `ci-runner-resource-evidence-v1:` marker directly to
 `/proc/1/fd/1`. The pinned runner redirects hook stdout and stderr through its
