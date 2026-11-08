@@ -180,9 +180,17 @@ A partial drain may advance mechanical toolchain and publication pins while
 holding a cross-repository SHA pin such as `melodic-software/ci-workflows`.
 Record the reviewed hold in `release/dependency-drift-review.json`; the release
 freshness gate continues to report the held row until a dedicated
-compatibility PR moves every reference together. No scheduled run exists; run
-`scripts/Test-DependencyFreshness.ps1` by hand to check freshness between
-releases.
+compatibility PR moves every reference together.
+
+Between releases, `.github/workflows/maintenance-check-dependency-freshness.yml`
+runs the same check daily at 06:41 UTC, or on a manual dispatch, so drift is
+fixed before a tag is pushed. Drift does not fail that run. It keeps one issue,
+titled `Dependency freshness: drift at or past the promotion target` and
+labeled `automated` and `dependencies`, open while any row hard-fails or is at
+least seven days old, the promotion target above. Each run rewrites its body
+with the full drift table, reviewed holds marked, and the run link, and closes
+it once no such row remains. A run that cannot complete the check fails and
+leaves the issue as it was.
 
 The runner cooldown is the `-RunnerCooldownDays` and `-RunnerMajorCooldownDays`
 defaults of `scripts/Test-DependencyFreshness.ps1`, beside `-HardFailAfterDays`.
@@ -205,8 +213,8 @@ update-disabled runners, which stops queuing jobs to a runner more than 30 days
 behind the latest release and pauses queuing immediately when a critical
 security update is published. The 14-day hard-fail satisfies the 30-day rule
 with margin. The critical/CVE clause has no grace period the drift check could
-beat: the check runs only when a release is published or someone runs it by
-hand, and it neither rebuilds nor stops deployed workers, so the required
+beat: outside a release the check runs daily or on manual dispatch, and it neither
+rebuilds nor stops deployed workers, so the required
 control for a critical release is the expedited rebuild fast-path in the
 provisioning rolling-upgrade runbook, with GitHub's platform-side queuing
 pause as the enforcement backstop. This reconciliation is a maintained
