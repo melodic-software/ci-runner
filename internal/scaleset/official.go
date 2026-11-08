@@ -15,12 +15,11 @@ import (
 	"time"
 
 	actionsscale "github.com/actions/scaleset"
-	"github.com/hashicorp/go-retryablehttp"
 )
 
 const (
-	OfficialClientVersion = "v0.4.0"
-	OfficialClientCommit  = "6ce025902cd964747a078c2aabe7340ebc667eca"
+	OfficialClientVersion = "v0.5.0"
+	OfficialClientCommit  = "af394d86c0d5024225238b0209043c70193bcfe6"
 )
 
 type JobEventSink interface {
@@ -541,20 +540,6 @@ func sameLabels(a, b []actionsscale.Label) bool {
 
 var officialStatusPattern = regexp.MustCompile(`status="([0-9]{3})`)
 
-type officialRateLimitError struct {
-	retryAfterSeconds int
-	err               error
-}
-
-func (e *officialRateLimitError) Error() string {
-	if e.err != nil {
-		return e.err.Error()
-	}
-	return "official scale-set client was rate limited"
-}
-
-func (e *officialRateLimitError) Unwrap() error { return e.err }
-
 func translateOfficialError(operation string, err error) error {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return err
@@ -564,11 +549,12 @@ func translateOfficialError(operation string, err error) error {
 		// request deadline is a safe transport retry.
 		return &Error{Kind: ErrorTransport, Operation: operation, Err: err}
 	}
-	var rateLimit *officialRateLimitError
-	if errors.As(err, &rateLimit) {
+	// A rate-limited 403 falls through to ErrorForbidden below.
+	var rateLimit *actionsscale.RateLimitError
+	if errors.As(err, &rateLimit) && rateLimit.StatusCode == http.StatusTooManyRequests {
 		return &Error{
 			Kind: ErrorRateLimited, Operation: operation, StatusCode: http.StatusTooManyRequests,
-			RetryAfterSeconds: rateLimit.retryAfterSeconds, Err: err,
+			RetryAfterSeconds: int((rateLimit.RetryAfter + time.Second - 1) / time.Second), Err: err,
 		}
 	}
 	if errors.Is(err, actionsscale.RunnerNotFoundError) {
@@ -630,11 +616,8 @@ type defaultOfficialFactory struct{ options OfficialOptions }
 func (f *defaultOfficialFactory) New(_ context.Context, definition Definition, key SecretMaterial) (officialAPI, error) {
 	privateKey := key.Reveal()
 	defer clear(privateKey)
-	retryClient := retryablehttp.NewClient()
-	retryClient.RetryMax = 0
-	retryClient.Logger = nil
-	retryClient.ErrorHandler = officialRetryErrorHandler
-	hardenListenerTransport(retryClient.HTTPClient)
+	httpClient := actionsscale.NewHTTPClient(actionsscale.HTTPClientConfig{Timeout: f.options.RequestTimeout})
+	hardenListenerTransport(httpClient)
 	client, err := actionsscale.NewClientWithGitHubApp(actionsscale.ClientWithGitHubAppConfig{
 		GitHubConfigURL: definition.URL,
 		GitHubAppAuth: actionsscale.GitHubAppAuth{
@@ -643,7 +626,7 @@ func (f *defaultOfficialFactory) New(_ context.Context, definition Definition, k
 		SystemInfo: actionsscale.SystemInfo{
 			System: "ci-runner", Version: f.options.Version, CommitSHA: f.options.CommitSHA, Subsystem: "controller",
 		},
-	}, actionsscale.WithTimeout(f.options.RequestTimeout), actionsscale.WithRetryableHTTPClint(retryClient), actionsscale.WithRetryMax(0))
+	}, actionsscale.WithHTTPClient(requestTimeoutClient{httpClient}), actionsscale.WithRetry(actionsscale.RetryConfig{}))
 	if err != nil {
 		return nil, err
 	}
@@ -667,23 +650,16 @@ func hardenListenerTransport(client *http.Client) {
 	}
 }
 
-func officialRetryErrorHandler(response *http.Response, err error, _ int) (*http.Response, error) {
-	if response == nil || response.StatusCode != http.StatusTooManyRequests {
-		return response, err
-	}
-	retryAfter := 0
-	if value := strings.TrimSpace(response.Header.Get("Retry-After")); value != "" {
-		if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed > 0 {
-			retryAfter = parsed
-		}
-	}
-	return response, &officialRateLimitError{retryAfterSeconds: retryAfter, err: err}
-}
+// requestTimeoutClient hides the *http.Client type from the SDK, which would
+// otherwise raise a message poll's timeout to MessagePollTimeout; every request,
+// the long poll included, stays capped at github.requestTimeout.
+type requestTimeoutClient struct{ *http.Client }
 
 type officialAPIWrapper struct{ *actionsscale.Client }
 
+// MessageSession inherits the parent client's HTTP client and disabled retries.
 func (c *officialAPIWrapper) MessageSession(ctx context.Context, scaleSetID int, owner string) (officialSession, error) {
-	return c.MessageSessionClient(ctx, scaleSetID, owner, actionsscale.WithRetryMax(0))
+	return c.MessageSessionClient(ctx, scaleSetID, owner)
 }
 func (c *officialAPIWrapper) GenerateJITConfig(ctx context.Context, setting *actionsscale.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*actionsscale.RunnerScaleSetJitRunnerConfig, error) {
 	return c.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
