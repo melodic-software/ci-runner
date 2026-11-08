@@ -365,6 +365,52 @@ func TestGamingWaitsForBusyWorkBeforeDesktopShutdown(t *testing.T) {
 	}
 }
 
+// Regression for #511: an assignment no worker covers must not restart Docker Desktop or create a
+// worker in gaming mode, and must not hold the host out of gaming.
+func TestGamingNeverStartsDesktopOrWorkersForUncoveredAssignments(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Desired.Mode = model.ModeGaming
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[0].DrainServiceCapacity = 3
+
+	input.Desktop = model.DesktopStatus{}
+	plan := BuildPlan(input)
+	if len(plan.Start) != 0 || plan.StartDesktop {
+		t.Fatalf("gaming planned starts %#v, startDesktop %v", plan.Start, plan.StartDesktop)
+	}
+	if plan.Phase != model.PhaseGaming || plan.DesiredWorkers["org"] != 0 {
+		t.Fatalf("stopped host phase = %s desired = %#v, want gaming with no workers", plan.Phase, plan.DesiredWorkers)
+	}
+	if !plan.GamingDeferredAssignments["org"] || len(plan.Problems) != 0 {
+		t.Fatalf("deferred assignment = %#v problems = %#v, want flagged without a problem", plan.GamingDeferredAssignments, plan.Problems)
+	}
+
+	input.Desktop = model.DesktopStatus{DesktopRunning: true, EngineReachable: true, RunningWSLCount: 1}
+	plan = BuildPlan(input)
+	if len(plan.Start) != 0 || !plan.StopDesktop || !plan.ShutdownWSL || plan.QuiesceReason != model.QuiesceReasonGamingHostTeardown {
+		t.Fatalf("running host plan = %#v, want teardown without starts", plan)
+	}
+}
+
+func TestGamingHoldsTeardownWhileAnExistingWorkerCanTakeAnAssignment(t *testing.T) {
+	t.Parallel()
+	input := healthyInput()
+	input.Desired.Mode = model.ModeGaming
+	input.Pools[0].TotalAssignedJobs = 2
+	input.Pools[0].DrainServiceCapacity = 3
+	input.Workers = []model.Worker{{ID: "idle", PoolID: "org", State: model.WorkerIdle}}
+
+	plan := BuildPlan(input)
+	if len(plan.Start) != 0 || plan.StartDesktop || plan.StopDesktop || plan.ShutdownWSL {
+		t.Fatalf("plan = %#v, want hold without starts or teardown", plan)
+	}
+	assertNotRemoved(t, plan.Remove, "idle")
+	if plan.Phase != model.PhaseDraining || plan.QuiesceReason != model.QuiesceReasonGamingActiveWork || plan.DesiredWorkers["org"] != 1 {
+		t.Fatalf("phase = %s reason = %s desired = %#v", plan.Phase, plan.QuiesceReason, plan.DesiredWorkers)
+	}
+}
+
 func TestACOnlySuspendsImmediatelyAndResumesAfterStableWindow(t *testing.T) {
 	t.Parallel()
 	input := healthyInput()

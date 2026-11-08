@@ -78,7 +78,11 @@ type Plan struct {
 	MemoryHeadroom   uint64
 	MemoryAffordable map[string]int
 	MemoryClamped    map[string]bool
-	Presence         model.Presence
+	// GamingDeferredAssignments marks pools holding an assigned job no existing worker covers,
+	// which gaming mode leaves queued on GitHub because it starts no worker. It is logged, not a
+	// problem: a correctly gamed host is healthy.
+	GamingDeferredAssignments map[string]bool
+	Presence                  model.Presence
 }
 
 // EffectiveMaximumConcurrentWorkers resolves the host-wide worker cap
@@ -211,8 +215,10 @@ func BuildPlan(input PlanInput) Plan {
 		return plan
 
 	case model.ModeGaming:
+		// Gaming starts no worker (applyOutstandingAssignments plans none), so an assignment holds the
+		// host only while an existing worker can still take it.
 		outstanding := applyOutstandingAssignments(&plan, input, workersByPool, targetIDs, activeWorkers)
-		if busyWorkers > 0 || outstanding || len(plan.Start) > 0 {
+		if busyWorkers > 0 || (outstanding && hasRetainedWorker(input.Workers, plan.Remove)) {
 			plan.Phase = model.PhaseDraining
 			plan.quiesce(model.QuiesceReasonGamingActiveWork)
 			return plan
@@ -563,6 +569,11 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		serviceable := min(uncovered, pool.DrainServiceCapacity, target.MaxCapacity)
 		workerMemory := target.EffectiveWorker(input.Config.Resources.Worker).Memory
 		start := min(max(0, serviceable-nonbusy), remaining)
+		if input.Desired.Mode == model.ModeGaming {
+			// Gaming never creates a worker or starts Docker Desktop: an assignment no existing worker
+			// covers stays queued on GitHub until the host leaves gaming mode.
+			start = 0
+		}
 		// An assignment can win the race with a fail-closed poll cancellation: invalid telemetry's
 		// synthetic zero headroom must not block work GitHub already assigned.
 		if memoryObservationValid {
@@ -582,7 +593,12 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 			}
 		}
 		plan.DesiredWorkers[target.ID] = busy + min(uncovered, nonbusy+start)
-		if uncovered > nonbusy+start {
+		if uncovered > nonbusy+start && input.Desired.Mode == model.ModeGaming {
+			if plan.GamingDeferredAssignments == nil {
+				plan.GamingDeferredAssignments = make(map[string]bool)
+			}
+			plan.GamingDeferredAssignments[target.ID] = true
+		} else if uncovered > nonbusy+start {
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds the last acknowledged service capacity; capacity remains zero and existing workers are preserved", target.ID, true))
 		}
 	}
@@ -629,6 +645,20 @@ func sortedTargetsByPriority(targets []config.Target) []config.Target {
 		return sorted[i].Priority < sorted[j].Priority
 	})
 	return sorted
+}
+
+// hasRetainedWorker reports whether an active worker survives this plan's removals.
+func hasRetainedWorker(workers, removals []model.Worker) bool {
+	removed := make(map[string]struct{}, len(removals))
+	for _, worker := range removals {
+		removed[worker.ID] = struct{}{}
+	}
+	for _, worker := range workers {
+		if _, ok := removed[worker.ID]; !ok && worker.Active() {
+			return true
+		}
+	}
+	return false
 }
 
 func hasActiveWorkers(workers []model.Worker) bool {
