@@ -6,27 +6,27 @@
     "source": "https://go.dev/dl/?mode=json"
   },
   "node": {
-    "version": "24.21.0",
-    "source": "https://nodejs.org/dist/v24.21.0/"
+    "version": "26.13.0",
+    "source": "https://nodejs.org/dist/v26.13.0/"
   },
   "buildx": {
-    "version": "0.38.0",
-    "linuxAmd64Sha256": "4fe4cc38adf48169132749b6ca22a990928db0118e3407584ee553723115d287",
-    "source": "https://github.com/docker/buildx/releases/tag/v0.38.0"
+    "version": "0.38.2",
+    "linuxAmd64Sha256": "7992ec09413b80ff57ba4e081f56fc833d7bac1d5e71143c6c809e7e6065f6d6",
+    "source": "https://github.com/docker/buildx/releases/tag/v0.38.2"
   },
   "buildKit": {
-    "version": "0.34.0",
-    "image": "moby/buildkit:v0.34.0",
-    "digest": "sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c",
-    "linuxAmd64Digest": "sha256:3eea2ed5d1766c44eb4740853abf56ba85ad40b2c8d4a22e047cbacf15f463c8",
-    "source": "https://github.com/moby/buildkit/releases/tag/v0.34.0"
+    "version": "0.34.2",
+    "image": "moby/buildkit:v0.34.2",
+    "digest": "sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe",
+    "linuxAmd64Digest": "sha256:97719ccb2ac86fb44fd36f330a6d302f63dddd5326f3ada24f9c05ccac0d9098",
+    "source": "https://github.com/moby/buildkit/releases/tag/v0.34.2"
   },
   "buildKitSbomScanner": {
-    "version": "1.12.0",
-    "image": "docker/buildkit-syft-scanner:1.12.0",
-    "digest": "sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9",
-    "linuxAmd64Digest": "sha256:187e1892a7752c9384c59aba9517dd8e40610b748c72773e87b63720514463c2",
-    "source": "https://github.com/docker/buildkit-syft-scanner/releases/tag/v1.12.0"
+    "version": "1.12.1",
+    "image": "docker/buildkit-syft-scanner:1.12.1",
+    "digest": "sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315",
+    "linuxAmd64Digest": "sha256:10a413da6b52acacf4af4262eafeae6ca05076fbd65850ad7f233163c6d6a81c",
+    "source": "https://github.com/docker/buildkit-syft-scanner/releases/tag/v1.12.1"
   },
   "scaleSetClient": {
     "version": "0.5.0",
@@ -34,42 +34,42 @@
     "source": "https://github.com/actions/scaleset/releases/tag/v0.5.0"
   },
   "powerShell": {
-    "version": "7.6.6",
-    "linuxX64ArchiveSha256": "ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc",
-    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.6",
-    "hostedImageManifestCommit": "c9dd57c6b6333892b46abcc439ba0676fd03867a",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/c9dd57c6b6333892b46abcc439ba0676fd03867a/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "7.6.9",
+    "linuxX64ArchiveSha256": "1da6d6d6035d651f20e70ddee7c4c15ac6ab8b9fb40ee92240d91263f28a884b",
+    "source": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.9",
+    "hostedImageManifestCommit": "dbf2f009b5e1dcce57cf578ff4fdc1391a4d6d1b",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/dbf2f009b5e1dcce57cf578ff4fdc1391a4d6d1b/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "gh": {
-    "version": "2.102.0",
-    "linuxAmd64ArchiveSha256": "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386",
-    "source": "https://github.com/cli/cli/releases/tag/v2.102.0",
-    "hostedImageManifestCommit": "06f4a9146f061c2776b044dab74b5390d9c000b9",
-    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/06f4a9146f061c2776b044dab74b5390d9c000b9/images/ubuntu/Ubuntu2404-Readme.md"
+    "version": "2.103.3",
+    "linuxAmd64ArchiveSha256": "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d",
+    "source": "https://github.com/cli/cli/releases/tag/v2.103.3",
+    "hostedImageManifestCommit": "dbf2f009b5e1dcce57cf578ff4fdc1391a4d6d1b",
+    "hostedImageManifestSource": "https://github.com/actions/runner-images/blob/dbf2f009b5e1dcce57cf578ff4fdc1391a4d6d1b/images/ubuntu/Ubuntu2404-Readme.md"
   },
   "govulncheck": {
-    "version": "1.8.0",
-    "source": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.8.0.info"
+    "version": "1.9.0",
+    "source": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.9.0.info"
   },
   "actionlint": {
     "version": "1.7.12",
     "source": "https://github.com/rhysd/actionlint/releases/tag/v1.7.12"
   },
   "zizmor": {
-    "version": "1.30.1",
-    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.30.1"
+    "version": "1.32.0",
+    "source": "https://github.com/zizmorcore/zizmor/releases/tag/v1.32.0"
   },
   "syft": {
-    "version": "1.55.0",
-    "image": "ghcr.io/anchore/syft:v1.55.0",
-    "digest": "sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a",
-    "source": "https://github.com/anchore/syft/releases/tag/v1.55.0"
+    "version": "1.57.0",
+    "image": "ghcr.io/anchore/syft:v1.57.0",
+    "digest": "sha256:3c70e6d5979364cefdc22b51617a78fd264574d3bd6b4f84a351204147025e2a",
+    "source": "https://github.com/anchore/syft/releases/tag/v1.57.0"
   },
   "repositoryPins": [
     {
       "repository": "melodic-software/ci-workflows",
-      "commit": "d223a6446680fb261e264d1dea9efba46f20ead2",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/d223a6446680fb261e264d1dea9efba46f20ead2"
+      "commit": "8e1076f6c33cb9ca3544a1ad2a215fd2262b4a72",
+      "source": "https://github.com/melodic-software/ci-workflows/tree/8e1076f6c33cb9ca3544a1ad2a215fd2262b4a72"
     }
   ],
   "reusableWorkflows": []
