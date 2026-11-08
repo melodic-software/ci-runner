@@ -62,7 +62,9 @@ The derived layer contains only:
   official release asset (Ubuntu's archive carries a years-stale `gh`);
 - clang and zlib headers for native compilation;
 - zstd, so `actions/cache` selects the same compression method as
-  GitHub-hosted runners and cross-environment cache entries can match.
+  GitHub-hosted runners and cross-environment cache entries can match;
+- bubblewrap (`bwrap`, not setuid) and socat, for the Claude review lanes'
+  sandbox.
 
 .NET, Node.js, Python, and other versioned toolchains are deliberately absent.
 Workflows install them with their official setup actions exactly as hosted jobs
@@ -76,8 +78,16 @@ hosted-to-self cache proof could not match versions against a gzip-only image; a
 dependency was instead removed by invoking pip directly. The GitHub CLI earned
 its place when the do-not-merge-gate exit-127 outage showed multiple governed
 lanes (claude-review, link-check, queue-monitor-liveness, tool-version-drift,
-medley's comment gates) shell out to `gh` on the fleet. Before migrating a
-hosted lane to the fleet, verify the lane's tool dependencies against this
+medley's comment gates) shell out to `gh` on the fleet. bubblewrap and socat
+are a fleet-only addition, not hosted parity: neither is in the hosted Ubuntu
+24.04 manifest, so hosted runners still install them in-lane. They joined
+because the melodic-software/ci-workflows review lanes (`pr-review.yml`,
+`pr-review-security.yml`, `pr-review-cli.yml`) fail closed without `bwrap` and
+skip apt only when both are on PATH; without them each of 34 fleet review jobs
+spent 6 to 18 s in `apt-get update` and install and depended on
+`archive.ubuntu.com` being reachable
+([#532](https://github.com/melodic-software/ci-runner/issues/532)).
+Before migrating a hosted lane to the fleet, verify the lane's tool dependencies against this
 image; a real gap is a reviewed Dockerfile addition and release, never an
 in-lane workaround.
 

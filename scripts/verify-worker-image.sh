@@ -70,9 +70,14 @@ docker run --rm --entrypoint /bin/bash "$image" -Eeuo pipefail -c '
   [[ "$EUID" == "1001" ]]
   [[ "$(id -g)" == "1001" ]]
   [[ "$(. /etc/os-release && printf "%s" "$VERSION_ID")" == "24.04" ]]
-  for command in sudo pwsh gh git git-lfs curl jq zip unzip ssh clang; do
+  for command in sudo pwsh gh git git-lfs curl jq zip unzip ssh clang bwrap socat; do
     command -v "$command" >/dev/null
   done
+  # The review sandbox relies on unprivileged user namespaces, not setuid.
+  if [[ -u "$(command -v bwrap)" ]]; then
+    echo "bwrap must not be setuid" >&2
+    exit 1
+  fi
   sudo -n true
   test -f /usr/include/zlib.h
   test -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}"

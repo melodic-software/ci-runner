@@ -19,8 +19,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # release asset because it is not in Ubuntu's first-party repository. The
 # GitHub CLI is installed from its checksummed official release asset at the
 # hosted-image manifest version; Ubuntu's archive carries a years-stale gh.
+# bubblewrap and socat are fleet-only: the Claude review lanes need them and
+# hosted Ubuntu 24.04 lacks them (docs/worker-image.md).
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
+      bubblewrap \
       ca-certificates \
       clang \
       curl \
@@ -28,6 +31,7 @@ RUN apt-get update \
       git-lfs \
       jq \
       openssh-client \
+      socat \
       sudo \
       unzip \
       zip \
