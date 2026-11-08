@@ -185,7 +185,8 @@ while the configured budget stays in effect unverified.
 
 ## Resource gate transitions
 
-The resource gate blocks new worker admission while host CPU stays at or above
+The resource gate withholds new listener capacity, while still starting workers
+for jobs GitHub already assigned, as long as host CPU stays at or above
 `cpuBlockPercent` for `cpuObservationWindow`, or when the resource monitor
 returns an out-of-range observation, and clears once CPU stays at or below
 `cpuResumePercent` for `cpuHysteresisWindow`. Its reasons are `cpu` and
@@ -197,9 +198,9 @@ above and is never a gate reason.
 configured, so the controller log is the durable record. Each change of gate
 state or blocking reason, not each sample, writes one line:
 
-- `resource-gate-blocked`: the gate paused admission, or its reason changed
-  while blocked.
-- `resource-gate-cleared`: the gate resumed admission.
+- `resource-gate-blocked`: the gate blocked, or its reason changed while
+  blocked.
+- `resource-gate-cleared`: the gate cleared.
 
 Both carry a `resourceGate` object:
 
@@ -215,8 +216,8 @@ Both carry a `resourceGate` object:
 | `minimumAvailableMemoryPercent` | Configured host memory floor |
 
 A blocked interval runs from a blocked line's `at` to the next cleared line's.
-The log state is seeded from the checkpoint at startup, so a restart neither
-repeats a block nor misses a clear.
+When the checkpoint loads at startup, the log state is seeded from it, so a
+restart neither repeats a block nor misses a clear.
 
 ## Fast-job accounting freshness
 

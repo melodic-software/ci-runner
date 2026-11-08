@@ -128,7 +128,7 @@ func TestJSONLogSinkEmitsResourceGateFields(t *testing.T) {
 	}
 	cpu := 91.5
 	if err := sink.Write(context.Background(), controller.LogEvent{
-		Code: "resource-gate-blocked", Message: "resource gate paused new worker admission",
+		Code: "resource-gate-blocked", Message: "resource gate blocked new listener capacity; jobs already assigned are still started",
 		ResourceGate: &controller.ResourceGateLogFields{Reason: "cpu", CPUPercent: &cpu, CPUBlockPercent: 75, TotalMemoryBytes: 64 << 30},
 	}); err != nil {
 		t.Fatal(err)

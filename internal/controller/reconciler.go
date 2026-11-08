@@ -1538,9 +1538,9 @@ func (r *Reconciler) noteResourceGate(ctx context.Context, gate model.ResourceGa
 	if r.gateLogged.Swap(state) == state {
 		return
 	}
-	code, message := "resource-gate-cleared", "resource gate resumed new worker admission"
+	code, message := "resource-gate-cleared", "resource gate cleared; listener capacity is planned normally again"
 	if gate.Blocked {
-		code, message = "resource-gate-blocked", "resource gate paused new worker admission"
+		code, message = "resource-gate-blocked", "resource gate blocked new listener capacity; jobs already assigned are still started"
 	}
 	policy := r.config.Resources
 	fields := &ResourceGateLogFields{
