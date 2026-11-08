@@ -213,6 +213,50 @@ func TestPollCadenceLogsInteractiveCapActivationOnce(t *testing.T) {
 	}
 }
 
+func TestPollCadenceLogsResourceGateBlockOnce(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Controller.ReconcileInterval.Duration = 5 * time.Millisecond
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 64 << 30, CPUUtilizationPercent: 10}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	blocking := newFirstBlockingScaleSet(harness.scaleSets)
+	harness.controller.deps.ScaleSets = blocking
+	done := make(chan struct{}, 1)
+	go func() {
+		_, _ = harness.controller.Step(context.Background())
+		done <- struct{}{}
+	}()
+	waitForSignal(t, blocking.entered, "listener poll did not begin")
+	resources.set(model.ResourceSnapshot{})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("invalid observation did not restart the listener poll")
+	}
+	blocked, cleared := gateEvents(logs)
+	if len(blocked) != 1 || len(cleared) != 0 {
+		t.Fatalf("cadence gate events: blocked=%d cleared=%d, want 1/0", len(blocked), len(cleared))
+	}
+	if fields := blocked[0].ResourceGate; fields.Reason != "invalid-observation" || fields.TotalMemoryBytes != 0 || fields.AvailableMemoryPercent != nil {
+		t.Fatalf("cadence blocked fields = %+v", fields)
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	var codes []string
+	for _, event := range logs.events {
+		if event.Code == "resource-gate-blocked" || event.Code == "listener-poll-superseded" {
+			codes = append(codes, event.Code)
+		}
+	}
+	// The cadence watcher logs the block when it sees it, before withdrawing capacity.
+	if fmt.Sprint(codes) != "[resource-gate-blocked listener-poll-superseded]" {
+		t.Fatalf("gate and poll events = %v, want block logged once before the poll restart", codes)
+	}
+}
+
 func TestPollCadenceObservationFailureIsDurablyLogged(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t, model.ModeEnabled)

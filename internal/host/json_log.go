@@ -192,10 +192,13 @@ func (s *JSONLogSink) write(event controller.LogEvent) error {
 		Source   string    `json:"source,omitempty"`
 		PoolID   string    `json:"poolId,omitempty"`
 		WorkerID string    `json:"workerId,omitempty"`
+		// ResourceGate holds only closed-vocabulary reasons, numbers, and times, so it needs no redaction.
+		ResourceGate *controller.ResourceGateLogFields `json:"resourceGate,omitempty"`
 	}{
 		At: event.At.UTC(), Code: redactLogValue(event.Code), Message: redactLogValue(event.Message),
 		Cause:  redactLogValue(event.Cause),
 		Source: redactLogValue(event.Source), PoolID: redactLogValue(event.PoolID), WorkerID: redactLogValue(event.WorkerID),
+		ResourceGate: event.ResourceGate,
 	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
