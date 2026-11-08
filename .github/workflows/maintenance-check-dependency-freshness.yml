@@ -1,0 +1,90 @@
+name: maintenance-check-dependency-freshness
+
+# Daily run of the release workflow's official-source dependency freshness
+# check, so drift is found before a release tag is pushed: a tag whose release
+# run fails the gate stays reserved for good (docs/releases.md). The check is
+# the same scripts/Test-DependencyFreshness.ps1 invocation the release
+# workflow's "Enforce official-source dependency freshness" step makes; only the
+# release step throws on `hardFail`. Here drift alone does not fail the run: the
+# report goes to scripts/Update-DependencyDriftIssue.ps1, which keeps one open
+# issue while any row is at or past the 7-day promotion target or hard-fails,
+# and closes it on the first run with none. The run fails on a script or API
+# error, and then leaves the issue as it was.
+#
+# Two jobs so the script that calls the release APIs holds a read-only token;
+# only the job that writes the issue holds `issues: write`. No pull-request or
+# issue text reaches either job: the triggers are the schedule and a manual
+# dispatch with no inputs, and the report reaches the issue job through an env
+# variable, never a `${{ }}` expression inside `run:`.
+#
+# 06:41 UTC daily sits clear of pr-require-checks' weekly 05:30 Monday run.
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # A dispatch and the schedule must not race into two issues.
+  group: maintenance-check-dependency-freshness
+  cancel-in-progress: false
+
+jobs:
+  check-dependency-freshness:
+    name: Check dependency freshness
+    if: github.repository == 'melodic-software/ci-runner'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # Reads the pins; the token only lifts the release API rate limit.
+    outputs:
+      report: ${{ steps.report.outputs.report }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified Buildx
+        run: bash ./scripts/install-verified-buildx.sh
+
+      - name: Check official-source dependency freshness
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FRESHNESS_REPORT: ${{ runner.temp }}/dependency-drift.json
+        run: ./scripts/Test-DependencyFreshness.ps1 -OutputPath $env:FRESHNESS_REPORT
+
+      - name: Hand the report to the issue job
+        id: report
+        env:
+          FRESHNESS_REPORT: ${{ runner.temp }}/dependency-drift.json
+        run: echo "report=$(jq --compact-output . "$FRESHNESS_REPORT")" >>"$GITHUB_OUTPUT"
+
+  file-dependency-drift-issue:
+    name: File dependency drift issue
+    needs: check-dependency-freshness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # Reads the issue script and the reviewed holds.
+      issues: write # Creates, edits and closes the one drift issue.
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open, update or close the drift issue
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRIFT_REPORT: ${{ needs.check-dependency-freshness.outputs.report }}
+          REPORT_PATH: ${{ runner.temp }}/dependency-drift.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [IO.File]::WriteAllText($env:REPORT_PATH, $env:DRIFT_REPORT)
+          ./scripts/Update-DependencyDriftIssue.ps1 -ReportPath $env:REPORT_PATH -RunUrl $env:RUN_URL
