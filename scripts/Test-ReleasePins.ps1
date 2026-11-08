@@ -47,11 +47,14 @@ foreach ($fragment in @(
     }
 }
 
-# Drift ages from the first unadopted release; pinned artifacts and tags are
-# re-resolved every run, even when a newer release is pending.
+# Drift ages from the first unadopted release; a runner release younger than its
+# cooldown is not drift yet. Pinned artifacts and tags are re-resolved every run,
+# even when a newer release is pending.
 foreach ($fragment in @(
         'Get-FirstUnadoptedReleaseDate',
         'Get-ReleaseForVersion',
+        'Get-RunnerAdoptionCandidates',
+        'Get-LatestRelease $runnerCandidates.eligible',
         'repository-pin-ancestry:',
         'compare/$($repositoryPin.commit)...$($latest.sha)?per_page=1&page=1',
         '$pinnedRunnerRelease',

@@ -1,6 +1,7 @@
 # Dot-source this file. Dependabot rewrites the Dockerfile FROM line and the
 # workflow `uses:` lines but cannot edit release/dependencies.json, so the runner
-# image and Action pins are read from the lines it rewrites.
+# image and Action pins are read from the lines it rewrites. It also holds the
+# runner adoption rule the freshness monitor applies to those pins.
 
 function Get-RunnerBasePin([string] $Dockerfile) {
     $lines = Get-Content -LiteralPath $Dockerfile
@@ -62,4 +63,50 @@ function Get-WorkflowActionPins([string] $WorkflowDirectory, [string[]] $Exclude
         }
     }
     @($pins.Values)
+}
+
+# Splits runner releases by minimum release age. A release newer than the pin is
+# eligible once it is $CooldownDays old, or $MajorCooldownDays when its major
+# version is newer than the pin's; until then it is held and is not drift. A
+# critical/CVE release among the newer ones lifts the cooldown for all of them.
+function Get-RunnerAdoptionCandidates(
+    [object[]] $Releases,
+    [string] $PinnedVersion,
+    [DateTimeOffset] $Now,
+    [int] $CooldownDays,
+    [int] $MajorCooldownDays
+) {
+    $pinned = [version]$PinnedVersion
+    $newer = @($Releases | Where-Object { [version]$_.tag_name.TrimStart('v') -gt $pinned })
+    $critical = @($newer | Where-Object {
+        $_.body -match '(?i)\bcritical\b|\bsecurity\b|CVE-[0-9]{4}-[0-9]+'
+    }).Count -gt 0
+    $eligible = [Collections.Generic.List[object]]::new()
+    $held = [Collections.Generic.List[object]]::new()
+    foreach ($release in $Releases) {
+        $version = [version]$release.tag_name.TrimStart('v')
+        if ($version -le $pinned -or $critical) {
+            $eligible.Add($release)
+            continue
+        }
+        $days = if ($version.Major -gt $pinned.Major) { $MajorCooldownDays } else { $CooldownDays }
+        $eligibleAt = ([DateTimeOffset]$release.published_at).AddDays($days)
+        if ($Now -ge $eligibleAt) {
+            $eligible.Add($release)
+        } else {
+            $held.Add([ordered]@{
+                dependency = 'actions-runner'
+                version = $version.ToString()
+                publishedAt = ([DateTimeOffset]$release.published_at).ToString('o')
+                cooldownDays = $days
+                eligibleAt = $eligibleAt.ToString('o')
+                source = $release.html_url
+            })
+        }
+    }
+    [pscustomobject]@{
+        critical = $critical
+        eligible = $eligible.ToArray()
+        held = $held.ToArray()
+    }
 }

@@ -164,6 +164,8 @@ exact Syft image digest with no network, a read-only filesystem, no capabilities
 and a read-only artifact mount, so publication never downloads a mutable
 installer or `latest`:
 
+- adopt a GitHub runner release only once it is 3 days old, or 7 days for a new
+  major version; a critical/CVE release is exempt;
 - create or refresh update evidence within 24 hours of detection;
 - target validation and promotion within seven days;
 - fail after 14 days of unresolved drift;
@@ -181,6 +183,18 @@ freshness gate continues to report the held row until a dedicated
 compatibility PR moves every reference together. No scheduled run exists; run
 `scripts/Test-DependencyFreshness.ps1` by hand to check freshness between
 releases.
+
+The runner cooldown is the `-RunnerCooldownDays` and `-RunnerMajorCooldownDays`
+defaults of `scripts/Test-DependencyFreshness.ps1`, beside `-HardFailAfterDays`.
+The gate reports a runner release younger than its cooldown under
+`cooldownHeld`, not as drift, so its `latest` for the runner is the newest
+release a bump may adopt. A held release is not drift, so it cannot hard-fail
+on age; once eligible, it ages from its publication date, leaving 11 days (7
+for a major) to adopt it before the hard fail. Counting from publication keeps the
+30-day reconciliation below unchanged. Dependabot's Docker lane, which rewrites
+the Dockerfile `FROM` line, holds every runner tag for its flat 7-day
+`default-days`; Docker takes no SemVer cooldown keys
+([Dependabot cooldown](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#cooldown-)).
 
 GitHub progressively deploys runner versions. A release PR therefore must also
 confirm the version offered in the organization runner setup UI/API before
