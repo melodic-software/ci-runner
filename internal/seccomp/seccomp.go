@@ -11,7 +11,8 @@ import (
 
 // UserNS is the moby default profile plus rules that let a process without
 // CAP_SYS_ADMIN call clone and unshare when the flags include CLONE_NEWUSER,
-// and call mount, umount2 and pivot_root, which bubblewrap needs.
+// unshare when they include CLONE_NEWPID|CLONE_NEWNS, and call mount, umount2
+// and pivot_root, which bubblewrap and sandbox-runtime's apply-seccomp need.
 const UserNS = "userns"
 
 // MobyDefaultBlobSHA is the git blob SHA of moby-default.json, which is
@@ -22,13 +23,21 @@ const MobyDefaultBlobSHA = "ea5a494afb8d64898fa0f4f47ae0c4f5ba9cbbc9"
 //go:embed moby-default.json
 var mobyDefault []byte
 
-const cloneNewUser = 0x10000000
+const (
+	cloneNewUser = 0x10000000
+	// cloneNewPIDNS is CLONE_NEWPID|CLONE_NEWNS: sandbox-runtime's apply-seccomp
+	// helper makes its user namespace first, then unshares these two without
+	// CLONE_NEWUSER.
+	cloneNewPIDNS = 0x20020000
+)
 
 // userNSRules are inserted directly after the default's own non-CAP_SYS_ADMIN
 // clone rules. SCMP_CMP_MASKED_EQ with value and valueTwo both CLONE_NEWUSER
 // matches when (flags & CLONE_NEWUSER) == CLONE_NEWUSER. The kernel still
 // decides what the new user namespace may do: mount, umount2 and pivot_root
-// still need CAP_SYS_ADMIN in the namespace that owns the mount namespace.
+// still need CAP_SYS_ADMIN in the namespace that owns the mount namespace, and
+// unshare(CLONE_NEWPID|CLONE_NEWNS) needs CAP_SYS_ADMIN in the caller's user
+// namespace, so outside a job-created one it still fails.
 // fsopen, fsconfig and the rest of the new mount API stay gated.
 var userNSRules = []map[string]any{
 	{
@@ -43,6 +52,13 @@ var userNSRules = []map[string]any{
 		"action":   "SCMP_ACT_ALLOW",
 		"args":     []map[string]any{{"index": 0, "value": cloneNewUser, "valueTwo": cloneNewUser, "op": "SCMP_CMP_MASKED_EQ"}},
 		"comment":  "ci-runner userns: unshare with CLONE_NEWUSER",
+		"excludes": map[string]any{"caps": []string{"CAP_SYS_ADMIN"}},
+	},
+	{
+		"names":    []string{"unshare"},
+		"action":   "SCMP_ACT_ALLOW",
+		"args":     []map[string]any{{"index": 0, "value": cloneNewPIDNS, "valueTwo": cloneNewPIDNS, "op": "SCMP_CMP_MASKED_EQ"}},
+		"comment":  "ci-runner userns: unshare with CLONE_NEWPID|CLONE_NEWNS inside a job-created user namespace",
 		"excludes": map[string]any{"caps": []string{"CAP_SYS_ADMIN"}},
 	},
 	{
