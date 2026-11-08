@@ -37,7 +37,12 @@ official-source dependency freshness check (Buildx 0.37.1, BuildKit 0.33.0,
 Syft 1.52.0, and hosted gh 2.101.0 pinned past the 14-day window) and has no
 release assets; `v0.1.35` is reserved by a pedantic zizmor
 `undocumented-permissions` finding on the sync-managed
-`pr-check-managed-files-hosted.yml` and has no release assets.
+`pr-check-managed-files-hosted.yml` and has no release assets; `v0.1.37` is
+reserved by a failed official-source dependency freshness check
+([run 42503798934](https://github.com/melodic-software/ci-runner/actions/runs/42503798934):
+Buildx 0.38.0, BuildKit 0.34.0, zizmor 1.30.1, govulncheck 1.8.0, hosted
+PowerShell 7.6.6 and gh 2.102.0, Node.js 24.21.0, and the `ci-workflows` pin
+past the 14-day window) and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to

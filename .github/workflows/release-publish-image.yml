@@ -50,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 26.13.0
           package-manager-cache: false
 
       - name: Install checksum-verified Buildx
@@ -61,7 +61,7 @@ jobs:
         with:
           cache-binary: false
           driver-opts: |
-            image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+            image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           # Supplying this explicit safe flag resets the action's default
           # network.host/security.insecure daemon entitlements.
           buildkitd-flags: --debug=false
@@ -92,7 +92,7 @@ jobs:
           go vet ./...
           go test ./...
           go test -race ./...
-          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: Test workflow scripts and resumable release transaction
         run: node --test .github/scripts/*.test.cjs
@@ -104,9 +104,9 @@ jobs:
           -ignore 'unexpected key "queue" for "concurrency" section'
 
       - name: Audit workflow security
-        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
-          version: 1.30.1
+          version: 1.32.0
           persona: pedantic
           advanced-security: false
           annotations: true
@@ -162,7 +162,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -177,7 +177,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 26.13.0
           package-manager-cache: false
 
       - name: Resolve and verify an existing immutable release
@@ -197,7 +197,7 @@ jobs:
         with:
           cache-binary: false
           driver-opts: |
-            image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+            image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           buildkitd-flags: --debug=false
 
       - name: Build and push untagged worker candidate
@@ -212,13 +212,13 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: mode=max
-          sbom: generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          sbom: generator=docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
 
       - name: Verify exact registry worker candidate and attestations
         if: ${{ steps.release.outputs.exists != 'true' }}
         env:
           WORKER_CANDIDATE: ghcr.io/${{ github.repository }}@${{ steps.worker.outputs.digest }}
-          SCANNER_MANIFEST_DIGEST: sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          SCANNER_MANIFEST_DIGEST: sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
         run: |
           set -Eeuo pipefail
           docker pull "$WORKER_CANDIDATE"
@@ -273,7 +273,7 @@ jobs:
         env:
           CONTROLLER_SBOM: dist/ci-runner-${{ github.ref_name }}-windows-amd64.spdx.json
           RELEASE_VERSION: ${{ github.ref_name }}
-          SYFT_IMAGE: ghcr.io/anchore/syft:v1.55.0@sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a
+          SYFT_IMAGE: ghcr.io/anchore/syft:v1.57.0@sha256:3c70e6d5979364cefdc22b51617a78fd264574d3bd6b4f84a351204147025e2a
         run: |
           set -Eeuo pipefail
           docker run --rm \
@@ -468,7 +468,7 @@ jobs:
         run: bash ./scripts/install-verified-buildx.sh
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
