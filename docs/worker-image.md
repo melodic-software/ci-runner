@@ -64,7 +64,8 @@ The derived layer contains only:
 - zstd, so `actions/cache` selects the same compression method as
   GitHub-hosted runners and cross-environment cache entries can match;
 - bubblewrap (`bwrap`, not setuid) and socat, for the Claude review lanes'
-  sandbox.
+  sandbox; `bwrap` can create namespaces only on a target whose
+  `seccompProfile` is `userns`.
 
 .NET, Node.js, Python, and other versioned toolchains are deliberately absent.
 Workflows install them with their official setup actions exactly as hosted jobs
@@ -253,8 +254,8 @@ same trust as the sidecar, not a security attestation.
 tool surface, exact runner version, non-root identity, rootless .NET/NuGet
 environment and directory ownership, absence of runner toolcache overrides,
 absence of baked JIT or credential variables, required stdin handoff,
-passwordless sudo, the exact `idle → busy → completed` hook sequence, and that
-versioned language toolchains installed by this derived layer (`dotnet`,
+passwordless sudo, a `bwrap` without the setuid bit, the exact
+`idle → busy → completed` hook sequence, and that versioned language toolchains installed by this derived layer (`dotnet`,
 `node`, `npm`, `npx`) are absent from PATH so workflows must install them
 with their official setup actions. The runner's internal `externals/node*`
 runtimes are not a workflow `node` on PATH. Ubuntu 24.04's `python3` OS
