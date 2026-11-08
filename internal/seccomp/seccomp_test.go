@@ -16,7 +16,7 @@ func TestEmbeddedDefaultIsThePinnedUpstreamBlob(t *testing.T) {
 	}
 }
 
-func TestUserNSProfileIsTheDefaultPlusOnlyTheThreeUserNamespaceRules(t *testing.T) {
+func TestUserNSProfileIsTheDefaultPlusOnlyTheUserNamespaceRules(t *testing.T) {
 	t.Parallel()
 	profile, err := Profile(UserNS)
 	if err != nil {
@@ -36,8 +36,8 @@ func TestUserNSProfileIsTheDefaultPlusOnlyTheThreeUserNamespaceRules(t *testing.
 	if !reflect.DeepEqual(base, derived) {
 		t.Fatal("userns profile changed a top-level field of the moby default")
 	}
-	if len(derivedRules) != len(baseRules)+3 {
-		t.Fatalf("userns profile has %d rules, want default %d plus 3", len(derivedRules), len(baseRules))
+	if len(derivedRules) != len(baseRules)+4 {
+		t.Fatalf("userns profile has %d rules, want default %d plus 4", len(derivedRules), len(baseRules))
 	}
 	var added []any
 	for baseIndex, derivedIndex := 0, 0; derivedIndex < len(derivedRules); derivedIndex++ {
@@ -58,6 +58,12 @@ func TestUserNSProfileIsTheDefaultPlusOnlyTheThreeUserNamespaceRules(t *testing.
 			"names": []any{"unshare"}, "action": "SCMP_ACT_ALLOW",
 			"args":     []any{map[string]any{"index": 0.0, "value": 268435456.0, "valueTwo": 268435456.0, "op": "SCMP_CMP_MASKED_EQ"}},
 			"comment":  "ci-runner userns: unshare with CLONE_NEWUSER",
+			"excludes": map[string]any{"caps": []any{"CAP_SYS_ADMIN"}},
+		},
+		map[string]any{
+			"names": []any{"unshare"}, "action": "SCMP_ACT_ALLOW",
+			"args":     []any{map[string]any{"index": 0.0, "value": 537001984.0, "valueTwo": 537001984.0, "op": "SCMP_CMP_MASKED_EQ"}},
+			"comment":  "ci-runner userns: unshare with CLONE_NEWPID|CLONE_NEWNS inside a job-created user namespace",
 			"excludes": map[string]any{"caps": []any{"CAP_SYS_ADMIN"}},
 		},
 		map[string]any{

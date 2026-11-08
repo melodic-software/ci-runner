@@ -376,12 +376,15 @@ The only profile is `userns`: the moby default profile (`seccomp/v0.2.3` of
 [moby/profiles](https://github.com/moby/profiles/blob/seccomp/v0.2.3/seccomp/default.json),
 the version Docker Engine 29.8.2 vendors) plus rules that allow, for a process
 without `CAP_SYS_ADMIN`, `clone` and `unshare` when the flags include
-`CLONE_NEWUSER`, and `mount`, `umount2`, and `pivot_root`. Everything else,
-including `fsopen`, `fsconfig`, `setns`, and `clone3` (still `ENOSYS`), is as in
-the default. It lets a job create an unprivileged user namespace and run a
-sandbox that mounts inside it, such as bubblewrap. The kernel still requires
-`CAP_SYS_ADMIN` in the user namespace that owns the mount namespace, so a mount
-outside a job-created user namespace still fails.
+`CLONE_NEWUSER`, `unshare` when they include `CLONE_NEWPID|CLONE_NEWNS`, and
+`mount`, `umount2`, and `pivot_root`. Everything else, including `fsopen`,
+`fsconfig`, `setns`, and `clone3` (still `ENOSYS`), is as in the default. It
+lets a job create an unprivileged user namespace and run a sandbox that mounts
+inside it, such as bubblewrap or sandbox-runtime's `apply-seccomp` helper, which
+makes its user namespace and then unshares PID and mount namespaces in a
+second call. The kernel still requires `CAP_SYS_ADMIN` in the caller's user
+namespace for that unshare and in the namespace that owns the mount namespace
+for a mount, so both still fail outside a job-created user namespace.
 
 ```yaml
 github:
