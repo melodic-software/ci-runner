@@ -128,6 +128,7 @@ monotonic process-lifetime events.
 | `ci_runner.worker.cpu.periods` | Terminal CPU periods | pool, tier, finalization outcome |
 | `ci_runner.worker.cpu.throttled.periods` | Terminal throttled CPU periods | pool, tier, finalization outcome |
 | `ci_runner.worker.cpu.throttled.duration` | Terminal throttled CPU seconds | pool, tier, finalization outcome |
+| `ci_runner.worker.cpu.usage.duration` | Terminal CPU seconds consumed (`cpu.stat` `usage_usec`); omitted for schema-version-1 evidence | pool, tier, finalization outcome |
 | `ci_runner.worker.pids.peak` | Terminal process peak | pool, tier, finalization outcome |
 | `ci_runner.worker.io.read` | Terminal aggregate read bytes | pool, tier, finalization outcome |
 | `ci_runner.worker.io.write` | Terminal aggregate write bytes | pool, tier, finalization outcome |

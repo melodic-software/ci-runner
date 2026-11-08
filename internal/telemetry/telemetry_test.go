@@ -114,7 +114,7 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 		RecordResourceEvidence: true,
 		ResourceEvidence: &WorkerResourceEvidence{
 			Status: "complete", MemoryPeakBytes: 1986422374, OOMEvents: 0, OOMKillEvents: 0,
-			CPUPeriods: 123, CPUThrottledPeriods: 7, CPUThrottledMicroseconds: 50000,
+			CPUPeriods: 123, CPUThrottledPeriods: 7, CPUThrottledMicroseconds: 50000, CPUUsageMicroseconds: 900000000,
 			PIDsPeak: 88, IOReadBytes: 2000000000, IOWriteBytes: 5500000000,
 		},
 	})
@@ -169,6 +169,7 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 		"ci_runner.worker.cpu.periods",
 		"ci_runner.worker.cpu.throttled.periods",
 		"ci_runner.worker.cpu.throttled.duration",
+		"ci_runner.worker.cpu.usage.duration",
 		"ci_runner.worker.pids.peak",
 		"ci_runner.worker.io.read",
 		"ci_runner.worker.io.write",
@@ -200,6 +201,9 @@ func TestRecorderExportsAggregateFleetStateWithoutHighCardinalityIdentity(t *tes
 	}
 	if got := intHistogramSum(t, metrics["ci_runner.worker.io.write"]); got != 5500000000 {
 		t.Errorf("I/O write histogram sum = %d, want 5500000000", got)
+	}
+	if got := floatHistogramSum(t, metrics["ci_runner.worker.cpu.usage.duration"]); got != 900 {
+		t.Errorf("CPU usage histogram sum = %v, want 900 seconds", got)
 	}
 	if got := intSumValue(t, metrics["ci_runner.worker.memory.oom.events"], "ci_runner.pool.id", "org"); got != 0 {
 		t.Errorf("OOM events = %d, want 0 without retry duplication", got)
@@ -385,6 +389,46 @@ func intHistogramSum(t *testing.T, current metricdata.Metrics) int64 {
 		t.Fatalf("metric %q data = %T with %d points, want one int64 histogram point", current.Name, current.Data, len(histogram.DataPoints))
 	}
 	return histogram.DataPoints[0].Sum
+}
+
+func floatHistogramSum(t *testing.T, current metricdata.Metrics) float64 {
+	t.Helper()
+	histogram, ok := current.Data.(metricdata.Histogram[float64])
+	if !ok || len(histogram.DataPoints) != 1 {
+		t.Fatalf("metric %q data = %T with %d points, want one float64 histogram point", current.Name, current.Data, len(histogram.DataPoints))
+	}
+	return histogram.DataPoints[0].Sum
+}
+
+// Evidence from a schema-version-1 worker image lists usage as uncaptured; it
+// must not appear as a measured zero next to the throttling it did capture.
+func TestRecorderOmitsUncapturedCPUUsage(t *testing.T) {
+	t.Parallel()
+	reader := metric.NewManualReader()
+	meters := metric.NewMeterProvider(metric.WithReader(reader))
+	defer func() { _ = meters.Shutdown(context.Background()) }()
+	recorder, err := newRecorder(sdktrace.NewTracerProvider(), meters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder.WorkerFinalized(context.Background(), "org", WorkerFinalization{
+		ExitObserved: true, ExitCode: 0, ResourceTier: "default", RecordResourceEvidence: true,
+		ResourceEvidence: &WorkerResourceEvidence{
+			Status: "complete", Missing: []string{"cpu.stat.usage_usec"},
+			CPUPeriods: 123, CPUThrottledPeriods: 7, CPUThrottledMicroseconds: 50000,
+		},
+	})
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	metrics := metricMap(collected)
+	if _, found := metrics["ci_runner.worker.cpu.usage.duration"]; found {
+		t.Fatal("uncaptured CPU usage was exported")
+	}
+	if _, found := metrics["ci_runner.worker.cpu.throttled.duration"]; !found {
+		t.Fatal("captured CPU throttling was not exported")
+	}
 }
 
 func setValue(set attribute.Set, key string) string {

@@ -117,6 +117,7 @@ type WorkerResourceEvidence struct {
 	CPUPeriods               uint64
 	CPUThrottledPeriods      uint64
 	CPUThrottledMicroseconds uint64
+	CPUUsageMicroseconds     uint64
 	PIDsPeak                 uint64
 	IOReadBytes              uint64
 	IOWriteBytes             uint64
@@ -208,6 +209,7 @@ type recorder struct {
 	cpuPeriods                metric.Int64Histogram
 	cpuThrottled              metric.Int64Histogram
 	cpuThrottledTime          metric.Float64Histogram
+	cpuUsageTime              metric.Float64Histogram
 	pidsPeak                  metric.Int64Histogram
 	ioRead                    metric.Int64Histogram
 	ioWrite                   metric.Int64Histogram
@@ -285,6 +287,7 @@ func newRecorder(tracerProvider trace.TracerProvider, meterProvider metric.Meter
 	r.cpuPeriods = int64Histogram("ci_runner.worker.cpu.periods", "{period}", "Terminal cgroup-v2 cpu.stat period count by worker.")
 	r.cpuThrottled = int64Histogram("ci_runner.worker.cpu.throttled.periods", "{period}", "Terminal cgroup-v2 cpu.stat throttled period count by worker.")
 	r.cpuThrottledTime = float64Histogram("ci_runner.worker.cpu.throttled.duration", "s", "Terminal cgroup-v2 cpu.stat throttled duration by worker.")
+	r.cpuUsageTime = float64Histogram("ci_runner.worker.cpu.usage.duration", "s", "Terminal cgroup-v2 cpu.stat CPU time consumed by worker.")
 	r.pidsPeak = int64Histogram("ci_runner.worker.pids.peak", "{process}", "Terminal cgroup-v2 pids.peak by worker.")
 	r.ioRead = int64Histogram("ci_runner.worker.io.read", "By", "Terminal aggregate cgroup-v2 io.stat read bytes by worker.")
 	r.ioWrite = int64Histogram("ci_runner.worker.io.write", "By", "Terminal aggregate cgroup-v2 io.stat write bytes by worker.")
@@ -548,6 +551,9 @@ func (r *recorder) recordWorkerResourceEvidence(ctx context.Context, poolID, tie
 	}
 	if !slices.Contains(evidence.Missing, "cpu.stat.throttled_usec") {
 		r.cpuThrottledTime.Record(ctx, float64(evidence.CPUThrottledMicroseconds)/1_000_000, attrs)
+	}
+	if !slices.Contains(evidence.Missing, "cpu.stat.usage_usec") {
+		r.cpuUsageTime.Record(ctx, float64(evidence.CPUUsageMicroseconds)/1_000_000, attrs)
 	}
 	if !slices.Contains(evidence.Missing, "pids.peak") {
 		r.pidsPeak.Record(ctx, clampUint64(evidence.PIDsPeak), attrs)
