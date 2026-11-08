@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,6 +110,102 @@ func TestReconcilerLogsInteractiveCapTransitions(t *testing.T) {
 	step()
 	if activated, deactivated := countTransitions(); activated != 1 || deactivated != 1 {
 		t.Fatalf("after two idle steps: activated=%d deactivated=%d, want 1/1", activated, deactivated)
+	}
+}
+
+func gateEvents(logs *testLogSink) (blocked, cleared []LogEvent) {
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	for _, event := range logs.events {
+		switch event.Code {
+		case "resource-gate-blocked":
+			blocked = append(blocked, event)
+		case "resource-gate-cleared":
+			cleared = append(cleared, event)
+		}
+	}
+	return blocked, cleared
+}
+
+func TestReconcilerLogsResourceGateTransitionsOnce(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.CPUObservationWindow.Duration = 0
+	harness.controller.config.Resources.CPUHysteresisWindow.Duration = 0
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: 90}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	step := func() {
+		t.Helper()
+		if _, err := harness.controller.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	step()
+	step()
+	blocked, cleared := gateEvents(logs)
+	if len(blocked) != 1 || len(cleared) != 0 {
+		t.Fatalf("after two high-CPU steps: blocked=%d cleared=%d, want 1/0", len(blocked), len(cleared))
+	}
+	fields := blocked[0].ResourceGate
+	if blocked[0].At.IsZero() || fields == nil || fields.Reason != "cpu" || fields.CPUPercent == nil || *fields.CPUPercent != 90 ||
+		fields.CPUBlockPercent != 75 || fields.HighCPUSince == nil || fields.AvailableMemoryPercent == nil || *fields.AvailableMemoryPercent != 50 {
+		t.Fatalf("blocked event = %+v fields=%+v", blocked[0], fields)
+	}
+
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: 10})
+	step()
+	step()
+	blocked, cleared = gateEvents(logs)
+	if len(blocked) != 1 || len(cleared) != 1 {
+		t.Fatalf("after two low-CPU steps: blocked=%d cleared=%d, want 1/1", len(blocked), len(cleared))
+	}
+	if fields := cleared[0].ResourceGate; fields == nil || fields.Reason != "" || fields.CPUPercent == nil || *fields.CPUPercent != 10 || fields.CPUResumePercent != 60 {
+		t.Fatalf("cleared fields = %+v", fields)
+	}
+
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: 90})
+	step()
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: math.NaN()})
+	step()
+	step()
+	blocked, _ = gateEvents(logs)
+	if len(blocked) != 3 || blocked[2].ResourceGate.Reason != "invalid-observation" || blocked[2].ResourceGate.CPUPercent != nil {
+		t.Fatalf("blocked events after a reason change = %d, last=%+v; want cpu then invalid-observation with no CPU sample", len(blocked), blocked[len(blocked)-1].ResourceGate)
+	}
+	if _, err := json.Marshal(blocked[2].ResourceGate); err != nil {
+		t.Fatalf("NaN observation fields do not encode: %v", err)
+	}
+}
+
+func TestReconcilerSeedsResourceGateLogFromCheckpoint(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, model.ModeEnabled)
+	harness.controller.config.Resources.CPUHysteresisWindow.Duration = 0
+	if err := harness.store.SaveObserved(context.Background(), model.ObservedState{
+		SchemaVersion: 1, Phase: model.PhaseResourceConstrained, HeartbeatAt: harness.now,
+		ResourceGate: model.ResourceGateState{Blocked: true, Reason: model.ResourceGateReasonCPU},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resources := &mutableResources{snapshot: model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: 90}}
+	harness.controller.deps.Resources = resources
+	logs := &testLogSink{}
+	harness.controller.deps.Logs = logs
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, cleared := gateEvents(logs); len(blocked) != 0 || len(cleared) != 0 {
+		t.Fatalf("gate already blocked at restart logged blocked=%d cleared=%d, want 0/0", len(blocked), len(cleared))
+	}
+	resources.set(model.ResourceSnapshot{TotalMemoryBytes: 64 << 30, AvailableMemoryBytes: 32 << 30, CPUUtilizationPercent: 10})
+	if _, err := harness.controller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, cleared := gateEvents(logs); len(blocked) != 0 || len(cleared) != 1 {
+		t.Fatalf("after recovery: blocked=%d cleared=%d, want 0/1", len(blocked), len(cleared))
 	}
 }
 

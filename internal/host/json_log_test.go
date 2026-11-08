@@ -118,6 +118,49 @@ func TestJSONLogSinkEmitsAndRedactsCause(t *testing.T) {
 	}
 }
 
+func TestJSONLogSinkEmitsResourceGateFields(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "controller")
+	sink, err := NewJSONLogSink(directory, config.LogClass{
+		MaxFileSize: config.ByteSize(4096), Retention: config.Duration{Duration: 24 * time.Hour}, TotalCap: config.ByteSize(8192),
+	}, 24*time.Hour, &logACL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu := 91.5
+	if err := sink.Write(context.Background(), controller.LogEvent{
+		Code: "resource-gate-blocked", Message: "resource gate paused new worker admission",
+		ResourceGate: &controller.ResourceGateLogFields{Reason: "cpu", CPUPercent: &cpu, CPUBlockPercent: 75, TotalMemoryBytes: 64 << 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Write(context.Background(), controller.LogEvent{Code: "plain", Message: "no gate fields"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(directory, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %d, want 2: %s", len(lines), contents)
+	}
+	for _, want := range []string{`"resourceGate":{`, `"reason":"cpu"`, `"cpuPercent":91.5`, `"cpuBlockPercent":75`} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("gate line lacks %s: %s", want, lines[0])
+		}
+	}
+	if strings.Contains(lines[1], "resourceGate") {
+		t.Fatalf("event without gate fields emitted resourceGate: %s", lines[1])
+	}
+}
+
 func TestJSONLogSinkWritesAfterContextCancellation(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "controller")
 	sink, err := NewJSONLogSink(directory, config.LogClass{

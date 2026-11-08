@@ -190,6 +190,7 @@ func (r *Reconciler) watchPollCadence(ctx context.Context, cancel context.Cancel
 				}
 				r.noteInteractiveCap(ctx, input, now)
 				plan := BuildPlan(input)
+				r.noteResourceGate(ctx, plan.ResourceGate, resources, now)
 				plan.AdvertisedCapacity = sequenceCapacityTransfer(checkpoint, plan.AdvertisedCapacity)
 				checkpoint = r.pollCheckpoint(checkpoint, state.pools, state.workers, resources, power, state.desktop, plan, now, state.operationProblems)
 				state.observed = checkpoint

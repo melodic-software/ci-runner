@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,6 +103,8 @@ type Reconciler struct {
 	// capLogged is the interactive-cap state last written to the log. Step and the poll-cadence
 	// goroutine both report through it, so each transition is logged once.
 	capLogged atomic.Int32
+	// gateLogged is the resource-gate state last written to the log, shared the same way.
+	gateLogged atomic.Int32
 }
 
 const handshakeStaleCycleLimit = 3
@@ -374,6 +377,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	r.inputIdle = r.readInputIdle()
 	// Seed from the checkpoint so a transition across a controller restart is still logged.
 	r.capLogged.CompareAndSwap(capStateUnknown, capStateOf(previous.Presence.InteractiveCapActive))
+	r.gateLogged.CompareAndSwap(gateStateUnknown, gateStateOf(previous.ResourceGate))
 	r.noteInteractiveCap(ctx, PlanInput{Config: r.config, Desired: desired, InputIdle: r.inputIdle}, now)
 	power, powerErr := r.deps.Power.Snapshot(ctx)
 	if powerErr != nil {
@@ -516,6 +520,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Workers: workers, Resources: resources, Power: power, Desktop: desktop,
 		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	})
+	r.noteResourceGate(ctx, provisional.ResourceGate, resources, now)
 	var reservedMemory uint64
 	prePollRefreshFailed := false
 	if !recoveryOnly {
@@ -1001,6 +1006,7 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		Power: power, Desktop: desktop, ResourceGate: postPlan.ResourceGate, PowerGate: postPlan.PowerGate,
 		Problems: problems, Controller: r.controllerCost(), Presence: postPlan.Presence,
 	}
+	r.noteResourceGate(ctx, observed.ResourceGate, observed.Resources, observed.HeartbeatAt)
 	if saveErr := r.persistObserved(ctx, observed); saveErr != nil {
 		operationErrors = append(operationErrors, fmt.Errorf("save observed state: %w", saveErr))
 	}
@@ -1502,6 +1508,57 @@ func (r *Reconciler) noteInteractiveCap(ctx context.Context, input PlanInput, no
 		idle = fmt.Sprintf("%.0fs", input.InputIdle.Seconds())
 	}
 	r.writeLog(ctx, LogEvent{At: now, Code: code, Message: fmt.Sprintf("interactive worker cap %s; input idle %s", state, idle)})
+}
+
+const (
+	gateStateUnknown int32 = iota
+	gateStateClear
+	gateStateCPU
+	gateStateInvalidObservation
+	gateStateBlockedUnspecified
+)
+
+func gateStateOf(gate model.ResourceGateState) int32 {
+	switch {
+	case !gate.Blocked:
+		return gateStateClear
+	case gate.Reason == model.ResourceGateReasonCPU:
+		return gateStateCPU
+	case gate.Reason == model.ResourceGateReasonInvalidObservation:
+		return gateStateInvalidObservation
+	default:
+		return gateStateBlockedUnspecified
+	}
+}
+
+// noteResourceGate logs a change of resource-gate state or blocking reason with the sample that
+// caused it. observed.json keeps only the latest sample, so this line is the durable record.
+func (r *Reconciler) noteResourceGate(ctx context.Context, gate model.ResourceGateState, resources model.ResourceSnapshot, now time.Time) {
+	state := gateStateOf(gate)
+	if r.gateLogged.Swap(state) == state {
+		return
+	}
+	code, message := "resource-gate-cleared", "resource gate resumed new worker admission"
+	if gate.Blocked {
+		code, message = "resource-gate-blocked", "resource gate paused new worker admission"
+	}
+	policy := r.config.Resources
+	fields := &ResourceGateLogFields{
+		Reason: string(gate.Reason), HighCPUSince: gate.HighCPUSince,
+		AvailableMemoryBytes: resources.AvailableMemoryBytes, TotalMemoryBytes: resources.TotalMemoryBytes,
+		CPUBlockPercent: policy.CPUBlockPercent, CPUResumePercent: policy.CPUResumePercent,
+		CPUObservationWindowSeconds:   policy.CPUObservationWindow.Seconds(),
+		CPUHysteresisWindowSeconds:    policy.CPUHysteresisWindow.Seconds(),
+		MinimumAvailableMemoryPercent: policy.MinimumAvailableMemoryPct,
+	}
+	if cpu := resources.CPUUtilizationPercent; !math.IsNaN(cpu) && !math.IsInf(cpu, 0) {
+		fields.CPUPercent = &cpu
+	}
+	if resources.TotalMemoryBytes > 0 {
+		percent := float64(resources.AvailableMemoryBytes) / float64(resources.TotalMemoryBytes) * 100
+		fields.AvailableMemoryPercent = &percent
+	}
+	r.writeLog(ctx, LogEvent{At: now, Code: code, Message: message, ResourceGate: fields})
 }
 
 func (r *Reconciler) writeLog(ctx context.Context, event LogEvent) {

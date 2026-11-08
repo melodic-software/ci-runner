@@ -396,7 +396,10 @@ below the sum of pool `maxCapacity` values, lower `resources.worker.cpus`, or
 both, so full CI load leaves CPU for editors, terminals, and other interactive
 tools. The `cpuBlockPercent` gate does not cover that case: it reacts only to
 host-wide CPU held above the threshold for `cpuObservationWindow`, not to
-interactive latency.
+interactive latency. Each time that gate blocks, changes reason, or clears, the
+controller log gets one `resource-gate-blocked` or `resource-gate-cleared` line
+carrying the CPU and memory sample and the thresholds it was judged against
+(see [Resource gate transitions](docs/observability.md#resource-gate-transitions)).
 
 To lower the cap only while someone is at the keyboard, set
 `resources.interactiveMaximumConcurrentWorkers` (1 to `maximumConcurrentWorkers`)

@@ -104,6 +104,25 @@ type LogEvent struct {
 	Source   string
 	PoolID   string
 	WorkerID string
+	// ResourceGate carries the observation and policy behind a resource-gate transition.
+	ResourceGate *ResourceGateLogFields
+}
+
+// ResourceGateLogFields is the observation behind a resource-gate transition, with the policy it
+// was judged against. Observed floats are set only when finite, so an invalid observation still
+// encodes as JSON; the CPU sample is instantaneous, judged against the windows below.
+type ResourceGateLogFields struct {
+	Reason                        string     `json:"reason,omitempty"`
+	CPUPercent                    *float64   `json:"cpuPercent,omitempty"`
+	HighCPUSince                  *time.Time `json:"highCpuSince,omitempty"`
+	AvailableMemoryBytes          uint64     `json:"availableMemoryBytes"`
+	TotalMemoryBytes              uint64     `json:"totalMemoryBytes"`
+	AvailableMemoryPercent        *float64   `json:"availableMemoryPercent,omitempty"`
+	CPUBlockPercent               float64    `json:"cpuBlockPercent"`
+	CPUResumePercent              float64    `json:"cpuResumePercent"`
+	CPUObservationWindowSeconds   float64    `json:"cpuObservationWindowSeconds"`
+	CPUHysteresisWindowSeconds    float64    `json:"cpuHysteresisWindowSeconds"`
+	MinimumAvailableMemoryPercent float64    `json:"minimumAvailableMemoryPercent"`
 }
 
 type LogSink interface {
