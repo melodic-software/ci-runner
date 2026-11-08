@@ -574,12 +574,21 @@ func TestOfficialDeadlineIsRetryableTransportFailure(t *testing.T) {
 
 func TestOfficialRetryAfterHeaderReachesTypedRetryPolicy(t *testing.T) {
 	t.Parallel()
-	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"37"}}}
-	_, sourceErr := officialRetryErrorHandler(response, errors.New("rate limited"), 1)
+	sourceErr := &actionsscale.RateLimitError{StatusCode: http.StatusTooManyRequests, RetryAfter: 37 * time.Second}
 	err := translateOfficialError("poll", fmt.Errorf("wrapped official response: %w", sourceErr))
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Kind != ErrorRateLimited || typed.StatusCode != http.StatusTooManyRequests || typed.RetryAfterSeconds != 37 || !Retryable(err) {
 		t.Fatalf("rate-limit classification = %#v, retryable=%v", typed, Retryable(err))
+	}
+}
+
+func TestOfficialRateLimitedForbiddenStaysForbidden(t *testing.T) {
+	t.Parallel()
+	sourceErr := &actionsscale.RateLimitError{StatusCode: http.StatusForbidden, RetryAfter: 37 * time.Second}
+	err := translateOfficialError("poll", fmt.Errorf(`request GET https://example.test failed(status="403 Forbidden"): %w`, sourceErr))
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Kind != ErrorForbidden || typed.StatusCode != http.StatusForbidden {
+		t.Fatalf("rate-limited 403 classification = %#v", typed)
 	}
 }
 

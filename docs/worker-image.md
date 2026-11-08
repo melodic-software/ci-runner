@@ -32,7 +32,7 @@ Authoritative references:
 
 - [GitHub self-hosted runner reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [Official runner image package](https://github.com/actions/actions-runner/pkgs/container/actions-runner)
-- [Runner Scale Set Client Docker example](https://github.com/actions/scaleset/tree/v0.4.0/examples/dockerscaleset)
+- [Runner Scale Set Client Docker example](https://github.com/actions/scaleset/tree/v0.5.0/examples/dockerscaleset)
 - [GitHub pre-job and post-job hooks](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)
 - [GitHub runner releases](https://github.com/actions/runner/releases)
 - [`setup-dotnet` v5.4.0 rootless installation guidance](https://github.com/actions/setup-dotnet/blob/26b0ec14cb23fa6904739307f278c14f94c95bf1/README.md#environment-variables)
