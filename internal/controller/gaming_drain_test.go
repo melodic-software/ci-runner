@@ -136,10 +136,13 @@ func TestGamingDrainNeverRestartsDesktopForAssignedJobs(t *testing.T) {
 	if harness.desktop.startCount() != 0 || harness.runtime.startCount() != 0 || logs.hasCode("desktop-started") {
 		t.Fatalf("gaming started Docker Desktop %d times and %d workers", harness.desktop.startCount(), harness.runtime.startCount())
 	}
-	if result.Observed.Phase != model.PhaseGaming {
-		t.Fatalf("phase = %s problems = %#v, want gaming", result.Observed.Phase, result.Observed.Problems)
+	// A correctly gamed host carries no problem, so `host doctor` stays healthy; the log keeps the trail.
+	if result.Observed.Phase != model.PhaseGaming || len(result.Observed.Problems) != 0 {
+		t.Fatalf("phase = %s problems = %#v, want gaming with none", result.Observed.Phase, result.Observed.Problems)
 	}
-	assertProblemCode(t, result.Observed.Problems, "gaming-assigned-job-deferred")
+	if !logs.hasCode("gaming-assigned-job-deferred") {
+		t.Fatalf("controller log lacks gaming-assigned-job-deferred: %s", logs)
+	}
 }
 
 // The full #511 drain: the running job finishes, then the controller stops Docker Desktop and WSL,

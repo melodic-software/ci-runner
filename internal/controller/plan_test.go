@@ -382,8 +382,8 @@ func TestGamingNeverStartsDesktopOrWorkersForUncoveredAssignments(t *testing.T) 
 	if plan.Phase != model.PhaseGaming || plan.DesiredWorkers["org"] != 0 {
 		t.Fatalf("stopped host phase = %s desired = %#v, want gaming with no workers", plan.Phase, plan.DesiredWorkers)
 	}
-	if !hasProblem(plan.Problems, "gaming-assigned-job-deferred", "org") {
-		t.Fatalf("deferred assignment was not reported: %#v", plan.Problems)
+	if !plan.GamingDeferredAssignments["org"] || len(plan.Problems) != 0 {
+		t.Fatalf("deferred assignment = %#v problems = %#v, want flagged without a problem", plan.GamingDeferredAssignments, plan.Problems)
 	}
 
 	input.Desktop = model.DesktopStatus{DesktopRunning: true, EngineReachable: true, RunningWSLCount: 1}

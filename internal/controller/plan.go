@@ -78,7 +78,11 @@ type Plan struct {
 	MemoryHeadroom   uint64
 	MemoryAffordable map[string]int
 	MemoryClamped    map[string]bool
-	Presence         model.Presence
+	// GamingDeferredAssignments marks pools holding an assigned job no existing worker covers,
+	// which gaming mode leaves queued on GitHub because it starts no worker. It is logged, not a
+	// problem: a correctly gamed host is healthy.
+	GamingDeferredAssignments map[string]bool
+	Presence                  model.Presence
 }
 
 // EffectiveMaximumConcurrentWorkers resolves the host-wide worker cap
@@ -567,7 +571,7 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		start := min(max(0, serviceable-nonbusy), remaining)
 		if input.Desired.Mode == model.ModeGaming {
 			// Gaming never creates a worker or starts Docker Desktop: an assignment no existing worker
-			// covers stays queued on GitHub until CI is re-enabled.
+			// covers stays queued on GitHub until the host leaves gaming mode.
 			start = 0
 		}
 		// An assignment can win the race with a fail-closed poll cancellation: invalid telemetry's
@@ -590,7 +594,10 @@ func applyOutstandingAssignments(plan *Plan, input PlanInput, workersByPool map[
 		}
 		plan.DesiredWorkers[target.ID] = busy + min(uncovered, nonbusy+start)
 		if uncovered > nonbusy+start && input.Desired.Mode == model.ModeGaming {
-			plan.Problems = append(plan.Problems, problem(input.Now, "gaming-assigned-job-deferred", "gaming mode starts no worker; GitHub keeps the assigned job no existing worker covers queued until CI is re-enabled", target.ID, true))
+			if plan.GamingDeferredAssignments == nil {
+				plan.GamingDeferredAssignments = make(map[string]bool)
+			}
+			plan.GamingDeferredAssignments[target.ID] = true
 		} else if uncovered > nonbusy+start {
 			plan.Problems = append(plan.Problems, problem(input.Now, "assigned-job-capacity-unavailable", "GitHub has assigned work that exceeds the last acknowledged service capacity; capacity remains zero and existing workers are preserved", target.ID, true))
 		}

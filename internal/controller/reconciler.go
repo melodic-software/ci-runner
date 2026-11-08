@@ -938,6 +938,15 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		EngineMemoryTotalBytes: r.engineMemoryTotal, InputIdle: r.inputIdle, Now: now,
 	})
 	alignAdvertisedCapacity(postPlan.AdvertisedCapacity, acknowledgedCapacity, capacityAcknowledged)
+	if superseded(ctx) {
+		// Inputs changed after the poll-time check: the remaining calls ran on a canceled context, so a
+		// degraded checkpoint here would report the cancellation as a host failure (#491). Return before
+		// the pool loop clears pending capacity, so the rerun still holds this poll's in-flight value.
+		if staleThisStep {
+			r.noteStaleHandshake()
+		}
+		return ReconcileResult{}, context.Cause(ctx)
+	}
 	observedPools := make([]model.PoolObservation, 0, len(r.config.GitHub.Targets))
 	for _, target := range r.config.GitHub.Targets {
 		pool := findPool(pools, target.ID)
@@ -964,6 +973,9 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if postPlan.MemoryClamped[target.ID] {
 			note("memory-clamped-capacity", "the memory term or host-floor backstop clamped worker starts or advertised capacity below host and pool limits", target.ID)
 		}
+		if postPlan.GamingDeferredAssignments[target.ID] {
+			note("gaming-assigned-job-deferred", "gaming mode starts no worker; GitHub keeps the assigned job no existing worker covers queued until the host leaves gaming mode", target.ID)
+		}
 	}
 	problems := append([]model.Problem(nil), postPlan.Problems...)
 	problems = append(problems, operationProblems...)
@@ -977,14 +989,6 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if now.Sub(*drainStartedAt) >= r.config.Drain.WarningAfter.Duration {
 			problems = append(problems, problem(now, "drain-warning", "drain is taking longer than the configured warning threshold; active work will continue", "", false))
 		}
-	}
-	if superseded(ctx) {
-		// Inputs changed after the poll-time check: the remaining calls ran on a canceled context, so a
-		// degraded checkpoint here would report the cancellation as a host failure (#491).
-		if staleThisStep {
-			r.noteStaleHandshake()
-		}
-		return ReconcileResult{}, context.Cause(ctx)
 	}
 	phase := postPlan.Phase
 	if len(operationProblems) > 0 {

@@ -147,7 +147,8 @@ Modes are persisted separately from checked-in configuration:
   verifies both are down, and remains down across logons. It never starts
   Docker Desktop or creates a worker: running jobs finish on their existing
   workers, and a job GitHub assigned that no worker holds stays queued on
-  GitHub (reported as `gaming-assigned-job-deferred`) until CI is re-enabled.
+  GitHub until the host leaves gaming mode. The controller log records it
+  as `gaming-assigned-job-deferred`.
 
 The controller log records `desktop-started`, `desktop-stopped`, and
 `wsl-shutdown` events each time the controller starts or stops Docker Desktop
