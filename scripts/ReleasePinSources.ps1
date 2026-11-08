@@ -68,7 +68,8 @@ function Get-WorkflowActionPins([string] $WorkflowDirectory, [string[]] $Exclude
 # Splits runner releases by minimum release age. A release newer than the pin is
 # eligible once it is $CooldownDays old, or $MajorCooldownDays when its major
 # version is newer than the pin's; until then it is held and is not drift. A
-# critical/CVE release among the newer ones lifts the cooldown for all of them.
+# critical/CVE release is exempt from its own cooldown; it does not lift the
+# cooldown of other newer releases.
 function Get-RunnerAdoptionCandidates(
     [object[]] $Releases,
     [string] $PinnedVersion,
@@ -77,15 +78,14 @@ function Get-RunnerAdoptionCandidates(
     [int] $MajorCooldownDays
 ) {
     $pinned = [version]$PinnedVersion
+    $criticalPattern = '(?i)\bcritical\b|\bsecurity\b|CVE-[0-9]{4}-[0-9]+'
     $newer = @($Releases | Where-Object { [version]$_.tag_name.TrimStart('v') -gt $pinned })
-    $critical = @($newer | Where-Object {
-        $_.body -match '(?i)\bcritical\b|\bsecurity\b|CVE-[0-9]{4}-[0-9]+'
-    }).Count -gt 0
+    $critical = @($newer | Where-Object { $_.body -match $criticalPattern }).Count -gt 0
     $eligible = [Collections.Generic.List[object]]::new()
     $held = [Collections.Generic.List[object]]::new()
     foreach ($release in $Releases) {
         $version = [version]$release.tag_name.TrimStart('v')
-        if ($version -le $pinned -or $critical) {
+        if ($version -le $pinned -or $release.body -match $criticalPattern) {
             $eligible.Add($release)
             continue
         }

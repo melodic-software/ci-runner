@@ -75,12 +75,12 @@ test("the newest release past its cooldown is the target while a younger one is 
   assert.deepEqual(result.held.map((held) => held.version), ["2.340.0"]);
 });
 
-test("a critical or CVE release skips the cooldown for every newer release", () => {
+test("a critical or CVE release skips its own cooldown and no other release's", () => {
   for (const body of ["Fixes a critical bug", "Addresses CVE-2026-12345"]) {
     const result = candidates("2.338.2", [release("2.338.2", 30), release("2.338.3", 1, body), release("3.0.0", 1)]);
     assert.equal(result.critical, true);
-    assert.deepEqual(result.eligible, ["2.338.2", "2.338.3", "3.0.0"]);
-    assert.deepEqual(result.held, []);
+    assert.deepEqual(result.eligible, ["2.338.2", "2.338.3"]);
+    assert.deepEqual(result.held.map((held) => held.version), ["3.0.0"]);
   }
 });
 
