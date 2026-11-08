@@ -65,7 +65,7 @@ foreach ($row in $rows) {
     $lines.Add("| $($cells -join ' | ') |")
 }
 $lines.Add('')
-$lines.Add('Bump each row past the target, or record a reviewed hold, in `release/dependency-drift-review.json` as [docs/releases.md](https://github.com/{0}/blob/main/docs/releases.md#freshness-policy) describes. A reviewed hold still hard-fails the release once it ages past the limit. The next scheduled run rewrites this body and closes the issue once no row is at or past the target.' -f $env:GH_REPO)
+$lines.Add('Bump each row past the target, or record a reviewed hold, in `release/dependency-drift-review.json` as [docs/releases.md](https://github.com/{0}/blob/main/docs/releases.md#freshness-policy) describes. A reviewed hold keeps this issue open and still hard-fails the release once it ages past the limit. The next scheduled run rewrites this body and closes the issue once no row is at or past the target.' -f $env:GH_REPO)
 $body = ($lines -join "`n") + "`n"
 
 $bodyFile = Join-Path ([IO.Path]::GetTempPath()) "dependency-drift-issue-$PID.md"

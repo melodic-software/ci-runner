@@ -213,7 +213,7 @@ update-disabled runners, which stops queuing jobs to a runner more than 30 days
 behind the latest release and pauses queuing immediately when a critical
 security update is published. The 14-day hard-fail satisfies the 30-day rule
 with margin. The critical/CVE clause has no grace period the drift check could
-beat: the check runs at most once a day outside a release, and it neither
+beat: outside a release the check runs daily or on manual dispatch, and it neither
 rebuilds nor stops deployed workers, so the required
 control for a critical release is the expedited rebuild fast-path in the
 provisioning rolling-upgrade runbook, with GitHub's platform-side queuing
