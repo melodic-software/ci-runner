@@ -2,7 +2,10 @@
 param(
     [string] $DependencyManifest = (Join-Path $PSScriptRoot '..\release\dependencies.json'),
     [string] $OutputPath = 'dependency-drift.json',
-    [int] $HardFailAfterDays = 14
+    [int] $HardFailAfterDays = 14,
+    # Minimum age before a runner release is adopted; critical/CVE releases skip it.
+    [int] $RunnerCooldownDays = 3,
+    [int] $RunnerMajorCooldownDays = 7
 )
 
 Set-StrictMode -Version Latest
@@ -146,15 +149,14 @@ function Add-IntegrityDrift(
     })
 }
 
-$runnerReleases = Get-GitHubReleases 'actions/runner'
-$runner = Get-LatestRelease $runnerReleases
-$runnerPendingDate = Get-FirstUnadoptedReleaseDate $runnerReleases $runnerBase.version
-$runnerCritical = @($runnerReleases | Where-Object {
-    [version]$_.tag_name.TrimStart('v') -gt [version]$runnerBase.version -and
-    $_.body -match '(?i)\bcritical\b|\bsecurity\b|CVE-[0-9]{4}-[0-9]+'
-}).Count -gt 0
+$runnerReleases = @(Get-GitHubReleases 'actions/runner')
+$runnerCandidates = Get-RunnerAdoptionCandidates $runnerReleases $runnerBase.version $now `
+    $RunnerCooldownDays $RunnerMajorCooldownDays
+$runner = Get-LatestRelease $runnerCandidates.eligible
+$runnerPendingDate = Get-FirstUnadoptedReleaseDate $runnerCandidates.eligible $runnerBase.version
 $runnerDriftDate = if ($runnerPendingDate) { $runnerPendingDate } else { [DateTimeOffset]$runner.published_at }
-Add-Drift 'actions-runner' $runnerBase.version $runner.tag_name.TrimStart('v') $runnerDriftDate $runner.html_url $runnerCritical
+Add-Drift 'actions-runner' $runnerBase.version $runner.tag_name.TrimStart('v') $runnerDriftDate `
+    $runner.html_url $runnerCandidates.critical
 
 $pinnedRunnerRelease = Get-ReleaseForVersion $runnerReleases $runnerBase.version 'actions/runner'
 $runnerAssetName = "actions-runner-linux-x64-$($runnerBase.version).tar.gz"
@@ -410,9 +412,12 @@ $report = [ordered]@{
     schemaVersion = 1
     checkedAt = $now.ToString('o')
     hardFailAfterDays = $HardFailAfterDays
+    runnerCooldownDays = $RunnerCooldownDays
+    runnerMajorCooldownDays = $RunnerMajorCooldownDays
     hasDrift = $drift.Count -gt 0
     hardFail = @($drift | Where-Object hardFail).Count -gt 0
     drift = $drift
+    cooldownHeld = @($runnerCandidates.held)
 }
 
 $parent = Split-Path -Parent $OutputPath
