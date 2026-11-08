@@ -404,7 +404,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if desired.Mode == model.ModeEnabled && desktopStatusKnown && powerErr == nil {
 		_, powerAllowed := evaluatePowerGate(previous.PowerGate, power, r.config.Power, now)
 		if powerAllowed && (!desktop.DesktopRunning || !desktop.EngineReachable) {
-			if startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration); startErr != nil {
+			startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration)
+			if startErr == nil {
+				note("desktop-started", "controller started Docker Desktop", "")
+			}
+			if startErr != nil {
 				observationFailed = true
 				record("desktop-start-error", "Docker Desktop did not start within the configured policy", "", true, startErr)
 			} else if refreshed, statusErr := r.deps.Desktop.Status(ctx); statusErr != nil {
@@ -518,6 +522,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if provisional.StartDesktop {
 			if startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration); startErr != nil {
 				record("desktop-start-error", "Docker Desktop did not start within the configured policy", "", true, startErr)
+			} else {
+				note("desktop-started", "controller started Docker Desktop", "")
 			}
 		}
 		if len(provisional.Start) > 0 {
@@ -558,6 +564,11 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		for poolID := range pollPlan.AdvertisedCapacity {
 			pollPlan.AdvertisedCapacity[poolID] = 0
 		}
+	}
+	if superseded(ctx) {
+		// The pre-poll work ran on a canceled context; its problems describe the cancellation, not the
+		// host, and the rerun replaces this pass before any checkpoint would be read.
+		return ReconcileResult{}, context.Cause(ctx)
 	}
 	checkpoint := r.pollCheckpoint(previous, pools, workers, resources, power, desktop, pollPlan, time.Now().UTC(), operationProblems)
 	var (
@@ -758,6 +769,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	if plan.StartDesktop {
 		if startErr := r.deps.Desktop.Start(ctx, r.config.DockerDesktop.StartTimeout.Duration); startErr != nil {
 			record("desktop-start-error", "Docker Desktop did not start within the configured policy", "", true, startErr)
+		} else {
+			note("desktop-started", "controller started Docker Desktop", "")
 		}
 	}
 
@@ -862,8 +875,8 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 	}
 
 	if plan.StopDesktop || plan.ShutdownWSL {
-		if !allTargetsStablyZero(r.config.GitHub.Targets, zeroAcknowledged, zeroConfirmations) {
-			note("gaming-zero-capacity-unconfirmed", "Docker and WSL shutdown was deferred until every listener has two zero-capacity, zero-assignment confirmations", "")
+		if !gamingTeardownConfirmed(r.config.GitHub.Targets, pools, zeroAcknowledged, zeroConfirmations) {
+			note("gaming-zero-capacity-unconfirmed", "Docker and WSL shutdown was deferred until every listener has acknowledged zero capacity, twice for a pool with no assigned job", "")
 			plan.StopDesktop = false
 			plan.ShutdownWSL = false
 		}
@@ -884,11 +897,15 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 			if plan.StopDesktop {
 				if stopErr := r.deps.Desktop.Stop(ctx, r.config.DockerDesktop.StopTimeout.Duration); stopErr != nil {
 					record("desktop-stop-error", "Docker Desktop did not stop within the configured policy", "", true, stopErr)
+				} else {
+					note("desktop-stopped", "controller stopped Docker Desktop", "")
 				}
 			}
 			if plan.ShutdownWSL {
 				if shutdownErr := r.deps.Desktop.ShutdownAllWSL(ctx); shutdownErr != nil {
 					record("wsl-shutdown-error", "one or more WSL distributions remain running", "", true, shutdownErr)
+				} else {
+					note("wsl-shutdown", "controller shut down every WSL distribution", "")
 				}
 			}
 		}
@@ -960,6 +977,14 @@ func (r *Reconciler) step(ctx context.Context, cancel context.CancelCauseFunc) (
 		if now.Sub(*drainStartedAt) >= r.config.Drain.WarningAfter.Duration {
 			problems = append(problems, problem(now, "drain-warning", "drain is taking longer than the configured warning threshold; active work will continue", "", false))
 		}
+	}
+	if superseded(ctx) {
+		// Inputs changed after the poll-time check: the remaining calls ran on a canceled context, so a
+		// degraded checkpoint here would report the cancellation as a host failure (#491).
+		if staleThisStep {
+			r.noteStaleHandshake()
+		}
+		return ReconcileResult{}, context.Cause(ctx)
 	}
 	phase := postPlan.Phase
 	if len(operationProblems) > 0 {
@@ -1491,6 +1516,11 @@ func sameAdmissionIntent(left, right model.DesiredState) bool {
 	return *left.TemporaryCapacityOverride == *right.TemporaryCapacityOverride
 }
 
+// superseded reports that this pass was canceled because its inputs changed; Step reruns it at once.
+func superseded(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errReconcileInputsChanged)
+}
+
 // pollSuperseded reports whether a listener poll error is the controller's own designed supersession.
 // Only the result's own error counts: the shared step cause must not mask another pool's failure.
 func pollSuperseded(err error) bool {
@@ -1525,9 +1555,12 @@ func containsActiveWorker(workers []model.Worker) bool {
 	return false
 }
 
-func allTargetsStablyZero(targets []config.Target, acknowledged map[string]bool, confirmations map[string]int) bool {
+// gamingTeardownConfirmed gates gaming teardown. A pool still holding assignments cannot reach two
+// zero-assignment confirmations, because gaming starts no worker for them, so its acknowledged zero
+// suffices; the fresh inventory check that follows still defers teardown while any worker is active.
+func gamingTeardownConfirmed(targets []config.Target, pools []PoolSnapshot, acknowledged map[string]bool, confirmations map[string]int) bool {
 	for _, target := range targets {
-		if !acknowledged[target.ID] || confirmations[target.ID] < 2 {
+		if !acknowledged[target.ID] || (confirmations[target.ID] < 2 && findPool(pools, target.ID).TotalAssignedJobs == 0) {
 			return false
 		}
 	}

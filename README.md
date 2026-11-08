@@ -144,7 +144,14 @@ Modes are persisted separately from checked-in configuration:
 - `disabled` advertises zero, drains CI, and removes idle workers without
   touching unrelated Docker or WSL workloads;
 - `gaming` drains CI, stops Docker Desktop, shuts down every WSL distribution,
-  verifies both are down, and remains down across logons.
+  verifies both are down, and remains down across logons. It never starts
+  Docker Desktop or creates a worker: running jobs finish on their existing
+  workers, and a job GitHub assigned that no worker holds stays queued on
+  GitHub (reported as `gaming-assigned-job-deferred`) until CI is re-enabled.
+
+The controller log records `desktop-started`, `desktop-stopped`, and
+`wsl-shutdown` events each time the controller starts or stops Docker Desktop
+or shuts down WSL.
 
 Desired mode is `state\desired.json`, and that file survives reboot. This
 module does not rewrite it to `enabled` when the machine boots or when the
@@ -161,16 +168,14 @@ failure. `Step` reruns immediately so the new mode is advertised without
 waiting out the listener poll.
 
 If the file changes while that poll is still open, the pass returns before
-the final Docker Desktop status and managed-worker inventory calls. It does
-not record `desktop-final-status-error` or `worker-final-inventory-error`,
-and it does not persist `phase=degraded`. `observed.json` stays at the
-previous checkpoint until the retry writes a new one.
-
-If the file changes after that poll-time check, including during worker
-cleanup, the rest of the pass still runs. The final probes then see a
-canceled context and can record those two problem codes, and the checkpoint
-is persisted as `phase=degraded` before the retry replaces it. `host doctor`
-in that window reports the degraded checkpoint even though enable succeeded.
+the final Docker Desktop status and managed-worker inventory calls. If it
+changes after the poll, including during worker cleanup, the rest of the
+pass still runs on the canceled context and its failed calls can still write
+error events to the controller log. Either way the canceled pass persists no
+checkpoint: its problems describe the cancellation, not the host, so it never
+writes `phase=degraded` for `host <mode> --wait` or `host doctor` to report.
+`observed.json` stays at the previous checkpoint until the retry writes a new
+one.
 
 No normal timeout implies force. Busy jobs finish naturally, including drains
 longer than the warning threshold. `force-stop` is a separate destructive path
