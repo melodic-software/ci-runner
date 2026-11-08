@@ -72,6 +72,8 @@ take_numeric cpu.stat.nr_throttled "${cpu_stat[nr_throttled]:-}"
 cpu_throttled="$REPLY"
 take_numeric cpu.stat.throttled_usec "${cpu_stat[throttled_usec]:-}"
 cpu_throttled_usec="$REPLY"
+take_numeric cpu.stat.usage_usec "${cpu_stat[usage_usec]:-}"
+cpu_usage_usec="$REPLY"
 
 read_scalar pids.peak "$cgroup_root/pids.peak"
 pids_peak="$REPLY"
@@ -115,7 +117,7 @@ status=complete
 if ((${#missing[@]} > 0)); then
   status=partial
 fi
-if ((${#missing[@]} == 9)); then
+if ((${#missing[@]} == 10)); then
   status=unavailable
 fi
 
@@ -131,12 +133,13 @@ if ! jq --compact-output --null-input \
   --argjson cpu_periods "$cpu_periods" \
   --argjson cpu_throttled "$cpu_throttled" \
   --argjson cpu_throttled_usec "$cpu_throttled_usec" \
+  --argjson cpu_usage_usec "$cpu_usage_usec" \
   --argjson pids_peak "$pids_peak" \
   --argjson io_read_bytes "$io_read_bytes" \
   --argjson io_write_bytes "$io_write_bytes" \
   --args \
   '{
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: "cgroup-v2",
     status: $status,
     missing: $ARGS.positional,
@@ -149,7 +152,8 @@ if ! jq --compact-output --null-input \
     cpu: {
       periods: $cpu_periods,
       throttledPeriods: $cpu_throttled,
-      throttledMicroseconds: $cpu_throttled_usec
+      throttledMicroseconds: $cpu_throttled_usec,
+      usageMicroseconds: $cpu_usage_usec
     },
     pids: { peak: $pids_peak },
     io: { readBytes: $io_read_bytes, writeBytes: $io_write_bytes }

@@ -242,7 +242,7 @@ calculated_digest="$(printf '%s\n' "$resource_evidence" | sha256sum | cut --deli
 [[ "$calculated_digest" == "$sidecar_digest" ]]
 [[ "$(jq --compact-output . <<<"$resource_evidence")" == "$resource_evidence" ]]
 jq --exit-status '
-  .schemaVersion == 1 and
+  .schemaVersion == 2 and
   .source == "cgroup-v2" and
   (.status == "complete" or .status == "partial" or .status == "unavailable") and
   (.missing | type == "array") and
@@ -253,6 +253,7 @@ jq --exit-status '
   (.cpu.periods | type == "number") and
   (.cpu.throttledPeriods | type == "number") and
   (.cpu.throttledMicroseconds | type == "number") and
+  (.cpu.usageMicroseconds | type == "number") and
   (.pids.peak | type == "number") and
   (.io.readBytes | type == "number") and
   (.io.writeBytes | type == "number")
@@ -267,7 +268,7 @@ read -r -d '' fixture_script <<'CONTAINER_SCRIPT' || true
   printf "1024\n" >"$fixture/memory.peak"
   printf "0\n" >"$fixture/memory.swap.peak"
   printf "oom 0\noom_kill 0\n" >"$fixture/memory.events"
-  printf "nr_periods 10\nnr_throttled 2\nthrottled_usec 50\n" >"$fixture/cpu.stat"
+  printf "usage_usec 4000\nuser_usec 3000\nsystem_usec 1000\nnr_periods 10\nnr_throttled 2\nthrottled_usec 50\n" >"$fixture/cpu.stat"
   printf "4\n" >"$fixture/pids.peak"
   for io_content in "" "8:0 rbytes=broken wbytes=20"; do
     printf "%s" "$io_content" >"$fixture/io.stat"
@@ -291,7 +292,8 @@ for fixture_marker in "${fixture_lines[@]}"; do
   [[ "${#fixture_marker}" -lt 4096 ]]
   jq --exit-status '
     .status == "partial" and
-    (.missing | index("io.stat") != null) and
+    .missing == ["io.stat"] and
+    .cpu.usageMicroseconds == 4000 and
     .io.readBytes == 0 and
     .io.writeBytes == 0
   ' <<<"$fixture_record" >/dev/null
@@ -321,7 +323,7 @@ unavailable_record="$(<"$unavailable_sidecar")"
 [[ "${#unavailable_marker}" -lt 4096 ]]
 jq --exit-status '
   .status == "unavailable" and
-  (.missing | length) == 9 and
+  (.missing | length) == 10 and
   ([.memory[], .cpu[], .pids[], .io[]] | all(. == 0))
 ' <<<"$unavailable_record" >/dev/null
 

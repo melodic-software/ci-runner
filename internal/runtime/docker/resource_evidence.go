@@ -10,13 +10,16 @@ import (
 )
 
 const (
-	resourceEvidenceSchemaVersion = 1
-	maximumResourceEvidenceBytes  = 32 * 1024
-	resourceEvidenceSourceCgroup  = "cgroup-v2"
-	resourceEvidenceSourceHost    = "controller-fallback"
+	resourceEvidenceSchemaVersion = 2
+	// Version 1 images predate cpu.stat usage_usec; their records stay readable.
+	legacyResourceEvidenceSchemaVersion = 1
+	resourceEvidenceUsageField          = "cpu.stat.usage_usec"
+	maximumResourceEvidenceBytes        = 32 * 1024
+	resourceEvidenceSourceCgroup        = "cgroup-v2"
+	resourceEvidenceSourceHost          = "controller-fallback"
 )
 
-var resourceEvidenceFields = []string{
+var legacyResourceEvidenceFields = []string{
 	"cpu.stat.nr_periods",
 	"cpu.stat.nr_throttled",
 	"cpu.stat.throttled_usec",
@@ -27,6 +30,8 @@ var resourceEvidenceFields = []string{
 	"memory.swap.peak",
 	"pids.peak",
 }
+
+var resourceEvidenceFields = append(slices.Clone(legacyResourceEvidenceFields), resourceEvidenceUsageField)
 
 type ResourceEvidence struct {
 	SchemaVersion int                    `json:"schemaVersion"`
@@ -51,6 +56,9 @@ type ResourceEvidenceCPU struct {
 	Periods               uint64 `json:"periods"`
 	ThrottledPeriods      uint64 `json:"throttledPeriods"`
 	ThrottledMicroseconds uint64 `json:"throttledMicroseconds"`
+	// UsageMicroseconds is nil only in schema-version-1 records, which never
+	// carried it; omitting it keeps a re-persisted v1 sidecar byte-compatible.
+	UsageMicroseconds *uint64 `json:"usageMicroseconds,omitempty"`
 }
 
 type ResourceEvidencePIDs struct {
@@ -87,7 +95,18 @@ func ParseResourceEvidence(source io.Reader) (ResourceEvidence, error) {
 }
 
 func (e ResourceEvidence) Validate() error {
-	if e.SchemaVersion != resourceEvidenceSchemaVersion {
+	fields := resourceEvidenceFields
+	switch e.SchemaVersion {
+	case resourceEvidenceSchemaVersion:
+		if e.CPU.UsageMicroseconds == nil {
+			return errors.New("terminal resource evidence schema version 2 requires cpu.usageMicroseconds")
+		}
+	case legacyResourceEvidenceSchemaVersion:
+		if e.CPU.UsageMicroseconds != nil {
+			return errors.New("terminal resource evidence schema version 1 must not contain cpu.usageMicroseconds")
+		}
+		fields = legacyResourceEvidenceFields
+	default:
 		return fmt.Errorf("terminal resource evidence has unsupported schema version %d", e.SchemaVersion)
 	}
 	if e.Source != resourceEvidenceSourceCgroup && e.Source != resourceEvidenceSourceHost {
@@ -114,7 +133,7 @@ func (e ResourceEvidence) Validate() error {
 	}
 	seen := make(map[string]struct{}, len(e.Missing))
 	for _, field := range e.Missing {
-		if !slices.Contains(resourceEvidenceFields, field) {
+		if !slices.Contains(fields, field) {
 			return fmt.Errorf("terminal resource evidence has unsupported missing field %q", field)
 		}
 		if _, duplicate := seen[field]; duplicate {
@@ -125,10 +144,10 @@ func (e ResourceEvidence) Validate() error {
 	if e.Status == "complete" && len(e.Missing) != 0 {
 		return errors.New("complete terminal resource evidence must not name missing fields")
 	}
-	if e.Status == "partial" && (len(e.Missing) == 0 || len(e.Missing) == len(resourceEvidenceFields)) {
+	if e.Status == "partial" && (len(e.Missing) == 0 || len(e.Missing) == len(fields)) {
 		return errors.New("partial terminal resource evidence must name some but not all fields")
 	}
-	if (e.Status == "unavailable" || e.Status == "invalid") && len(e.Missing) != len(resourceEvidenceFields) {
+	if (e.Status == "unavailable" || e.Status == "invalid") && len(e.Missing) != len(fields) {
 		return errors.New("unavailable or invalid terminal resource evidence must name every field")
 	}
 	return nil
@@ -141,7 +160,25 @@ func fallbackResourceEvidence(status, reason string) ResourceEvidence {
 		Status:        status,
 		Reason:        reason,
 		Missing:       append([]string(nil), resourceEvidenceFields...),
+		CPU:           ResourceEvidenceCPU{UsageMicroseconds: new(uint64)},
 	}
+}
+
+// uncapturedFields is Missing plus any field the record's schema version
+// predates, so telemetry never reports an absent v1 usage as a measured zero.
+func (e ResourceEvidence) uncapturedFields() []string {
+	fields := append([]string(nil), e.Missing...)
+	if e.CPU.UsageMicroseconds == nil && !slices.Contains(fields, resourceEvidenceUsageField) {
+		fields = append(fields, resourceEvidenceUsageField)
+	}
+	return fields
+}
+
+func (e ResourceEvidence) usageMicroseconds() uint64 {
+	if e.CPU.UsageMicroseconds == nil {
+		return 0
+	}
+	return *e.CPU.UsageMicroseconds
 }
 
 func marshalResourceEvidence(evidence ResourceEvidence) ([]byte, error) {

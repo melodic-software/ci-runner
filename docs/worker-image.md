@@ -181,8 +181,22 @@ runner; the hooks atomically replace it with `busy` and `completed`. The file is
 inside the disposable writable layer and is copied through Docker's archive API;
 it is never mounted from the host. Before recording `completed`, the terminal
 hook snapshots cgroup-v2 `memory.peak`, `memory.swap.peak`, OOM events,
-`cpu.stat` periods and throttling, `pids.peak`, and aggregate `io.stat` bytes
-into a compact, bounded, schema-versioned JSON file in the same state directory.
+`cpu.stat` periods, throttling, and `usage_usec`, `pids.peak`, and aggregate
+`io.stat` bytes into a compact, bounded, schema-versioned JSON file in the same
+state directory. Schema version 2 adds `cpu.usageMicroseconds`; the controller
+still accepts version 1 records from older images and treats their usage as
+uncaptured, never as zero. Usage divided by job wall time is the CPUs the job
+actually used. Near the `cpus` limit with a high throttled share, the job was
+bound by its own quota, because the kernel counts only throttling "caused by
+this cgroup's own bandwidth limit"
+([cgroup v2 `cpu.stat`](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)).
+Well below the limit with little throttling, it was waiting on something
+else: other containers on the engine, I/O, or the network. These counters see
+only the Linux VM. The Docker Desktop WSL2 kernel builds without
+`CONFIG_PARAVIRT_TIME_ACCOUNTING` and reports zero steal time, so time Windows
+withholds the VM's vCPUs is not subtracted from usage. Windows-side contention
+can therefore still look like quota use; cross-check it against
+`ci_runner.host.cpu.utilization`.
 It publishes that file by same-directory atomic rename, then writes the identical
 JSON as one reserved `ci-runner-resource-evidence-v1:` marker directly to
 `/proc/1/fd/1`. The pinned runner redirects hook stdout and stderr through its

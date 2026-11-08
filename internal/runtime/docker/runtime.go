@@ -743,7 +743,7 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 	finalization.ResourceTier = metadata.ResourceTier
 	finalization.RecordResourceEvidence = evidenceRecorded
 	finalization.ResourceEvidence = &telemetry.WorkerResourceEvidence{
-		Status: evidence.Status, Missing: append([]string(nil), evidence.Missing...),
+		Status: evidence.Status, Missing: evidence.uncapturedFields(),
 		MemoryPeakBytes:          evidence.Memory.PeakBytes,
 		MemorySwapPeakBytes:      evidence.Memory.SwapPeakBytes,
 		OOMEvents:                evidence.Memory.OOMEvents,
@@ -751,6 +751,7 @@ func (r *Runtime) finalize(id string, wait *client.ContainerWaitResult, watch *c
 		CPUPeriods:               evidence.CPU.Periods,
 		CPUThrottledPeriods:      evidence.CPU.ThrottledPeriods,
 		CPUThrottledMicroseconds: evidence.CPU.ThrottledMicroseconds,
+		CPUUsageMicroseconds:     evidence.usageMicroseconds(),
 		PIDsPeak:                 evidence.PIDs.Peak,
 		IOReadBytes:              evidence.IO.ReadBytes,
 		IOWriteBytes:             evidence.IO.WriteBytes,
