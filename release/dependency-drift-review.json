@@ -3,17 +3,21 @@
   "reviewedAt": "2026-11-08T00:00:00.0000000Z",
   "issue": null,
   "cycle": "2026-11-08",
-  "held": [
+  "held": [],
+  "bumped": [
     {
       "dependency": "repository-pin:melodic-software/ci-workflows",
-      "pinned": "8e1076f6c33cb9ca3544a1ad2a215fd2262b4a72",
-      "pinnedVersion": "v0.71.0",
-      "latestObservedAtReview": "d381b688db010a05f7ad2a3dd83e23289b620a03",
-      "decision": "no-bump-this-cycle",
-      "rationale": "Pinned to the latest published release, v0.71.0. Main tip d381b68 has no release tag, and the canonical uses: comment must name one. The 21 unreleased commits start at dae41d4 (2026-11-08T05:54:42Z), so the freshness gate reports the row without a hard fail until 2026-11-22. They include the actionlint fork switch (#1027/#1036), the hold-label ci-status failure (#1037) and the runner-policy workflow_call check (#1042); move every reference together once a release carries them."
-    }
-  ],
-  "bumped": [
+      "from": "8e1076f6c33cb9ca3544a1ad2a215fd2262b4a72",
+      "fromVersion": "v0.71.0",
+      "to": "9bfbca898bff801f5a8fd3d0f98ae6a0538e4386",
+      "toVersion": "v0.73.0",
+      "reviewedAt": "2026-11-12T00:00:00.0000000Z",
+      "cycle": "2026-11-12",
+      "decision": "bump",
+      "rationale": "v0.73.0 carries aggregate-results alias-jobs (#1072), which the CI Status / ci-status alias pair needs. Across 8e1076f..9bfbca8 no called reusable gains an input, secret or permission; the new composite inputs (aggregate-results alias-jobs, check-contract enforce-hold-label, hold-label) default to the old behavior.",
+      "requiresFleetRollout": false,
+      "rolloutNote": "CI workflow references only; no worker image change."
+    },
     {
       "dependency": "docker-buildx",
       "from": "0.38.0",

@@ -281,6 +281,15 @@ test("ci-status is the stable gateway for every Go lane", () => {
     .map((line) => /\$\{\{ needs\.([A-Za-z0-9_-]+)\.result \}\}/u.exec(line)?.[1])
     .filter((name) => name !== undefined);
   assert.deepEqual(results, expectedNeeds, "ci-status must aggregate every declared dependency once");
-  assert.ok(block.includes("    name: ci-status"));
+  assert.ok(block.includes("    name: CI Status"));
   assert.ok(block.includes("    if: always()"));
+});
+
+test("report-ci-status mirrors the gateway under its old check name", () => {
+  const block = jobBlock(workflowSource("pr-require-checks.yml"), "report-ci-status");
+  assert.ok(block.includes("    name: ci-status"));
+  assert.ok(block.includes("    needs: [ci-status]"));
+  assert.ok(block.includes("    if: ${{ always() }}"));
+  assert.ok(block.includes("    permissions: {}"));
+  assert.ok(block.includes("          [ \"$RESULT\" = success ]"));
 });
