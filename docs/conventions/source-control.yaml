@@ -5,10 +5,10 @@
 # surface"). The merge-rung ladder and the ratification rule that makes this reviewed file the
 # recorded baseline: https://github.com/melodic-software/claude-code-plugins/blob/main/docs/contracts/loop-lane/README.md
 #
-# pr_body_required_sections mirrors the body contract the single required check `ci-status`
+# pr_body_required_sections mirrors the body contract the single required check `CI Status`
 # reports on, and that contract is authoritative: .claude/rules/pr-body-contract.md states it in
 # full, including the closing-keyword (or `No related issue`) requirement this key's grammar cannot
-# express. The body contract is advisory, not gating: `ci-status` leaves a comment and the
+# express. The body contract is advisory, not gating: `CI Status` leaves a comment and the
 # `needs-issue-linkage` label instead of failing. The key is a closed literal list of heading names
 # with no pointer form, so the headings are restated here; never move them independently of that
 # contract.

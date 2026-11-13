@@ -284,12 +284,3 @@ test("ci-status is the stable gateway for every Go lane", () => {
   assert.ok(block.includes("    name: CI Status"));
   assert.ok(block.includes("    if: always()"));
 });
-
-test("report-ci-status mirrors the gateway under its old check name", () => {
-  const block = jobBlock(workflowSource("pr-require-checks.yml"), "report-ci-status");
-  assert.ok(block.includes("    name: ci-status"));
-  assert.ok(block.includes("    needs: [ci-status]"));
-  assert.ok(block.includes("    if: ${{ always() }}"));
-  assert.ok(block.includes("    permissions: {}"));
-  assert.ok(block.includes("          [ \"$RESULT\" = success ]"));
-});

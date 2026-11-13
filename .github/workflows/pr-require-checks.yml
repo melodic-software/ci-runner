@@ -520,9 +520,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@9bfbca898bff801f5a8fd3d0f98ae6a0538e4386 # v0.73.0
         with:
-          # report-ci-status mirrors this gate under `ci-status` and runs on
-          # contract-only events too; the run-shape reads must ignore it.
-          alias-jobs: ci-status
           results: >-
             ${{ needs.markdownlint.result }}
             ${{ needs.shellcheck.result }}
@@ -557,18 +554,3 @@ jobs:
           # step's own name lets the carry-forward and yield lookups find it.
           step-name: Aggregate lane results
           token: ${{ github.token }}
-
-  report-ci-status:
-    name: ci-status
-    needs: [ci-status]
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    permissions: {}
-    steps:
-      - name: Report the conclusion of `CI Status`
-        env:
-          RESULT: ${{ needs.ci-status.result }}
-        run: |
-          echo "CI Status: $RESULT"
-          [ "$RESULT" = success ]
