@@ -92,7 +92,7 @@ gate validates each Action's current tag and tag-to-commit mapping, the runner
 tag's GHCR digest, and the runner archive digest against the SHA-256 the runner
 release notes publish. Minor and patch bumps of `actions/*`, `github/*` and
 `anthropics/*` Actions take the `vendor-actions` auto-merge lane
-(`pr-automerge-dependabot.yml`), which merges once `ci-status` passes; every
+(`pr-automerge-dependabot.yml`), which merges once `CI Status` passes; every
 other update PR is review-only.
 
 On a first run, the workflow pushes the BuildKit result without a tag, pulls and
