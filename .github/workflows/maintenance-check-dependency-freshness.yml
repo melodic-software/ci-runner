@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   check-dependency-freshness:
-    name: Check dependency freshness
+    name: Check Dependency Freshness
     if: github.repository == 'melodic-software/ci-runner'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -64,7 +64,7 @@ jobs:
         run: echo "report=$(jq --compact-output . "$FRESHNESS_REPORT")" >>"$GITHUB_OUTPUT"
 
   file-dependency-drift-issue:
-    name: File dependency drift issue
+    name: File Dependency Drift Issue
     needs: check-dependency-freshness
     runs-on: ubuntu-24.04
     timeout-minutes: 5
