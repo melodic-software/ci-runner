@@ -508,8 +508,8 @@ and [Docker resource constraints](https://docs.docker.com/engine/containers/reso
 
 ## Build, release, and rollback
 
-Pull requests and pushes delegate Go quality to the exact-SHA-pinned reusable
-workflow in `melodic-software/ci-workflows`. It runs the reviewed analyzer set
+Pull requests and pushes delegate Go quality to the reusable workflow in
+`melodic-software/ci-workflows`, called at `main`. It runs the reviewed analyzer set
 on native Linux and Windows, [module tidiness and verification](https://go.dev/ref/mod)
 plus
 [race-enabled tests](https://go.dev/doc/articles/race_detector) on Linux,
@@ -546,7 +546,7 @@ directory plus `current` junction; how many known-good pairs are retained is a
 floor, stated once in the [freshness policy](docs/releases.md#freshness-policy).
 
 Rollback order is: drain without killing work, restore the prior immutable pair,
-restore the prior reusable-workflow SHA if needed, then use **Re-run all jobs**
+pin a reusable-workflow caller to a known-good `ci-workflows` commit if needed, then use **Re-run all jobs**
 for affected workflows. The first step used to be flipping routing to
 `hosted-only`; there is no routing variable to flip and no consumer-side
 substitute, so a fleet the rollback cannot restore means the affected jobs

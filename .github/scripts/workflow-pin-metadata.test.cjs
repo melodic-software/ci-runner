@@ -11,8 +11,8 @@ const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
-const advisoryReusableAtMain =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@main(?:\s+#.*)?$/u;
+const reusableAtMain =
+  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml)@main(?:\s+#.*)?$/u;
 
 // Which files call which ci-workflows composite or reusable, sorted, with
 // duplicates kept. This is the omitted-caller regression check: a lane that
@@ -132,14 +132,25 @@ function ciWorkflowsPin() {
 
       // SYNC-MANAGED callers stay out of the one-release compatibility
       // inventory so a standards-sync cannot break Product policy. A
-      // first-party reusable workflow may float on `@main` (standards#911);
+      // first-party reusable workflow is called at `@main` (standards#911);
       // an action still needs a full 40-hex SHA, which the org Actions policy
       // also enforces (https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
       if (advisory) {
         assert.ok(
-          advisoryReference.exec(line) || advisoryReusableAtMain.exec(line),
+          advisoryReference.exec(line) || reusableAtMain.exec(line),
           `${path.relative(workflowDirectory, file)}:${index + 1} is not a SHA-pinned advisory ci-workflows reference`,
         );
+        continue;
+      }
+
+      // A reusable workflow at `@main` stays in the caller inventory and out
+      // of the one-release pin, which covers the actions.
+      const floating = reusableAtMain.exec(line);
+      if (floating) {
+        callers.push([
+          path.relative(workflowDirectory, file).split(path.sep).join("/"),
+          floating.groups.reference,
+        ]);
         continue;
       }
 
@@ -176,12 +187,11 @@ function ciWorkflowsPin() {
   return { sha: references[0], version: versions[0] };
 }
 
-test("ci-workflows references use a full SHA with one release version", () => {
+test("ci-workflows action references use a full SHA with one release version", () => {
   ciWorkflowsPin();
 });
 
 test("pr-run-checks-go uses the exact reusable caller contract", () => {
-  const { sha, version } = ciWorkflowsPin();
   const block = jobBlock(workflowSource("pr-require-checks.yml"), "pr-run-checks-go");
 
   // `if` is admitted because the required-check contract gates every lane job
@@ -206,9 +216,9 @@ test("pr-run-checks-go uses the exact reusable caller contract", () => {
   assert.deepEqual(nestedMapping(block, "with"), { config: ".golangci.yml" });
   assert.ok(
     block.includes(
-      `    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@${sha} # ${version}`,
+      "    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@main",
     ),
-    "pr-run-checks-go must call the exact released reusable workflow every other reference names",
+    "pr-run-checks-go must call the first-party reusable workflow at main",
   );
 });
 
