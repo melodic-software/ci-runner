@@ -32,9 +32,9 @@ GOTOOLCHAIN=go1.27.4 GOFLAGS=-mod=mod go install github.com/golangci/golangci-li
 golangci-lint run ./...
 ```
 
-Use the `GOLANGCI_LINT_VERSION` of the shared `pr-run-checks-go` reusable at the
-ref `.github/workflows/pr-require-checks.yml` pins, so local lint matches CI; bump
-the pin here and in `.cursor/environment.json` when that ref moves. Releases
+Use the `GOLANGCI_LINT_VERSION` of the shared `pr-run-checks-go` reusable on
+`ci-workflows` `main`, the ref `.github/workflows/pr-require-checks.yml` calls, so local
+lint matches CI; bump the version here and in `.cursor/environment.json` when that value changes. Releases
 before v2.13.0 reject this module outright: go1.27 support landed there
 ([golangci-lint#6643](https://github.com/golangci/golangci-lint/issues/6643)).
 
