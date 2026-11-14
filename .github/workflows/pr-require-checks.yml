@@ -288,7 +288,7 @@ jobs:
       # (upload-sarif defaults false); grant write so the job can start.
       security-events: write # Mandatory match for the reusable's own grant; see above.
     # Gates: any finding fails the lane and so ci-status.
-    uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@9bfbca898bff801f5a8fd3d0f98ae6a0538e4386 # v0.73.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-audit-workflows.yml@main
     with:
       paths: .
       fail-on-severity: low
@@ -324,7 +324,7 @@ jobs:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@9bfbca898bff801f5a8fd3d0f98ae6a0538e4386 # v0.73.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@main
     with:
       config: .golangci.yml
 

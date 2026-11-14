@@ -508,8 +508,8 @@ and [Docker resource constraints](https://docs.docker.com/engine/containers/reso
 
 ## Build, release, and rollback
 
-Pull requests and pushes delegate Go quality to the exact-SHA-pinned reusable
-workflow in `melodic-software/ci-workflows`. It runs the reviewed analyzer set
+Pull requests and pushes delegate Go quality to the reusable workflow in
+`melodic-software/ci-workflows`, called at `main`. It runs the reviewed analyzer set
 on native Linux and Windows, [module tidiness and verification](https://go.dev/ref/mod)
 plus
 [race-enabled tests](https://go.dev/doc/articles/race_detector) on Linux,

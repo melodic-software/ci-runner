@@ -46,7 +46,7 @@ past the 14-day window) and has no release assets.
 
 Pull-request and branch CI delegates native Linux and Windows analysis, Linux
 race and module checks, Windows ordinary tests, and vulnerability analysis to
-the exact-SHA-pinned reusable Go-quality workflow. Its repository-local build
+the reusable Go-quality workflow, called at `main`. Its repository-local build
 lane only cross-compiles the Windows executables, and active 30-second fuzzing
 per target runs only on the weekly schedule or a manual dispatch. A release tag
 still starts with a separate read-only job that reruns module verification, vet,
