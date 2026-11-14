@@ -189,10 +189,11 @@ test("pr-run-checks-go uses the exact reusable caller contract", () => {
   // `unlabeled` or `edited` event cannot change any Go result, so the lane is
   // skipped and ci-status carries the recorded `ci-lanes` verdict forward. The
   // predicate is asserted below so the caller cannot smuggle in an arbitrary
-  // condition; every other key stays closed.
+  // condition. `name` is the display name the org naming convention requires
+  // on every job; every other key stays closed.
   assert.deepEqual(
     directMappingKeys(block),
-    ["if", "permissions", "uses", "with"],
+    ["name", "if", "permissions", "uses", "with"],
     "pr-run-checks-go must not add a runner, caller secrets, or undeclared inputs",
   );
   assert.ok(

@@ -108,7 +108,7 @@ jobs:
           rcfile: .shellcheckrc
 
   shfmt:
-    name: Shell format
+    name: Shfmt
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -151,7 +151,7 @@ jobs:
           config: .editorconfig-checker.json
 
   gitleaks:
-    name: Secret scan
+    name: Gitleaks
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -167,7 +167,7 @@ jobs:
           config: .gitleaks.toml
 
   lychee:
-    name: Offline links
+    name: Lychee
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -182,7 +182,7 @@ jobs:
           config: lychee.toml
 
   check-comment-markers:
-    name: Comment hygiene
+    name: Check Comment Markers
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -208,7 +208,7 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/actionlint@9bfbca898bff801f5a8fd3d0f98ae6a0538e4386 # v0.73.0
 
   jsonschema:
-    name: JSON schemas
+    name: Jsonschema
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -229,7 +229,7 @@ jobs:
           files: .github/workflows/*.yml
 
   check-exec-bit:
-    name: Executable bits
+    name: Check Exec Bit
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -242,7 +242,7 @@ jobs:
         uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@9bfbca898bff801f5a8fd3d0f98ae6a0538e4386 # v0.73.0
 
   check-machine-paths:
-    name: Machine-specific paths
+    name: Check Machine Paths
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -265,7 +265,7 @@ jobs:
             :(exclude)worker/set-state.sh
 
   check-line-endings:
-    name: EOL normalization
+    name: Check Line Endings
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -294,7 +294,7 @@ jobs:
       fail-on-severity: low
 
   test-policy-contracts:
-    name: Product policy
+    name: Test Policy Contracts
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -320,6 +320,7 @@ jobs:
         run: ./scripts/Test-ReleasePins.ps1
 
   pr-run-checks-go:
+    name: PR Run Checks Go
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
@@ -328,7 +329,7 @@ jobs:
       config: .golangci.yml
 
   build-go-windows:
-    name: Go Windows builds
+    name: Build Go Windows
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -352,7 +353,7 @@ jobs:
           go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
 
   fuzz-go:
-    name: Go fuzz
+    name: Fuzz Go
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -415,7 +416,7 @@ jobs:
           exit 1
 
   build-worker-image:
-    name: Worker image
+    name: Build Worker Image
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -448,7 +449,7 @@ jobs:
         run: ./scripts/verify-worker-image.sh ci-runner-worker:test
 
   review-dependencies:
-    name: Dependency review
+    name: Review Dependencies
     if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15

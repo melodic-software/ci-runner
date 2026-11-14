@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify exact tagged source
+    name: Verify
     if: github.repository == 'melodic-software/ci-runner'
     runs-on: ubuntu-24.04
     permissions:
@@ -134,7 +134,7 @@ jobs:
           go build -trimpath -ldflags='-H=windowsgui' -o /tmp/ci-runner-controller.exe ./cmd/ci-runner-controller
 
   publish-evidence:
-    name: Publish immutable release evidence
+    name: Publish Evidence
     if: github.repository == 'melodic-software/ci-runner'
     needs: verify
     runs-on: ubuntu-24.04
@@ -451,7 +451,7 @@ jobs:
           echo "worker_digest=$digest" >>"$GITHUB_OUTPUT"
 
   promote-image:
-    name: Promote verified OCI digest to write-once tags
+    name: Promote Image
     if: github.repository == 'melodic-software/ci-runner'
     needs: publish-evidence
     runs-on: ubuntu-24.04
