@@ -45,21 +45,23 @@ fails the version check above. Keep the pin aligned with `go.mod`'s `go` line.
 ### Build / test / run
 
 - Build (Linux, all packages): `go build ./...`
-- Cross-compile the shipped Windows executables (same as the `build-go-windows`
-  CI lane): `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath ./cmd/...`
+- Cross-compile check for the Windows executables:
+  `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath ./cmd/...`
+  (the `build-go-windows` CI lane builds each command separately and links the
+  controller with `-ldflags='-H=windowsgui'`)
 - Test with the race detector (matches the reusable pr-run-checks-go lane):
   `go test -race ./...`
 - Run: the CLI resolves a host config **before** dispatching any subcommand
-  (even `help`). Pass `--config <abs-path>` or set `CI_RUNNER_CONFIG` /
-  `LOCALAPPDATA`. On Linux the runnable core command is
+  (even `help`) except `release`, which needs none. Pass `--config <abs-path>`
+  or set `CI_RUNNER_CONFIG` / `LOCALAPPDATA`. On Linux the runnable core command is
   `ci-runner --config <path> config validate [--json]`; it loads and strictly
   validates the YAML and prints the normalized manifest/paths contract.
   Most `host …` and `secret import` operations require Windows or a live
   controller and are not exercisable on this VM.
 
 The extensive repo-hygiene lanes in `pr-require-checks.yml` (markdownlint, shellcheck, shfmt,
-typos, editorconfig-checker, actionlint, pr-audit-workflows, build-worker-image, etc.) run through
-external reusable workflows and are not needed for local Go development.
+typos, editorconfig-checker, actionlint, pr-audit-workflows, build-worker-image, etc.) run in CI
+and are not needed for local Go development.
 
 ## Org architecture
 
