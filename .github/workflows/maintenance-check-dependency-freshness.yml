@@ -1,4 +1,4 @@
-name: maintenance-check-dependency-freshness
+name: Maintenance Check Dependency Freshness
 
 # Daily run of the release workflow's official-source dependency freshness
 # check, so drift is found before a release tag is pushed: a tag whose release
