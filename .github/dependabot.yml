@@ -65,7 +65,7 @@ updates:
     # dependency joins the first group that matches it: a vendor major falls
     # through to the reviewed `github-actions` group, and a first-party major
     # stays in `first-party-actions`, where the lane does not arm a pull
-    # request that holds a major bump, so a person merges it.
+    # request that holds a major bump, so it takes the review tier.
     groups:
       # Every ci-workflows composite-action pin moves in one pull request, so
       # the repository stays on one ci-workflows release.
