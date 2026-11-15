@@ -49,17 +49,20 @@ updates:
       timezone: America/New_York
     cooldown:
       default-days: 7
+      # First-party releases take no soak (dependabot-policy `fastTrack.own`).
+      exclude:
+        - "melodic-software/ci-workflows/*"
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
-    # ci-workflows pins move only in the org-wide repin wave, so every repo stays on one
-    # ci-workflows release; a Dependabot bump would move this repo's pins alone.
-    ignore:
-      - dependency-name: "melodic-software/ci-workflows/*"
     # The `vendor-actions` group (non-major only) is the auto-merge lane armed
     # by pr-automerge-dependabot.yml; a dependency joins the first group that
     # matches it, so majors fall through to the reviewed `github-actions` group.
+    # `first-party-actions` keeps every ci-workflows action pin on one release.
     groups:
+      first-party-actions:
+        patterns:
+          - melodic-software/*
       vendor-actions:
         patterns:
           - actions/*
