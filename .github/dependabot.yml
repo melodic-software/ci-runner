@@ -61,9 +61,11 @@ updates:
     ignore:
       - dependency-name: "melodic-software/ci-workflows/.github/actions/check-managed-files"
     # The `first-party-actions` group and the `vendor-actions` group (non-major
-    # only) are the auto-merge lanes armed by pr-automerge-dependabot.yml; a
-    # dependency joins the first group that matches it, so majors fall through
-    # to the reviewed `github-actions` group.
+    # only) are the auto-merge lanes armed by pr-automerge-dependabot.yml. A
+    # dependency joins the first group that matches it: a vendor major falls
+    # through to the reviewed `github-actions` group, and a first-party major
+    # stays in `first-party-actions`, where the lane does not arm a pull
+    # request that holds a major bump, so a person merges it.
     groups:
       # Every ci-workflows composite-action pin moves in one pull request, so
       # the repository stays on one ci-workflows release.

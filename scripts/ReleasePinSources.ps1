@@ -27,7 +27,7 @@ function Get-WorkflowActionPins([string] $WorkflowDirectory, [string[]] $Exclude
     $pins = [ordered]@{}
     foreach ($file in Get-ChildItem -LiteralPath $WorkflowDirectory -Filter '*.yml' -File | Sort-Object Name) {
         $lines = @(Get-Content -LiteralPath $file.FullName)
-        $syncManaged = @($lines | Where-Object { $_.Contains('SYNC-MANAGED FILE') }).Count -gt 0
+        $syncManaged = @($lines | Where-Object { $_ -cmatch '^#\s*SYNC-MANAGED FILE' }).Count -gt 0
         $lineNumber = 0
         foreach ($line in $lines) {
             $lineNumber++

@@ -347,7 +347,7 @@ foreach ($tool in $toolPins.GetEnumerator()) {
 
 foreach ($workflow in $workflowFiles) {
     $content = Get-Content -Raw -LiteralPath $workflow.FullName
-    $syncManaged = $content.Contains('SYNC-MANAGED FILE')
+    $syncManaged = [regex]::IsMatch($content, '(?m)^#\s*SYNC-MANAGED FILE')
     foreach ($match in [regex]::Matches($content, '(?m)^\s*uses:\s*(?<reference>[^\s#]+)')) {
         $reference = $match.Groups['reference'].Value
         if ($reference.StartsWith('./')) {
