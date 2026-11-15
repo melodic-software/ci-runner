@@ -6,7 +6,7 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const syncManagedMarker = "SYNC-MANAGED FILE";
+const syncManagedMarker = /^#\s*SYNC-MANAGED FILE/mu;
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
@@ -118,7 +118,7 @@ function ciWorkflowsPin() {
 
   for (const file of workflowFiles(workflowDirectory)) {
     const source = fs.readFileSync(file, "utf8");
-    const advisory = source.includes(syncManagedMarker);
+    const advisory = syncManagedMarker.test(source);
     const lines = source.split(/\r?\n/u);
     for (const [index, line] of lines.entries()) {
       if (!line.includes(ciWorkflowsReference)) {
