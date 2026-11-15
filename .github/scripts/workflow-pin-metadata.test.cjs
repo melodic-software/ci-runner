@@ -6,7 +6,7 @@ const test = require("node:test");
 const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
-const syncManagedMarker = "SYNC-MANAGED FILE";
+const syncManagedMarker = /^#\s*SYNC-MANAGED FILE/mu;
 const canonicalReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
@@ -106,16 +106,11 @@ function workflowFiles(directory) {
     .sort();
 }
 
-// The reviewed ci-workflows pin is whatever the canonical references agree on,
-// not a constant repeated here. A grouped Dependabot bump rewrites every
-// canonical `uses:` line at once and cannot touch this file or
-// `release/dependencies.json`, so hardcoding the SHA, the version and the
-// reference count made every bump red by construction and cost three manual
-// edits. The tests below assert the properties that matter instead: the
-// expected callers are all present, the references agree with each other, and
-// the release manifest agrees with them. None of the three moves when only a
-// SHA moves, which leaves `release/dependencies.json` as the single manual
-// edit per bump.
+// The ci-workflows pin is whatever the canonical references agree on: the
+// `uses:` lines are its only record. A grouped Dependabot bump rewrites every
+// canonical line at once and cannot edit this file, so the test asserts what a
+// SHA move leaves alone: the expected callers are all present and the
+// references name one commit and one release.
 function ciWorkflowsPin() {
   const references = [];
   const versions = [];
@@ -123,7 +118,7 @@ function ciWorkflowsPin() {
 
   for (const file of workflowFiles(workflowDirectory)) {
     const source = fs.readFileSync(file, "utf8");
-    const advisory = source.includes(syncManagedMarker);
+    const advisory = syncManagedMarker.test(source);
     const lines = source.split(/\r?\n/u);
     for (const [index, line] of lines.entries()) {
       if (!line.includes(ciWorkflowsReference)) {
@@ -219,25 +214,6 @@ test("pr-run-checks-go uses the exact reusable caller contract", () => {
       "    uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks-go.yml@main",
     ),
     "pr-run-checks-go must call the first-party reusable workflow at main",
-  );
-});
-
-test("release metadata tracks the same ci-workflows release", () => {
-  const { sha } = ciWorkflowsPin();
-  const dependencies = JSON.parse(
-    fs.readFileSync(path.join(repositoryRoot, "release", "dependencies.json"), "utf8"),
-  );
-  assert.deepEqual(
-    dependencies.repositoryPins.filter(
-      ({ repository }) => repository === "melodic-software/ci-workflows",
-    ),
-    [
-      {
-        repository: "melodic-software/ci-workflows",
-        commit: sha,
-        source: `https://github.com/melodic-software/ci-workflows/tree/${sha}`,
-      },
-    ],
   );
 });
 

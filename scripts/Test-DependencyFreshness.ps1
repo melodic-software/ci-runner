@@ -23,7 +23,7 @@ $dependencies = Get-Content -Raw -LiteralPath $DependencyManifest | ConvertFrom-
 . (Join-Path $PSScriptRoot 'ReleasePinSources.ps1')
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $runnerBase = Get-RunnerBasePin (Join-Path $repositoryRoot 'Dockerfile')
-$pinnedElsewhere = @($dependencies.repositoryPins.repository) +
+$pinnedElsewhere = @($dependencies.repositoryPins | ForEach-Object repository) +
     @($dependencies.reusableWorkflows | ForEach-Object { ($_.reference -split '/')[0..1] -join '/' })
 $githubActions = Get-WorkflowActionPins (Join-Path $repositoryRoot '.github\workflows') $pinnedElsewhere
 $now = [DateTimeOffset]::UtcNow

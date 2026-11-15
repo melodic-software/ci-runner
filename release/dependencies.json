@@ -65,12 +65,6 @@
     "digest": "sha256:3c70e6d5979364cefdc22b51617a78fd264574d3bd6b4f84a351204147025e2a",
     "source": "https://github.com/anchore/syft/releases/tag/v1.57.0"
   },
-  "repositoryPins": [
-    {
-      "repository": "melodic-software/ci-workflows",
-      "commit": "9bfbca898bff801f5a8fd3d0f98ae6a0538e4386",
-      "source": "https://github.com/melodic-software/ci-workflows/tree/9bfbca898bff801f5a8fd3d0f98ae6a0538e4386"
-    }
-  ],
+  "repositoryPins": [],
   "reusableWorkflows": []
 }
