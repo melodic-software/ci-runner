@@ -85,15 +85,18 @@ Actions. The workflow `uses:` lines and the Dockerfile `FROM` line are the only
 record of those pins, so a Dependabot bump needs no other edit:
 `scripts/ReleasePinSources.ps1` reads them, and `Test-ReleasePins.ps1` requires
 every external Action to carry a `# vX.Y.Z` comment and name one release per
-repository. `release/dependencies.json` keeps only what those lines cannot
-carry: archive checksums, image digests of release tooling, sources, and the
-`melodic-software/ci-workflows` repository pin. The release workflow's freshness
-gate validates each Action's current tag and tag-to-commit mapping, the runner
-tag's GHCR digest, and the runner archive digest against the SHA-256 the runner
-release notes publish. Minor and patch bumps of `actions/*`, `github/*` and
-`anthropics/*` Actions take the `vendor-actions` auto-merge lane
-(`pr-automerge-dependabot.yml`), which merges once `CI Status` passes; every
-other update PR is review-only.
+repository. The `melodic-software/ci-workflows` composite actions follow the
+same rule: every one outside a sync-managed file pins one commit with one
+`# vX.Y.Z` release comment. `release/dependencies.json` keeps only what those
+lines cannot carry: archive checksums, image digests of release tooling, and
+sources. The release workflow's freshness gate validates each Action's current
+tag and tag-to-commit mapping, ci-workflows included, the runner tag's GHCR
+digest, and the runner archive digest against the SHA-256 the runner release
+notes publish. Two Dependabot groups take the auto-merge lane
+(`pr-automerge-dependabot.yml`), which merges once `CI Status` passes:
+`first-party-actions` moves every ci-workflows composite-action pin in one pull
+request (a non-major bump; a ci-workflows major is left for a person), and `vendor-actions` carries minor and patch bumps of `actions/*`,
+`github/*` and `anthropics/*` Actions. Every other update PR is review-only.
 
 On a first run, the workflow pushes the BuildKit result without a tag, pulls and
 contract-tests that exact registry digest, publishes and verifies the immutable
@@ -173,14 +176,16 @@ installer or `latest`:
   when the digest behind the pinned runner tag changes;
 - retain at least the latest three known-good compatibility pairs;
 - never auto-merge controller, runner, image, toolchain, Scale Set Client,
-  Action, or release changes, except the `vendor-actions` lane's minor and
-  patch Action bumps.
+  Action, or release changes, except the `first-party-actions` lane's
+  non-major ci-workflows bumps and the `vendor-actions` lane's minor and patch Action
+  bumps.
 
 A partial drain may advance mechanical toolchain and publication pins while
-holding a cross-repository SHA pin such as `melodic-software/ci-workflows`.
-Record the reviewed hold in `release/dependency-drift-review.json`; the release
-freshness gate continues to report the held row until a dedicated
-compatibility PR moves every reference together.
+holding an Action pin such as `melodic-software/ci-workflows`. Record the
+reviewed hold in `release/dependency-drift-review.json` under the gate's row
+name (`github-action:melodic-software/ci-workflows`); the release freshness gate
+continues to report the held row until one pull request moves every reference
+together.
 
 Between releases, `.github/workflows/maintenance-check-dependency-freshness.yml`
 runs the same check daily at 06:41 UTC, or on a manual dispatch, so drift is

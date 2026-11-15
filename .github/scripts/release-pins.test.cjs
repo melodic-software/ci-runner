@@ -16,6 +16,10 @@ const checkout = readdirSync(workflowDirectory)
   .map((name) => /actions\/checkout@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+/u.exec(readFileSync(join(workflowDirectory, name), "utf8"))?.[0])
   .find((reference) => reference !== undefined);
 const bumpedCheckout = `actions/checkout@${"a".repeat(40)} # v999.0.0`;
+const ciWorkflowsPin = /uses: melodic-software\/ci-workflows\/\.github\/actions\/\S+@([0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+)/u.exec(
+  readFileSync(join(workflowDirectory, "pr-require-checks.yml"), "utf8"),
+)?.[1];
+const bumpedCiWorkflowsPin = `${"c".repeat(40)} # v999.0.0`;
 const runnerFrom = /^FROM ghcr\.io\/actions\/actions-runner:\S+$/mu.exec(readFileSync(join(repositoryRoot, "Dockerfile"), "utf8"))?.[0];
 
 // Runs Test-ReleasePins.ps1 against a copy of the repository after `edit`
@@ -64,6 +68,24 @@ test("a grouped Action bump passes without a manifest edit", () => {
     }
   });
   assert.equal(result.status, 0, result.stderr + result.stdout);
+});
+
+test("a grouped ci-workflows bump passes without a manifest edit", () => {
+  const result = checkPins((root) => {
+    rewrite(join(root, ".github", "workflows", "pr-require-checks.yml"), `@${ciWorkflowsPin}`, `@${bumpedCiWorkflowsPin}`);
+  });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+});
+
+test("ci-workflows actions that name different releases fail with their locations", () => {
+  const result = checkPins((root) => {
+    const path = join(root, ".github", "workflows", "pr-require-checks.yml");
+    const source = readFileSync(path, "utf8");
+    assert.ok(source.includes(`@${ciWorkflowsPin}`), `${path} does not contain ${ciWorkflowsPin}`);
+    writeFileSync(path, source.replace(`@${ciWorkflowsPin}`, `@${bumpedCiWorkflowsPin}`));
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins melodic-software\/ci-workflows@[0-9a-f]{40} # v[0-9.]+, but \S+\.yml:\d+ pins/u);
 });
 
 test("a runner image bump passes without a manifest edit", () => {
