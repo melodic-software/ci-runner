@@ -44,7 +44,7 @@ updates:
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: weekly
+      interval: daily
       time: '05:40'
       timezone: America/New_York
     cooldown:
