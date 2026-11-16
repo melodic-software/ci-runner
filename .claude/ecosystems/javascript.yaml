@@ -1,0 +1,19 @@
+# The CommonJS workflow-script tests in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# No bundled default matches *.cjs, so this record covers .github/scripts/*.test.cjs with the node
+# step of the test-policy-contracts CI job (.github/workflows/pr-require-checks.yml:309-317).
+# CI runs no JavaScript linter, so check-cmd is null. Commands run from the repository root.
+enabled: true
+globs: ["*.cjs"]
+project-discovery: []
+build-cmd: null
+test-cmd: 'node --test "$REPO_ROOT"/.github/scripts/*.test.cjs'
+check-cmd: null
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "*.cjs files present"
+install-hint: "Node.js 26.13.0: https://nodejs.org/en/download"
+tool-pin:
+  node: "26.13.0"
+gates: []
+notes: "The suites spawn pwsh and bash (release-pins, runner-cooldown, dependency-drift-issue, verify-existing-release), so pwsh must be on PATH. The repository has no package.json and installs nothing."

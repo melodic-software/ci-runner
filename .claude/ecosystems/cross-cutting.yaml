@@ -1,0 +1,23 @@
+# Repository-wide text checks in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint-only: /toolchain:lint runs it, /toolchain:check does not. The four ci-workflows composites
+# CI runs (.github/workflows/pr-require-checks.yml:123-182), each with its root config and no path
+# exclusion, as those composites pass them. Every check runs and any failure fails the command.
+# Commands run from the repository root.
+enabled: true
+globs: ["**"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: 'rc=0; typos --config _typos.toml . || rc=1; gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1; if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo "editorconfig-checker: no binary resolved (EC_BIN is empty)" >&2; rc=1; fi; lychee --offline --no-progress --config lychee.toml "**/*.md" || rc=1; test "$rc" -eq 0'
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json, lychee.toml)"
+install-hint: "typos: https://github.com/crate-ci/typos/releases | gitleaks: https://github.com/gitleaks/gitleaks/releases | editorconfig-checker: https://github.com/editorconfig-checker/editorconfig-checker/releases | lychee: https://github.com/lycheeverse/lychee/releases"
+tool-pin:
+  typos: "1.50.3"
+  gitleaks: "8.30.1"
+  editorconfig-checker: "4.0.2"
+  lychee: "0.24.2"
+gates: []
+notes: "Lint-only: owned by /toolchain:lint. CI also runs check-comment-markers, check-exec-bit, check-machine-paths and check-line-endings (ci-workflows composites with no standalone command; pr-require-checks.yml:184-278) and dependency review on pull requests; this record has no equivalent for them. .editorconfig-checker.json uses 4.x keys, so a 3.x binary may report differently. lychee.toml excludes any path containing .work/, so the relative '**/*.md' glob must expand from the repository root."

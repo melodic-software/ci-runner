@@ -1,0 +1,22 @@
+# Shell in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# The two CI lanes: ShellCheck with the root .shellcheckrc and no severity filter
+# (.github/workflows/pr-require-checks.yml:95-108; the ci-workflows shellcheck composite's run.sh
+# passes --rcfile and sets --severity only when asked), and shfmt -d with the .editorconfig style
+# (pr-require-checks.yml:110-121). Both run and either failure fails the command. Commands run
+# from the repository root.
+enabled: true
+globs: ["*.sh", "*.bash"]
+project-discovery: []
+build-cmd: null
+test-cmd: 'node --test "$REPO_ROOT"/.github/scripts/*.test.cjs'
+check-cmd: 'rc=0; shellcheck --rcfile="$REPO_ROOT/.shellcheckrc" <files> || rc=1; shfmt -d <files> || rc=1; test "$rc" -eq 0'
+fix-cmd: "shfmt -w <files>"
+code-fix-cmd: null
+opt-in: "shellcheck always applies to shell files; shfmt reads the shell style in .editorconfig"
+install-hint: "shellcheck 0.11.0: https://github.com/koalaman/shellcheck/releases | shfmt 3.14.1: https://github.com/mvdan/sh/releases"
+tool-pin:
+  shellcheck: "0.11.0"
+  shfmt: "3.14.1"
+gates: []
+notes: "test-cmd is CI's test-policy-contracts node step (pr-require-checks.yml:317), because .github/scripts/verify-existing-release.test.cjs runs .github/scripts/verify-existing-release.sh. CI's build-worker-image job also runs scripts/verify-worker-image.sh and the worker/*.sh scripts inside a built image (pr-require-checks.yml:418-449); that needs a Docker daemon, so no record runs it."
