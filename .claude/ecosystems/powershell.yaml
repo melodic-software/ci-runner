@@ -1,0 +1,20 @@
+# PowerShell in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# The test-policy-contracts CI job, both steps (.github/workflows/pr-require-checks.yml:296-320):
+# the node suites, which drive the scripts/*.ps1 files through pwsh, then
+# scripts/Test-ReleasePins.ps1. CI runs no PowerShell linter, so check-cmd is null. Commands run
+# from the repository root.
+enabled: true
+globs: ["*.ps1", "*.psm1"]
+project-discovery: []
+build-cmd: null
+test-cmd: 'node --test "$REPO_ROOT"/.github/scripts/*.test.cjs && pwsh -NoProfile -File "$REPO_ROOT/scripts/Test-ReleasePins.ps1"'
+check-cmd: null
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "PowerShell files present"
+install-hint: "PowerShell 7: https://learn.microsoft.com/powershell/scripting/install/installing-powershell | Node.js 26.13.0: https://nodejs.org/en/download"
+tool-pin:
+  node: "26.13.0"
+gates: []
+notes: "CI runs pwsh from the ubuntu-24.04 image, unpinned. Test-ReleasePins.ps1 also reads the Dockerfile, release/dependencies.json and the workflows, which match no glob here; a change to only those files selects no ecosystem that runs it."

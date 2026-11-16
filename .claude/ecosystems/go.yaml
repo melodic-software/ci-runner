@@ -1,0 +1,27 @@
+# Go in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# The commands CI runs: the check-linux job of ci-workflows pr-run-checks-go.yml at main
+# (.github/workflows/pr-require-checks.yml:322-329 calls it with config .golangci.yml), and the
+# build-go-windows job (pr-require-checks.yml:331-353). Commands run from the repository root.
+enabled: true
+globs: ["*.go", "go.mod", "go.sum"]
+project-discovery: ["go.mod"]
+build-cmd: "env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/ci-runner && env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags=-H=windowsgui -o /dev/null ./cmd/ci-runner-controller"
+test-cmd: "go test -race -count=1 -timeout=10m ./..."
+check-cmd: 'rc=0; golangci-lint config verify --config .golangci.yml || rc=1; golangci-lint run --config .golangci.yml --timeout=10m --max-issues-per-linter=0 --max-same-issues=0 ./... || rc=1; unformatted=$(git ls-files -z -- "*.go" | xargs -0 gofmt -l) || rc=1; if [ -n "$unformatted" ]; then echo "gofmt required for: $unformatted" >&2; rc=1; fi; test "$rc" -eq 0'
+fix-cmd: "gofmt -w <files>"
+code-fix-cmd: "golangci-lint run --config .golangci.yml --fix <files>"
+opt-in: ".golangci.yml at the repository root"
+install-hint: "Go: the go directive in go.mod (GOTOOLCHAIN=auto fetches it). golangci-lint 2.14.0: https://golangci-lint.run/docs/welcome/install/ (AGENTS.md, Lint, says why the prebuilt binary may refuse this module)"
+tool-pin:
+  golangci-lint: "2.14.0"
+gates:
+  - name: go-mod-tidy-drift
+    cmd: "env GOWORK=off go mod tidy -diff"
+    trigger-globs: ["go.mod", "go.sum", "*.go"]
+    remediation: "Run go mod tidy and commit the updated go.mod and go.sum."
+  - name: go-mod-verify
+    cmd: "go mod verify"
+    trigger-globs: ["go.mod", "go.sum"]
+    remediation: "The module cache does not match go.sum; clear the damaged module from the cache (go clean -modcache) and rerun."
+notes: "build-cmd is CI's Windows cross-compile, the product's runtime target; CI has no separate Linux build step, and test-cmd compiles every Linux package. CI writes the two executables under /tmp; build-cmd links them to /dev/null so a local build leaves no binary in the tree. CI also runs, with no local equivalent here: the check-windows job (golangci-lint and go test -race on a Windows runner), govulncheck 1.7.0 against vuln.go.dev, and the scheduled fuzz-go job (pr-require-checks.yml:355). fix-cmd and code-fix-cmd take only *.go paths from <files>, as the lint skill filters them."

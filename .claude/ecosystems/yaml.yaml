@@ -1,0 +1,24 @@
+# GitHub Actions and Dependabot files in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint-only: /toolchain:lint runs it, /toolchain:check does not. The CI lanes, each from the
+# repository root: actionlint, which finds the workflows and .github/actionlint.yaml itself
+# (.github/workflows/pr-require-checks.yml:197-208); check-jsonschema of .github/dependabot.yml and
+# of the workflows against the vendored schemas (pr-require-checks.yml:210-229); and zizmor with the
+# regular persona over the whole tree, blocking on any finding (pr-require-checks.yml:280-294,
+# fail-on-severity low). Every check runs and any failure fails the command.
+enabled: true
+globs: [".github/**/*.yml", ".github/**/*.yaml"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: 'rc=0; actionlint || rc=1; check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml || rc=1; check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml || rc=1; zizmor --persona=regular --strict-collection --offline . || rc=1; test "$rc" -eq 0'
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "GitHub Actions workflows present"
+install-hint: "actionlint: the kjanat/actionlint fork, v1.17.0 from https://github.com/kjanat/actionlint/releases (CI's actionlint composite installs it) | check-jsonschema: uv tool install check-jsonschema==0.38.2 | zizmor: uv tool install zizmor==1.30.0"
+tool-pin:
+  actionlint: "1.17.0"
+  check-jsonschema: "0.38.2"
+  zizmor: "1.30.0"
+gates: []
+notes: "Lint-only: owned by /toolchain:lint. zizmor blocks here: CI fails on any exit of 11 or above (ci-workflows pr-audit-workflows.yml at main), and zizmor's own non-zero exit fails this command the same way. --offline is narrower than CI, which runs the online audits with a GitHub token, so a local run spends no GitHub API calls. The actionlint pin is the kjanat/actionlint fork, whose version numbers overlap upstream's: rhysd/actionlint on PATH reports a different version and can fail where CI passes."

@@ -1,0 +1,19 @@
+# Markdown in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# markdownlint-cli2 with the root .markdownlint-cli2.jsonc, as the ci-workflows markdownlint
+# composite runs it (.github/workflows/pr-require-checks.yml:80-93). Commands run from the
+# repository root.
+enabled: true
+globs: ["*.md"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: 'markdownlint-cli2 --config "$REPO_ROOT/.markdownlint-cli2.jsonc" <files>'
+fix-cmd: 'markdownlint-cli2 --config "$REPO_ROOT/.markdownlint-cli2.jsonc" --fix <files>'
+code-fix-cmd: null
+opt-in: ".markdownlint-cli2.jsonc at the repository root"
+install-hint: "npm i -g markdownlint-cli2@0.23.3"
+tool-pin:
+  markdownlint-cli2: "0.23.3"
+gates: []
+notes: "CI runs npx --yes markdownlint-cli2@0.23.3 over '**/*.md'; this record calls the installed binary on the changed files, so a local run downloads nothing."
