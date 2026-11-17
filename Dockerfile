@@ -2,7 +2,7 @@
 # official image is Ubuntu 24.04 and contains the exact runner binary named by
 # the tag. This line is the runner pin's single source: Dependabot rewrites it,
 # and scripts/ReleasePinSources.ps1 reads it for every release check.
-FROM ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
+FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
 
 ARG POWERSHELL_VERSION=7.6.9
 ARG POWERSHELL_SHA256=1da6d6d6035d651f20e70ddee7c4c15ac6ab8b9fb40ee92240d91263f28a884b
