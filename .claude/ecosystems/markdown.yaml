@@ -12,8 +12,6 @@ check-cmd: 'markdownlint-cli2 --config "$REPO_ROOT/.markdownlint-cli2.jsonc" <fi
 fix-cmd: 'markdownlint-cli2 --config "$REPO_ROOT/.markdownlint-cli2.jsonc" --fix <files>'
 code-fix-cmd: null
 opt-in: ".markdownlint-cli2.jsonc at the repository root"
-install-hint: "npm i -g markdownlint-cli2@0.23.3"
-tool-pin:
-  markdownlint-cli2: "0.23.3"
+install-hint: "npm i -g markdownlint-cli2 at the version ci-workflows' markdownlint action pins"
 gates: []
-notes: "CI runs npx --yes markdownlint-cli2@0.23.3 over '**/*.md'; this record calls the installed binary on the changed files, so a local run downloads nothing."
+notes: "CI runs markdownlint-cli2 through the ci-workflows markdownlint action over '**/*.md'; this record calls the installed binary on the changed files, so a local run downloads nothing."

@@ -14,9 +14,6 @@ check-cmd: 'rc=0; shellcheck --rcfile="$REPO_ROOT/.shellcheckrc" <files> || rc=1
 fix-cmd: "shfmt -w <files>"
 code-fix-cmd: null
 opt-in: "shellcheck always applies to shell files; shfmt reads the shell style in .editorconfig"
-install-hint: "shellcheck 0.11.0: https://github.com/koalaman/shellcheck/releases | shfmt 3.14.1: https://github.com/mvdan/sh/releases"
-tool-pin:
-  shellcheck: "0.11.0"
-  shfmt: "3.14.1"
+install-hint: "shellcheck at the version ci-workflows' shellcheck action pins: https://github.com/koalaman/shellcheck/releases | shfmt at the version ci-workflows' shfmt action pins: https://github.com/mvdan/sh/releases"
 gates: []
 notes: "test-cmd is CI's test-policy-contracts node step (pr-require-checks.yml:317), because .github/scripts/verify-existing-release.test.cjs runs .github/scripts/verify-existing-release.sh. CI's build-worker-image job also runs scripts/verify-worker-image.sh and the worker/*.sh scripts inside a built image (pr-require-checks.yml:418-449); that needs a Docker daemon, so no record runs it."
