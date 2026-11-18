@@ -1,0 +1,5 @@
+# Formatter-only commits, skipped by GitHub's blame view and by local `git blame` once a clone runs
+# `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+
+# go-format (goimports) cleanup
+01457556120b47c9f3f18c18636ac3a9cc01f114
