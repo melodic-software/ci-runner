@@ -19,6 +19,11 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/client"
+
 	"github.com/melodic-software/ci-runner/internal/config"
 	"github.com/melodic-software/ci-runner/internal/controller"
 	"github.com/melodic-software/ci-runner/internal/jobindex"
@@ -26,10 +31,6 @@ import (
 	"github.com/melodic-software/ci-runner/internal/scaleset"
 	"github.com/melodic-software/ci-runner/internal/seccomp"
 	"github.com/melodic-software/ci-runner/internal/telemetry"
-	containertypes "github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/jsonstream"
-	"github.com/moby/moby/api/types/system"
-	"github.com/moby/moby/client"
 )
 
 const pinnedTestImage = "ghcr.io/actions/actions-runner:2.335.1@sha256:08c30b0a7105f64bddfc485d2487a22aa03932a791402393352fdf674bda2c29"

@@ -17,14 +17,15 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/melodic-software/ci-runner/internal/controller"
-	"github.com/melodic-software/ci-runner/internal/model"
-	"github.com/melodic-software/ci-runner/internal/seccomp"
-	"github.com/melodic-software/ci-runner/internal/telemetry"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	containertypes "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/melodic-software/ci-runner/internal/controller"
+	"github.com/melodic-software/ci-runner/internal/model"
+	"github.com/melodic-software/ci-runner/internal/seccomp"
+	"github.com/melodic-software/ci-runner/internal/telemetry"
 )
 
 const (
