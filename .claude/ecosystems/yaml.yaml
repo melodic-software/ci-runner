@@ -15,10 +15,6 @@ check-cmd: 'rc=0; actionlint || rc=1; check-jsonschema --builtin-schema vendor.d
 fix-cmd: null
 code-fix-cmd: null
 opt-in: "GitHub Actions workflows present"
-install-hint: "actionlint: the kjanat/actionlint fork, v1.17.0 from https://github.com/kjanat/actionlint/releases (CI's actionlint composite installs it) | check-jsonschema: uv tool install check-jsonschema==0.38.2 | zizmor: uv tool install zizmor==1.30.0"
-tool-pin:
-  actionlint: "1.17.0"
-  check-jsonschema: "0.38.2"
-  zizmor: "1.30.0"
+install-hint: "actionlint: the kjanat/actionlint fork at the version ci-workflows' actionlint action pins, from https://github.com/kjanat/actionlint/releases | check-jsonschema: uv tool install check-jsonschema at the version ci-workflows' check-jsonschema action pins | zizmor: uv tool install zizmor at the version ci-workflows' pr-audit-workflows workflow pins"
 gates: []
 notes: "Lint-only: owned by /toolchain:lint. zizmor blocks here: CI fails on any exit of 11 or above (ci-workflows pr-audit-workflows.yml at main), and zizmor's own non-zero exit fails this command the same way. --offline is narrower than CI, which runs the online audits with a GitHub token, so a local run spends no GitHub API calls. The actionlint pin is the kjanat/actionlint fork, whose version numbers overlap upstream's: rhysd/actionlint on PATH reports a different version and can fail where CI passes."
