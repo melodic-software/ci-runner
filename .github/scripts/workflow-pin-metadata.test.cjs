@@ -32,8 +32,7 @@ const expectedCiWorkflowsCallers = [
   ["pr-require-checks.yml", ".github/actions/gitleaks"],
   ["pr-require-checks.yml", ".github/actions/lychee-offline"],
   ["pr-require-checks.yml", ".github/actions/markdownlint"],
-  ["pr-require-checks.yml", ".github/actions/pr-require-checks/aggregate-results"],
-  ["pr-require-checks.yml", ".github/actions/pr-require-checks/check-contract"],
+  ["pr-require-checks.yml", ".github/actions/pr-require-checks/report-ci-status"],
   ["pr-require-checks.yml", ".github/actions/shellcheck"],
   ["pr-require-checks.yml", ".github/actions/shfmt"],
   ["pr-require-checks.yml", ".github/actions/typos"],
@@ -121,7 +120,8 @@ function ciWorkflowsPin() {
     const advisory = syncManagedMarker.test(source);
     const lines = source.split(/\r?\n/u);
     for (const [index, line] of lines.entries()) {
-      if (!line.includes(ciWorkflowsReference)) {
+      // A full-line YAML comment can link a ci-workflows file; it calls nothing.
+      if (!line.includes(ciWorkflowsReference) || /^\s*#/u.test(line)) {
         continue;
       }
 
@@ -270,4 +270,21 @@ test("ci-status is the stable gateway for every Go lane", () => {
   assert.deepEqual(results, expectedNeeds, "ci-status must aggregate every declared dependency once");
   assert.ok(block.includes("    name: CI Status"));
   assert.ok(block.includes("    if: always()"));
+});
+
+// report-ci-status never fails on the contract or the draft policy; it reports
+// them as outputs. Without this step a failed contract leaves CI Status green.
+test("ci-status fails closed on the report-ci-status contract and draft outputs", () => {
+  const block = jobBlock(workflowSource("pr-require-checks.yml"), "ci-status");
+  const report = block.findIndex((line) => line === "        id: report");
+  assert.notEqual(report, -1, "the report-ci-status step must carry id: report");
+  assert.equal(block[report - 1], "      - name: Aggregate lane results", "the writer step keeps its name");
+
+  const gate = block.findIndex(
+    (line) =>
+      line ===
+      "        if: ${{ !cancelled() && (steps.report.outputs.contract != 'success' || steps.report.outputs.draft != 'success') }}",
+  );
+  assert.ok(gate > report, "a later step must fail the job on any contract or draft outcome but success");
+  assert.ok(block.slice(gate).some((line) => line.trim() === "exit 1"), "the gate step must exit 1");
 });
