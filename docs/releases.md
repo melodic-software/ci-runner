@@ -93,7 +93,7 @@ sources. The release workflow's freshness gate validates each Action's current
 tag and tag-to-commit mapping, ci-workflows included, the runner tag's GHCR
 digest, and the runner archive digest against the SHA-256 the runner release
 notes publish. Two Dependabot groups take the auto-merge lane
-(`pr-automerge-dependabot.yml`), which merges once `CI Status` passes:
+(`pr-automerge-dependabot-hosted.yml`), which merges once `CI Status` passes:
 `first-party-actions` moves every ci-workflows composite-action pin in one pull
 request (a non-major bump; a ci-workflows major is left for a person), and `vendor-actions` carries minor and patch bumps of `actions/*`,
 `github/*` and `anthropics/*` Actions. Every other update PR is review-only.

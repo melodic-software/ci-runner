@@ -20,7 +20,6 @@ const reusableAtMain =
 // fails here. It is deliberately independent of the pin: a Dependabot bump
 // moves every SHA and leaves this inventory untouched, so the bump stays green.
 const expectedCiWorkflowsCallers = [
-  ["pr-automerge-dependabot.yml", ".github/workflows/pr-automerge-dependabot.yml"],
   ["pr-require-checks.yml", ".github/actions/actionlint"],
   ["pr-require-checks.yml", ".github/actions/check-comment-markers"],
   ["pr-require-checks.yml", ".github/actions/check-exec-bit"],
