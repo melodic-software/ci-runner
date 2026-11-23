@@ -33,7 +33,7 @@ foreach ($fragment in @(
 
 foreach ($fragment in @(
         '`artifact-metadata:write`',
-        'publication fails closed unless the pinned attestation action returns at least one numeric storage-record ID.')) {
+        'publication fails closed unless the attestation action returns at least one numeric storage-record ID.')) {
     if (-not $normalizedReadme.Contains($fragment)) {
         throw "README is missing the worker artifact storage-record contract: $fragment"
     }
@@ -347,26 +347,19 @@ foreach ($tool in $toolPins.GetEnumerator()) {
 
 foreach ($workflow in $workflowFiles) {
     $content = Get-Content -Raw -LiteralPath $workflow.FullName
-    $syncManaged = [regex]::IsMatch($content, '(?m)^#\s*SYNC-MANAGED FILE')
     foreach ($match in [regex]::Matches($content, '(?m)^\s*uses:\s*(?<reference>[^\s#]+)')) {
         $reference = $match.Groups['reference'].Value
         if ($reference.StartsWith('./')) {
             continue
         }
-        # A first-party reusable workflow is called at @main (standards#911); actions
-        # still need a full SHA.
-        if ($reference -cmatch '^melodic-software/ci-workflows/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml@main$') {
+        # First-party and official-vendor refs run unpinned (@main or a moving major tag).
+        if (Test-UnpinnedOwner $reference) {
             continue
         }
         if ($reference -notmatch '@[0-9a-f]{40}$') {
             throw "$($workflow.Name) contains an action or reusable workflow that is not pinned to a full commit SHA: $reference"
         }
         $parts = $reference -split '@', 2
-        # Standards-sync soak callers may pin a pre-release ci-workflows SHA; exempt only that
-        # reference from the compatibility inventory (workflow-pin-metadata.test.cjs).
-        if ($syncManaged -and $parts[0].StartsWith('melodic-software/ci-workflows/', [StringComparison]::OrdinalIgnoreCase)) {
-            continue
-        }
         if ($reusablePins.ContainsKey($parts[0])) {
             if ($reusablePins[$parts[0]].commit -ne $parts[1]) {
                 throw "$($workflow.Name) pin for $($parts[0]) disagrees with release/dependencies.json: $($parts[1])"

@@ -11,15 +11,12 @@ const repositoryRoot = resolve(__dirname, "..", "..");
 const workflowDirectory = join(repositoryRoot, ".github", "workflows");
 
 // The pins are read from the repository so the tests survive the bumps they model.
-const checkout = readdirSync(workflowDirectory)
+// First-party and official-vendor Actions run unpinned, so the pin tests use a third-party Action.
+const pinnedAction = readdirSync(workflowDirectory)
   .filter((name) => name.endsWith(".yml"))
-  .map((name) => /actions\/checkout@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+/u.exec(readFileSync(join(workflowDirectory, name), "utf8"))?.[0])
+  .map((name) => /docker\/build-push-action@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+/u.exec(readFileSync(join(workflowDirectory, name), "utf8"))?.[0])
   .find((reference) => reference !== undefined);
-const bumpedCheckout = `actions/checkout@${"a".repeat(40)} # v999.0.0`;
-const ciWorkflowsPin = /uses: melodic-software\/ci-workflows\/\.github\/actions\/\S+@([0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+)/u.exec(
-  readFileSync(join(workflowDirectory, "pr-require-checks.yml"), "utf8"),
-)?.[1];
-const bumpedCiWorkflowsPin = `${"c".repeat(40)} # v999.0.0`;
+const bumpedAction = `docker/build-push-action@${"a".repeat(40)} # v999.0.0`;
 const runnerFrom = /^FROM ghcr\.io\/actions\/actions-runner:\S+$/mu.exec(readFileSync(join(repositoryRoot, "Dockerfile"), "utf8"))?.[0];
 
 // Runs Test-ReleasePins.ps1 against a copy of the repository after `edit`
@@ -55,37 +52,24 @@ function workflows(root) {
     .map((name) => join(directory, name));
 }
 
-function workflowsUsingCheckout(root) {
-  const paths = workflows(root).filter((path) => readFileSync(path, "utf8").includes(checkout));
-  assert.ok(paths.length > 1, "expected actions/checkout in more than one workflow");
+function workflowsUsingPinnedAction(root) {
+  const paths = workflows(root).filter((path) => readFileSync(path, "utf8").includes(pinnedAction));
+  assert.ok(paths.length > 1, "expected docker/build-push-action in more than one workflow");
   return paths;
 }
 
+test("first-party refs at main and vendor tags need no pin", () => {
+  const result = checkPins(() => {});
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+});
+
 test("a grouped Action bump passes without a manifest edit", () => {
   const result = checkPins((root) => {
-    for (const path of workflowsUsingCheckout(root)) {
-      rewrite(path, checkout, bumpedCheckout);
+    for (const path of workflowsUsingPinnedAction(root)) {
+      rewrite(path, pinnedAction, bumpedAction);
     }
   });
   assert.equal(result.status, 0, result.stderr + result.stdout);
-});
-
-test("a grouped ci-workflows bump passes without a manifest edit", () => {
-  const result = checkPins((root) => {
-    rewrite(join(root, ".github", "workflows", "pr-require-checks.yml"), `@${ciWorkflowsPin}`, `@${bumpedCiWorkflowsPin}`);
-  });
-  assert.equal(result.status, 0, result.stderr + result.stdout);
-});
-
-test("ci-workflows actions that name different releases fail with their locations", () => {
-  const result = checkPins((root) => {
-    const path = join(root, ".github", "workflows", "pr-require-checks.yml");
-    const source = readFileSync(path, "utf8");
-    assert.ok(source.includes(`@${ciWorkflowsPin}`), `${path} does not contain ${ciWorkflowsPin}`);
-    writeFileSync(path, source.replace(`@${ciWorkflowsPin}`, `@${bumpedCiWorkflowsPin}`));
-  });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins melodic-software\/ci-workflows@[0-9a-f]{40} # v[0-9.]+, but \S+\.yml:\d+ pins/u);
 });
 
 test("a runner image bump passes without a manifest edit", () => {
@@ -97,16 +81,16 @@ test("a runner image bump passes without a manifest edit", () => {
 
 test("uses of one Action that name different releases fail with their locations", () => {
   const result = checkPins((root) => {
-    rewrite(workflowsUsingCheckout(root)[0], checkout, bumpedCheckout);
+    rewrite(workflowsUsingPinnedAction(root)[0], pinnedAction, bumpedAction);
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins actions\/checkout@[0-9a-f]{40} # v[0-9.]+, but \S+\.yml:\d+ pins/u);
+  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins docker\/build-push-action@[0-9a-f]{40} # v[0-9.]+, but \S+\.yml:\d+ pins/u);
 });
 
 test("an Action pin without a release comment fails with its location", () => {
   const result = checkPins((root) => {
-    rewrite(workflowsUsingCheckout(root)[0], checkout, checkout.replace(/ # v\S+$/u, ""));
+    rewrite(workflowsUsingPinnedAction(root)[0], pinnedAction, pinnedAction.replace(/ # v\S+$/u, ""));
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins actions\/checkout without a same-line '# vX\.Y\.Z' release comment/u);
+  assert.match(result.stderr + result.stdout, /\.yml:\d+ pins docker\/build-push-action without a same-line '# vX\.Y\.Z' release comment/u);
 });
