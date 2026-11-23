@@ -33,7 +33,7 @@ foreach ($fragment in @(
 
 foreach ($fragment in @(
         '`artifact-metadata:write`',
-        'publication fails closed unless the pinned attestation action returns at least one numeric storage-record ID.')) {
+        'publication fails closed unless the attestation action returns at least one numeric storage-record ID.')) {
     if (-not $normalizedReadme.Contains($fragment)) {
         throw "README is missing the worker artifact storage-record contract: $fragment"
     }
