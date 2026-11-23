@@ -7,8 +7,8 @@ require (
 	github.com/actions/scaleset v0.5.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/google/uuid v1.6.0
-	github.com/moby/moby/api v1.56.1
-	github.com/moby/moby/client v0.6.2
+	github.com/moby/moby/api v1.57.0
+	github.com/moby/moby/client v0.6.3
 	github.com/opencontainers/image-spec v1.1.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
