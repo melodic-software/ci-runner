@@ -88,7 +88,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdownlint@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/markdownlint@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -103,7 +103,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           rcfile: .shellcheckrc
 
@@ -118,7 +118,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
 
   typos:
     name: Spelling
@@ -131,7 +131,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/typos@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           config: _typos.toml
 
@@ -146,7 +146,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           config: .editorconfig-checker.json
 
@@ -162,7 +162,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           config: .gitleaks.toml
 
@@ -177,7 +177,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           config: lychee.toml
 
@@ -192,7 +192,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
 
   actionlint:
     name: Actionlint
@@ -205,7 +205,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
 
   jsonschema:
     name: Jsonschema
@@ -218,12 +218,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
@@ -239,7 +239,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
 
   check-machine-paths:
     name: Check Machine Paths
@@ -252,7 +252,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
@@ -275,7 +275,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
 
   pr-audit-workflows:
     name: Zizmor
@@ -518,7 +518,7 @@ jobs:
       # and replace their red check runs.
       - name: Aggregate lane results
         id: report
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@d7ba00151fa8429aa9a94fb919f1e517c2e74368 # v0.78.0
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
         with:
           step-name: Aggregate lane results
           # This workflow is not draft-gated (no `ready_for_review` trigger), so a draft passes.
