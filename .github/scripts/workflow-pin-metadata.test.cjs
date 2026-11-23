@@ -7,18 +7,15 @@ const repositoryRoot = path.resolve(__dirname, "..", "..");
 const workflowDirectory = path.join(repositoryRoot, ".github", "workflows");
 const ciWorkflowsReference = "melodic-software/ci-workflows/";
 const syncManagedMarker = /^#\s*SYNC-MANAGED FILE/mu;
-const canonicalReference =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@(?<sha>[0-9a-f]{40})\s+#\s+(?<version>v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/;
 const advisoryReference =
   /^\s*uses:\s+melodic-software\/ci-workflows\/[^\s@#]+@(?<sha>[0-9a-f]{40})\s+#\s+\S/;
-const reusableAtMain =
-  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml)@main(?:\s+#.*)?$/u;
+const referenceAtMain =
+  /^\s*uses:\s+melodic-software\/ci-workflows\/(?<reference>[^\s@#]+)@main(?:\s+#.*)?$/u;
 
 // Which files call which ci-workflows composite or reusable, sorted, with
 // duplicates kept. This is the omitted-caller regression check: a lane that
 // quietly stops calling its shared action, or one that appears without review,
-// fails here. It is deliberately independent of the pin: a Dependabot bump
-// moves every SHA and leaves this inventory untouched, so the bump stays green.
+// fails here.
 const expectedCiWorkflowsCallers = [
   ["pr-require-checks.yml", ".github/actions/actionlint"],
   ["pr-require-checks.yml", ".github/actions/check-comment-markers"],
@@ -104,14 +101,11 @@ function workflowFiles(directory) {
     .sort();
 }
 
-// The ci-workflows pin is whatever the canonical references agree on: the
-// `uses:` lines are its only record. A grouped Dependabot bump rewrites every
-// canonical line at once and cannot edit this file, so the test asserts what a
-// SHA move leaves alone: the expected callers are all present and the
-// references name one commit and one release.
-function ciWorkflowsPin() {
-  const references = [];
-  const versions = [];
+// Every ci-workflows reference runs at `@main`: first-party refs are not
+// pinned. The test asserts the expected callers are all present and none is
+// pinned. A SYNC-MANAGED file may still carry a SHA-pinned advisory reference
+// until the standards sync moves it.
+function ciWorkflowsCallers() {
   const callers = [];
 
   for (const file of workflowFiles(workflowDirectory)) {
@@ -124,37 +118,19 @@ function ciWorkflowsPin() {
         continue;
       }
 
-      // SYNC-MANAGED callers stay out of the one-release compatibility
-      // inventory so a standards-sync cannot break Product policy. A
-      // first-party reusable workflow is called at `@main` (standards#911);
-      // an action still needs a full 40-hex SHA, which the org Actions policy
-      // also enforces (https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
       if (advisory) {
         assert.ok(
-          advisoryReference.exec(line) || reusableAtMain.exec(line),
-          `${path.relative(workflowDirectory, file)}:${index + 1} is not a SHA-pinned advisory ci-workflows reference`,
+          advisoryReference.exec(line) || referenceAtMain.exec(line),
+          `${path.relative(workflowDirectory, file)}:${index + 1} is not a SHA-pinned or main advisory ci-workflows reference`,
         );
         continue;
       }
 
-      // A reusable workflow at `@main` stays in the caller inventory and out
-      // of the one-release pin, which covers the actions.
-      const floating = reusableAtMain.exec(line);
-      if (floating) {
-        callers.push([
-          path.relative(workflowDirectory, file).split(path.sep).join("/"),
-          floating.groups.reference,
-        ]);
-        continue;
-      }
-
-      const match = canonicalReference.exec(line);
+      const match = referenceAtMain.exec(line);
       assert.ok(
         match,
-        `${path.relative(workflowDirectory, file)}:${index + 1} is not a canonical ci-workflows reference`,
+        `${path.relative(workflowDirectory, file)}:${index + 1} does not run ci-workflows at main`,
       );
-      references.push(match.groups.sha);
-      versions.push(match.groups.version);
       callers.push([
         path.relative(workflowDirectory, file).split(path.sep).join("/"),
         match.groups.reference,
@@ -167,22 +143,10 @@ function ciWorkflowsPin() {
     expectedCiWorkflowsCallers,
     "every lane and gate caller must stay inventoried; adding or removing one is a reviewed change",
   );
-  assert.equal(
-    new Set(references).size,
-    1,
-    "ci-workflows references must move as one reviewed compatibility pin",
-  );
-  assert.equal(
-    new Set(versions).size,
-    1,
-    "ci-workflows references must name one release version for online pin verification",
-  );
-
-  return { sha: references[0], version: versions[0] };
 }
 
-test("ci-workflows action references use a full SHA with one release version", () => {
-  ciWorkflowsPin();
+test("ci-workflows references run at main and every expected caller is present", () => {
+  ciWorkflowsCallers();
 });
 
 test("pr-run-checks-go uses the exact reusable caller contract", () => {

@@ -527,7 +527,7 @@ receives the combined job-scoped `contents:write`, `packages:write`,
 `attestations:write`, `artifact-metadata:write`, and `id-token:write` grant; the
 later image-promotion job retains only `contents:read` and `packages:write`.
 Worker provenance explicitly requests an organization artifact storage record,
-and publication fails closed unless the pinned attestation action returns at
+and publication fails closed unless the attestation action returns at
 least one numeric storage-record ID.
 
 Releases produce an immutable pair:

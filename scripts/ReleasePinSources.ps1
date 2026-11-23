@@ -18,16 +18,19 @@ function Get-RunnerBasePin([string] $Dockerfile) {
     }
 }
 
-# One pin per external Action repository, from every `uses: owner/repo[/path]@<sha> # vX.Y.Z`
-# line outside the excluded repositories. Every use of a repository must agree, so the
-# melodic-software/ci-workflows composite actions name one release. Two ci-workflows
-# references are not Action pins: a reusable workflow called at @main (standards#911),
-# and the pin in a SYNC-MANAGED file, which the standards sync owns.
+# First-party (melodic-software) and official-vendor Actions run unpinned: at @main or a
+# moving major tag. Only other owners carry a pin.
+function Test-UnpinnedOwner([string] $Reference) {
+    $owner = ($Reference -split '/', 2)[0]
+    $owner -cin @('melodic-software', 'actions', 'github', 'dependabot', 'microsoft', 'azure', 'Azure', 'anthropics', 'openai')
+}
+
+# One pin per third-party Action repository, from every `uses: owner/repo[/path]@<sha> # vX.Y.Z`
+# line outside the excluded repositories. Every use of a repository must agree.
 function Get-WorkflowActionPins([string] $WorkflowDirectory, [string[]] $ExcludedRepositories = @()) {
     $pins = [ordered]@{}
     foreach ($file in Get-ChildItem -LiteralPath $WorkflowDirectory -Filter '*.yml' -File | Sort-Object Name) {
         $lines = @(Get-Content -LiteralPath $file.FullName)
-        $syncManaged = @($lines | Where-Object { $_ -cmatch '^#\s*SYNC-MANAGED FILE' }).Count -gt 0
         $lineNumber = 0
         foreach ($line in $lines) {
             $lineNumber++
@@ -43,8 +46,7 @@ function Get-WorkflowActionPins([string] $WorkflowDirectory, [string[]] $Exclude
             if ($ExcludedRepositories -contains $repository) {
                 continue
             }
-            if ($repository -eq 'melodic-software/ci-workflows' -and
-                ($syncManaged -or $reference -cmatch '^melodic-software/ci-workflows/\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml@main$')) {
+            if (Test-UnpinnedOwner $reference) {
                 continue
             }
             $location = "$($file.Name):$lineNumber"

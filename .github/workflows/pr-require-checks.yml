@@ -84,11 +84,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Lint Markdown
-        uses: melodic-software/ci-workflows/.github/actions/markdownlint@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/markdownlint@main
         with:
           config: .markdownlint-cli2.jsonc
 
@@ -99,11 +99,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Lint shell
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@main
         with:
           rcfile: .shellcheckrc
 
@@ -114,11 +114,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check shell formatting
-        uses: melodic-software/ci-workflows/.github/actions/shfmt@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/shfmt@main
 
   typos:
     name: Spelling
@@ -127,11 +127,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: melodic-software/ci-workflows/.github/actions/typos@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/typos@main
         with:
           config: _typos.toml
 
@@ -142,11 +142,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check EditorConfig conformance
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig-checker@main
         with:
           config: .editorconfig-checker.json
 
@@ -157,12 +157,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan for secrets
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@main
         with:
           config: .gitleaks.toml
 
@@ -173,11 +173,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check local links and anchors
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@main
         with:
           config: lychee.toml
 
@@ -188,11 +188,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Scan comment hygiene
-        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-comment-markers@main
 
   actionlint:
     name: Actionlint
@@ -201,11 +201,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@main
 
   jsonschema:
     name: Jsonschema
@@ -214,16 +214,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate Dependabot configuration
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@main
         with:
           builtin-schema: vendor.dependabot
           files: .github/dependabot.yml
       - name: Validate workflows
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@main
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
@@ -235,11 +235,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check executable bits
-        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-exec-bit@main
 
   check-machine-paths:
     name: Check Machine Paths
@@ -248,11 +248,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check machine-specific paths
-        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-machine-paths@main
         with:
           # These files assert the official image's fixed in-container runner
           # home. They contain no host/user path; keep the exception exact.
@@ -271,11 +271,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check index-level EOL drift
-        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/check-line-endings@main
 
   pr-audit-workflows:
     name: Zizmor
@@ -300,16 +300,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
       - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@v7
         with:
           node-version: 26.13.0
           package-manager-cache: false
@@ -335,11 +335,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -359,11 +359,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -397,7 +397,7 @@ jobs:
         if: >-
           steps.fuzz_control.outcome == 'failure' ||
           steps.fuzz_docker_archive.outcome == 'failure'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7
         with:
           name: go-fuzz-failures-${{ github.run_id }}
           path: ${{ runner.temp }}/go-fuzz-failures
@@ -422,7 +422,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install checksum-verified Buildx
@@ -457,7 +457,7 @@ jobs:
       contents: read
     steps:
       - name: Review dependency changes
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        uses: actions/dependency-review-action@v5.0.0
 
   ci-status:
     name: CI Status
@@ -518,7 +518,7 @@ jobs:
       # and replace their red check runs.
       - name: Aggregate lane results
         id: report
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@07df326dec55d0740f9b0dd885a2d09c09620deb # v0.82.0
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@main
         with:
           step-name: Aggregate lane results
           # This workflow is not draft-gated (no `ready_for_review` trigger), so a draft passes.
