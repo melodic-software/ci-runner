@@ -161,7 +161,7 @@ func TestPrePollRefreshFailureAdvertisesZeroCapacity(t *testing.T) {
 		t.Fatalf("poll capacity after pre-poll refresh failure = %v, want [0]", got)
 	}
 	cancel()
-	<-done
+	requireStepStopped(t, <-done)
 }
 
 func TestBudgetFundedCapacitySurvivesHostHeadroomDipDuringCadence(t *testing.T) {
