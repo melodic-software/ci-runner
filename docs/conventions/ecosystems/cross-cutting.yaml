@@ -9,10 +9,12 @@ globs: ["**"]
 project-discovery: []
 build-cmd: null
 test-cmd: null
-check-cmd: 'rc=0; typos --config _typos.toml . || rc=1; gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1; if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo "editorconfig-checker: no binary resolved (EC_BIN is empty)" >&2; rc=1; fi; lychee --offline --no-progress "**/*.md" || rc=1; test "$rc" -eq 0'
+# lychee-offline: on-disk link and anchor integrity, no network, with the standards
+# lychee.toml CI falls back to: STANDARDS_DIR names a standards checkout, else the ghq clone
+check-cmd: 'rc=0; typos --config _typos.toml . || rc=1; gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1; if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo "editorconfig-checker: no binary resolved (EC_BIN is empty)" >&2; rc=1; fi; lychee --offline --no-progress --config "${STANDARDS_DIR:-$(git config --path --get ghq.root)/github.com/melodic-software/standards}/lychee.toml" "**/*.md" || rc=1; test "$rc" -eq 0'
 fix-cmd: null
 code-fix-cmd: null
-opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json)"
+opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json); lychee reads standards' lychee.toml"
 install-hint: "typos: https://github.com/crate-ci/typos/releases | gitleaks: https://github.com/gitleaks/gitleaks/releases | editorconfig-checker: https://github.com/editorconfig-checker/editorconfig-checker/releases | lychee: https://github.com/lycheeverse/lychee/releases"
 gates: []
-notes: "Lint-only: owned by /toolchain:lint. CI also runs check-comment-markers, check-exec-bit, check-machine-paths and check-line-endings (ci-workflows composites with no standalone command; pr-require-checks.yml:184-278) and dependency review on pull requests; this record has no equivalent for them. .editorconfig-checker.json uses 4.x keys, so a 3.x binary may report differently. CI's lychee-offline falls back to standards' lychee.toml; locally lychee runs on its defaults, which do not exclude .work/, so expect .work/ files in the '**/*.md' glob."
+notes: "Lint-only: owned by /toolchain:lint. CI also runs check-comment-markers, check-exec-bit, check-machine-paths and check-line-endings (ci-workflows composites with no standalone command; pr-require-checks.yml:184-278) and dependency review on pull requests; this record has no equivalent for them. .editorconfig-checker.json uses 4.x keys, so a 3.x binary may report differently. CI's lychee-offline falls back to standards' lychee.toml, and the local command reads the same file from a standards checkout."
