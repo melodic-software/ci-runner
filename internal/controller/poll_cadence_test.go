@@ -343,7 +343,7 @@ func TestHeartbeatCheckpointDoesNotRestartStableLongPoll(t *testing.T) {
 			t.Fatalf("stable long poll was restarted: capacities=%v", got)
 		}
 		cancel()
-		<-done
+		requireStepStopped(t, <-done)
 	})
 }
 
@@ -423,7 +423,8 @@ func TestMemorySlotFlapDoesNotRestartNonzeroLongPoll(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		requireStepStopped(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("canceled listener poll did not stop")
 	}
@@ -482,7 +483,8 @@ func TestPendingZeroToOneCapacityHoldsInsideMemoryBandBeforeAcknowledgement(t *t
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		requireStepStopped(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("canceled pending listener poll did not stop")
 	}
@@ -649,7 +651,8 @@ func TestSupersededPollCheckpointRecordsCapacityAcknowledgedGauge(t *testing.T) 
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		requireStepStopped(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("canceled listener poll did not stop")
 	}
