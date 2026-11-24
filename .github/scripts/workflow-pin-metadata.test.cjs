@@ -34,6 +34,7 @@ const expectedCiWorkflowsCallers = [
   ["pr-require-checks.yml", ".github/actions/typos"],
   ["pr-require-checks.yml", ".github/workflows/pr-audit-workflows.yml"],
   ["pr-require-checks.yml", ".github/workflows/pr-run-checks-go.yml"],
+  ["release-publish-image.yml", ".github/actions/download-standards"],
 ];
 
 function workflowSource(name) {

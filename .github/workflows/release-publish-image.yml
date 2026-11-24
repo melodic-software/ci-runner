@@ -103,10 +103,15 @@ jobs:
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
           -ignore 'unexpected key "queue" for "concurrency" section'
 
+      - name: Check out the standards zizmor config
+        id: standards
+        uses: melodic-software/ci-workflows/.github/actions/download-standards@main
+
       - name: Audit workflow security
         uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           version: 1.32.0
+          config: ${{ steps.standards.outputs.path }}/.github/zizmor.yml
           persona: pedantic
           advanced-security: false
           annotations: true
