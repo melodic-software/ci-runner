@@ -44,7 +44,7 @@ updates:
     directory: /
     labels: ["dependencies"]
     schedule:
-      interval: daily
+      interval: weekly
       time: '05:40'
       timezone: America/New_York
     cooldown:
@@ -52,10 +52,6 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: build
-    # The one first-party pin Dependabot leaves alone sits in the sync-managed
-    # pr-check-managed-files-hosted.yml, which the standards sync owns.
-    ignore:
-      - dependency-name: "melodic-software/ci-workflows/.github/actions/check-managed-files"
     # The `vendor-actions` group (non-major only) is the auto-merge lane armed
     # by pr-automerge-dependabot.yml. A dependency joins the first group that
     # matches it: a vendor major falls through to the reviewed `github-actions`
