@@ -10,8 +10,8 @@ project-discovery: []
 build-cmd: null
 test-cmd: null
 # lychee-offline: on-disk link and anchor integrity, no network, with the standards
-# lychee.toml CI falls back to: STANDARDS_DIR names a standards checkout, else the ghq clone
-check-cmd: 'rc=0; typos --config _typos.toml . || rc=1; gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1; if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo "editorconfig-checker: no binary resolved (EC_BIN is empty)" >&2; rc=1; fi; lychee --offline --no-progress --config "${STANDARDS_DIR:-$(git config --path --get ghq.root)/github.com/melodic-software/standards}/lychee.toml" "**/*.md" || rc=1; test "$rc" -eq 0'
+# lychee.toml CI falls back to: STANDARDS_DIR names a standards checkout, else the ghq root (ghq.root, default ~/ghq)
+check-cmd: 'rc=0; typos --config _typos.toml . || rc=1; gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1; if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo "editorconfig-checker: no binary resolved (EC_BIN is empty)" >&2; rc=1; fi; lychee --offline --no-progress --config "${STANDARDS_DIR:-$(git config --path --get ghq.root || printf ''%s'' "$HOME/ghq")/github.com/melodic-software/standards}/lychee.toml" "**/*.md" || rc=1; test "$rc" -eq 0'
 fix-cmd: null
 code-fix-cmd: null
 opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json); lychee reads standards' lychee.toml"
