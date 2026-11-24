@@ -1356,7 +1356,10 @@ func TestControlStatusAndCommittedShutdownInterruptLongPoll(t *testing.T) {
 	}()
 	waitForSignal(t, commitDone, "accepted shutdown was blocked by the listener poll")
 	select {
-	case <-stepDone:
+	case stepErr := <-stepDone:
+		if !errors.Is(stepErr, errShutdownRequested) {
+			t.Fatalf("step error = %v, want %v", stepErr, errShutdownRequested)
+		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("accepted shutdown did not cancel the listener poll promptly")
 	}
@@ -2788,6 +2791,15 @@ func waitForSignal(t *testing.T, signal <-chan struct{}, message string) {
 	case <-signal:
 	case <-time.After(time.Second):
 		t.Fatal(message)
+	}
+}
+
+// requireStepStopped fails unless a Step the test canceled returned nil or the
+// cancellation itself.
+func requireStepStopped(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled step returned %v, want nil or context.Canceled", err)
 	}
 }
 
