@@ -21,3 +21,4 @@ pr_body_required_sections:
   - Fix
   - Verification
   - Related
+standards_repository: melodic-software/standards
