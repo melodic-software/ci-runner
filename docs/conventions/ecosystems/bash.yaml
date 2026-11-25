@@ -1,8 +1,9 @@
 # Shell in this repository. Contract and schema:
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
-# The two CI lanes: ShellCheck with the root .shellcheckrc and no severity filter
+# The two CI lanes: ShellCheck with standards' .shellcheckrc and no severity filter
 # (.github/workflows/pr-require-checks.yml:95-108; the ci-workflows shellcheck composite's run.sh
-# passes --rcfile and sets --severity only when asked), and shfmt -d with the .editorconfig style
+# passes --rcfile, falling back to standards' file when the repository has none, and sets
+# --severity only when asked; locally STANDARDS_DIR names a standards checkout, else the ghq root), and shfmt -d with the .editorconfig style
 # (pr-require-checks.yml:110-121). Both run and either failure fails the command. Commands run
 # from the repository root.
 enabled: true
@@ -10,7 +11,7 @@ globs: ["*.sh", "*.bash"]
 project-discovery: []
 build-cmd: null
 test-cmd: 'node --test "$REPO_ROOT"/.github/scripts/*.test.cjs'
-check-cmd: 'rc=0; shellcheck --rcfile="$REPO_ROOT/.shellcheckrc" <files> || rc=1; shfmt -d <files> || rc=1; test "$rc" -eq 0'
+check-cmd: 'rc=0; shellcheck --rcfile="${STANDARDS_DIR:-$(git config --path --get ghq.root || printf ''%s'' "$HOME/ghq")/github.com/melodic-software/standards}/.shellcheckrc" <files> || rc=1; shfmt -d <files> || rc=1; test "$rc" -eq 0'
 fix-cmd: "shfmt -w <files>"
 code-fix-cmd: null
 opt-in: "shellcheck always applies to shell files; shfmt reads the shell style in .editorconfig"
