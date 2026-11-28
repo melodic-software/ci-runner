@@ -94,7 +94,7 @@ function run(rows, issues = []) {
 test("drift at the 7-day target opens a labeled issue listing every row", () => {
   const {calls, body} = run([drift("young", 6), drift("aged", 7), drift("held-pin", 15)]);
   assert.equal(calls.length, 2);
-  assert.match(calls[1], new RegExp(`^issue create --title ${title} --body-file \\S+ --label automated --label dependencies$`, "u"));
+  assert.match(calls[1], new RegExp(`^issue create --title ${title} --body-file \\S+ --label dependencies$`, "u"));
   assert.match(body, /found 2 of 3 drift rows at or past the 7-day promotion target/u);
   assert.match(body, /A release tag pushed now fails the release freshness gate/u);
   assert.match(body, /Checked at 2026-11-08T06:41:00\.0000000\+00:00 by https:\/\/github\.com\/melodic-software\/ci-runner\/actions\/runs\/1\./u);
@@ -126,6 +126,6 @@ test("drift below the target closes the open issue with the run link", () => {
 test("a clean report with no open issue writes nothing", () => {
   const {calls, stdout} = run([]);
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /^issue list --state open --label automated /u);
+  assert.match(calls[0], /^issue list --state open --label dependencies /u);
   assert.match(stdout, /no issue to close/u);
 });
