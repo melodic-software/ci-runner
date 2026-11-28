@@ -189,7 +189,7 @@ Between releases, `.github/workflows/maintenance-check-dependency-freshness.yml`
 runs the same check daily at 06:41 UTC, or on a manual dispatch, so drift is
 fixed before a tag is pushed. Drift does not fail that run. It keeps one issue,
 titled `Dependency freshness: drift at or past the promotion target` and
-labeled `automated` and `dependencies`, open while any row hard-fails or is at
+labeled `dependencies`, open while any row hard-fails or is at
 least seven days old, the promotion target above. Each run rewrites its body
 with the full drift table, reviewed holds marked, and the run link, and closes
 it once no such row remains. A run that cannot complete the check fails and

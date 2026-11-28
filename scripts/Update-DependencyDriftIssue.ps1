@@ -31,7 +31,7 @@ $rows = @($report.drift | ForEach-Object {
 } | Sort-Object @{ Expression = { $_.drift.hardFail }; Descending = $true }, @{ Expression = { $_.drift.ageDays }; Descending = $true }, @{ Expression = { $_.drift.dependency } })
 $actionable = @($rows | Where-Object actionable)
 
-$existing = @(gh issue list --state open --label automated --limit 100 --json number,title |
+$existing = @(gh issue list --state open --label dependencies --limit 100 --json number,title |
     ConvertFrom-Json | Where-Object title -eq $title | Sort-Object number)
 $number = if ($existing.Count -gt 0) { $existing[0].number } else { $null }
 
@@ -75,7 +75,7 @@ try {
         gh issue edit $number --body-file $bodyFile | Out-Null
         Write-Output "Updated issue #$number."
     } else {
-        gh issue create --title $title --body-file $bodyFile --label automated --label dependencies
+        gh issue create --title $title --body-file $bodyFile --label dependencies
     }
 } finally {
     Remove-Item -LiteralPath $bodyFile -Force
